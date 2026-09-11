@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Skills</h2>
+{% for sk in skills %}
+<div class="card">
+  <strong>{{ sk.name }}</strong> <code>{{ sk.id }}</code>
+  <p style="color:#666">{{ sk.description }}</p>
+  <pre>{{ sk.content }}</pre>
+  <p>Used by: {% for a in sk.agents %}<span class="chip">{{ a.name }}</span>{% else %}(no agents yet){% endfor %}</p>
+</div>
+{% endfor %}
+<div class="card">
+  <form method="post" action="/skills">
+    <div><input name="name" placeholder="skill name" required style="width:100%"></div>
+    <div><input name="description" placeholder="description" style="width:100%"></div>
+    <div><textarea name="content" placeholder="skill content / instructions" rows="4" style="width:100%"></textarea></div>
+    <button class="primary" type="submit">Create skill</button>
+  </form>
+</div>
+{% endblock %}

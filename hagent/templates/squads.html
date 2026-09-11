@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Squads</h2>
+{% for sq in squads %}
+<div class="card">
+  <strong>{{ sq.name }}</strong> <code>{{ sq.id }}</code>
+  <p style="color:#666">{{ sq.description }}</p>
+  <p>Members: {% for m in sq.members %}<span class="chip">{{ m.agent.name }} ({{ m.role }})</span>{% else %}(none){% endfor %}</p>
+  <form method="post" action="/squads/{{ sq.id }}/members">
+    <select name="agent_id">{% for a in agents %}<option value="{{ a.id }}">{{ a.name }}</option>{% endfor %}</select>
+    <input name="role" placeholder="role" value="member">
+    <button type="submit">Add member</button>
+  </form>
+</div>
+{% endfor %}
+<div class="card">
+  <form method="post" action="/squads">
+    <input name="name" placeholder="squad name" required>
+    <input name="description" placeholder="description" size="30">
+    <button class="primary" type="submit">Create squad</button>
+  </form>
+</div>
+{% endblock %}

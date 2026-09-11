@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Repos</h2>
+<table>
+  <tr><th>Name</th><th>URL</th><th>ID</th></tr>
+  {% for r in repos %}
+  <tr><td>{{ r.name }}</td><td>{{ r.url }}</td><td><code>{{ r.id }}</code></td></tr>
+  {% endfor %}
+</table>
+<div class="card">
+  <form method="post" action="/repos">
+    <input name="name" placeholder="name" required>
+    <input name="url" placeholder="git url" size="40" required>
+    <button class="primary" type="submit">Add repo</button>
+  </form>
+</div>
+{% endblock %}

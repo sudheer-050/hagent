@@ -4,25 +4,75 @@
   <meta charset="utf-8">
   <title>{% block title %}Hagent{% endblock %}</title>
   <style>
-    body { font-family: -apple-system, Segoe UI, sans-serif; max-width: 1000px; margin: 2rem auto; color: #1a1a1a; }
-    h1 { margin-bottom: 0.2rem; }
-    h2 { margin-top: 2.5rem; border-bottom: 1px solid #ddd; padding-bottom: 0.3rem; }
-    table { border-collapse: collapse; width: 100%; margin-top: 0.5rem; }
-    th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid #eee; font-size: 0.9rem; }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, Segoe UI, sans-serif; margin: 0; color: #1a1a1a;
+      display: flex; min-height: 100vh; background: #fafafa;
+    }
+    .sidebar {
+      width: 200px; flex-shrink: 0; background: #fff; border-right: 1px solid #e5e5e5;
+      padding: 1.2rem 0.8rem; position: sticky; top: 0; height: 100vh;
+    }
+    .sidebar h1 { font-size: 1.3rem; margin: 0 0 1.2rem 0.4rem; }
+    .sidebar h1 a { color: #1a1a1a; text-decoration: none; }
+    .sidebar nav a {
+      display: block; padding: 0.4rem 0.6rem; margin-bottom: 0.1rem; border-radius: 6px;
+      color: #444; text-decoration: none; font-size: 0.92rem;
+    }
+    .sidebar nav a:hover { background: #f0f0f0; }
+    .sidebar nav a.active { background: #eef2ff; color: #3730a3; font-weight: 600; }
+    .main { flex: 1; padding: 1.5rem 2rem; max-width: 1200px; }
+    h2 { margin-top: 0; }
+    table { border-collapse: collapse; width: 100%; margin-top: 0.5rem; background: #fff; }
+    th, td { text-align: left; padding: 0.45rem 0.6rem; border-bottom: 1px solid #eee; font-size: 0.88rem; }
     th { color: #666; font-weight: 600; }
-    code { background: #f5f5f5; padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.85rem; }
-    .status-completed { color: #1a7f37; }
-    .status-failed { color: #d1242f; }
-    .status-running, .status-pending { color: #9a6700; }
+    code { background: #f5f5f5; padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.82rem; }
+    .status-completed, .status-done { color: #1a7f37; }
+    .status-failed, .status-cancelled { color: #d1242f; }
+    .status-running, .status-pending, .status-in_progress { color: #9a6700; }
     form.inline { display: inline; }
-    input, select, textarea, button { font-size: 0.9rem; padding: 0.3rem 0.5rem; margin: 0.15rem 0; }
-    .card { border: 1px solid #ddd; border-radius: 6px; padding: 1rem; margin-top: 0.5rem; }
-    a { color: #0969da; text-decoration: none; }
+    input, select, textarea, button {
+      font-size: 0.88rem; padding: 0.35rem 0.55rem; margin: 0.15rem 0;
+      border: 1px solid #d0d0d0; border-radius: 5px; font-family: inherit;
+    }
+    button { background: #f5f5f5; cursor: pointer; }
+    button:hover { background: #ebebeb; }
+    button.primary { background: #3730a3; color: #fff; border-color: #3730a3; }
+    button.primary:hover { background: #2f2b8a; }
+    .card { border: 1px solid #e5e5e5; border-radius: 8px; padding: 1rem; margin-top: 0.6rem; background: #fff; }
+    a { color: #3730a3; text-decoration: none; }
     a:hover { text-decoration: underline; }
+    .chip {
+      display: inline-block; font-size: 0.75rem; padding: 0.1rem 0.5rem; border-radius: 10px;
+      background: #eef2ff; color: #3730a3; margin-right: 0.25rem;
+    }
+    .board { display: flex; gap: 0.8rem; overflow-x: auto; margin-top: 0.8rem; align-items: flex-start; }
+    .board-column { flex: 0 0 230px; background: #f2f2f5; border-radius: 8px; padding: 0.6rem; }
+    .board-column h3 { font-size: 0.8rem; text-transform: uppercase; color: #666; margin: 0.2rem 0.3rem 0.6rem; }
+    .issue-card {
+      background: #fff; border: 1px solid #e5e5e5; border-radius: 6px; padding: 0.55rem 0.65rem;
+      margin-bottom: 0.5rem; font-size: 0.85rem;
+    }
+    .issue-card a { color: #1a1a1a; font-weight: 500; }
+    .issue-card .meta { margin-top: 0.35rem; display: flex; gap: 0.3rem; flex-wrap: wrap; align-items: center; }
+    .label-chip { font-size: 0.7rem; padding: 0.05rem 0.4rem; border-radius: 8px; color: #fff; }
+    pre { background: #f5f5f5; padding: 0.7rem; border-radius: 6px; overflow-x: auto; font-size: 0.82rem; white-space: pre-wrap; }
   </style>
 </head>
 <body>
-  <h1><a href="/">Hagent</a></h1>
-  {% block content %}{% endblock %}
+  <div class="sidebar">
+    <h1><a href="/">Hagent</a></h1>
+    <nav>
+      <a href="/projects" class="{{ 'active' if active == 'projects' }}">Projects</a>
+      <a href="/agents" class="{{ 'active' if active == 'agents' }}">Agents &amp; Runtimes</a>
+      <a href="/squads" class="{{ 'active' if active == 'squads' }}">Squads</a>
+      <a href="/skills" class="{{ 'active' if active == 'skills' }}">Skills</a>
+      <a href="/autopilots" class="{{ 'active' if active == 'autopilots' }}">Autopilots</a>
+      <a href="/repos" class="{{ 'active' if active == 'repos' }}">Repos</a>
+    </nav>
+  </div>
+  <div class="main">
+    {% block content %}{% endblock %}
+  </div>
 </body>
 </html>

@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Runtimes</h2>
+<table>
+  <tr><th>Name</th><th>Type</th><th>Model</th><th>ID</th></tr>
+  {% for r in runtimes %}
+  <tr><td>{{ r.name }}</td><td>{{ r.type.value }}</td><td>{{ r.model }}</td><td><code>{{ r.id }}</code></td></tr>
+  {% endfor %}
+</table>
+<div class="card">
+  <form method="post" action="/runtimes">
+    <input name="name" placeholder="name" required>
+    <select name="type">
+      <option value="ollama">ollama</option>
+      <option value="claude">claude</option>
+      <option value="openai">openai</option>
+    </select>
+    <input name="model" placeholder="model" required>
+    <button class="primary" type="submit">Add runtime</button>
+  </form>
+</div>
+
+<h2>Agents</h2>
+<table>
+  <tr><th>Name</th><th>Runtime</th><th>Skills</th><th>ID</th></tr>
+  {% for a in agents %}
+  <tr>
+    <td>{{ a.name }}</td>
+    <td>{{ a.runtime.name }}</td>
+    <td>{% for sk in a.skills %}<span class="chip">{{ sk.name }}</span>{% endfor %}</td>
+    <td><code>{{ a.id }}</code></td>
+  </tr>
+  {% endfor %}
+</table>
+<div class="card">
+  <form method="post" action="/agents">
+    <input name="name" placeholder="name" required>
+    <select name="runtime_id">
+      {% for r in runtimes %}
+      <option value="{{ r.id }}">{{ r.name }} ({{ r.type.value }})</option>
+      {% endfor %}
+    </select>
+    <input name="instructions" placeholder="instructions (optional)" size="40">
+    <button class="primary" type="submit">Add agent</button>
+  </form>
+</div>
+{% endblock %}

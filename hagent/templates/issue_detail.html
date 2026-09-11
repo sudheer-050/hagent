@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block content %}
+<p><a href="/projects/{{ issue.project_id }}">&larr; {{ issue.project.name }}</a></p>
+<h2>{{ issue.title }}</h2>
+<p style="color:#666;white-space:pre-wrap">{{ issue.description }}</p>
+
+<div class="card">
+  <strong>Status:</strong>
+  <form class="inline" method="post" action="/issues/{{ issue.id }}/status">
+    <select name="status" onchange="this.form.submit()">
+      {% for s in statuses %}
+      <option value="{{ s.value }}" {{ 'selected' if s == issue.status }}>{{ s.value.replace('_',' ') }}</option>
+      {% endfor %}
+    </select>
+  </form>
+  &nbsp;&nbsp;
+  <strong>Assignee:</strong>
+  <form class="inline" method="post" action="/issues/{{ issue.id }}/assign">
+    <select name="agent_id" onchange="this.form.submit()">
+      <option value="">(unassigned)</option>
+      {% for a in agents %}
+      <option value="{{ a.id }}" {{ 'selected' if issue.assignee_agent_id == a.id }}>{{ a.name }}</option>
+      {% endfor %}
+    </select>
+  </form>
+  &nbsp;&nbsp;
+  <form class="inline" method="post" action="/issues/{{ issue.id }}/run">
+    <button class="primary" type="submit" {{ 'disabled' if not issue.assignee_agent_id }}>Run</button>
+  </form>
+</div>
+
+<div class="card">
+  <strong>Labels:</strong>
+  {% for l in issue.labels %}<span class="label-chip" style="background:{{ l.color }}">{{ l.name }}</span>{% endfor %}
+  <form class="inline" method="post" action="/issues/{{ issue.id }}/labels">
+    <select name="label_id">
+      {% for l in all_labels %}<option value="{{ l.id }}">{{ l.name }}</option>{% endfor %}
+    </select>
+    <button type="submit">Add label</button>
+  </form>
+</div>
+
+<h3>Comments</h3>
+{% for c in issue.comments %}
+<div class="card"><strong>{{ c.author }}</strong> <span style="color:#999;font-size:0.8rem">{{ c.created_at }}</span><br>{{ c.body }}</div>
+{% endfor %}
+<div class="card">
+  <form method="post" action="/issues/{{ issue.id }}/comments">
+    <textarea name="body" placeholder="Add a comment" rows="2" style="width:100%" required></textarea>
+    <button type="submit">Comment</button>
+  </form>
+</div>
+
+<h3>Runs</h3>
+{% for r in issue.runs|reverse %}
+<div class="card">
+  <span class="status-{{ r.status.value }}">{{ r.status.value }}</span>
+  &nbsp;<span style="color:#999;font-size:0.8rem">{{ r.created_at }}</span>
+  {% if r.output %}<pre>{{ r.output }}</pre>{% endif %}
+  {% if r.error %}<pre style="color:#d1242f">{{ r.error }}</pre>{% endif %}
+</div>
+{% else %}
+<p style="color:#999">No runs yet.</p>
+{% endfor %}
+{% endblock %}

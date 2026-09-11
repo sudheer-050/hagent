@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Autopilots</h2>
+{% for ap in autopilots %}
+<div class="card">
+  <strong>{{ ap.name }}</strong> <code>{{ ap.id }}</code>
+  {% if not ap.enabled %}<span class="chip" style="background:#fde2e2;color:#b91c1c">disabled</span>{% endif %}
+  <p style="color:#666">
+    agent: {{ ap.agent.name }}
+    {% if ap.project %} · project: {{ ap.project.name }}{% endif %}
+    {% if ap.filter_status %} · filter: {{ ap.filter_status.value }}{% endif %}
+  </p>
+  <p>Triggers:
+    {% for t in ap.triggers %}<span class="chip"><code>{{ t.cron_expression }}</code></span>{% else %}(none){% endfor %}
+  </p>
+  <form class="inline" method="post" action="/autopilots/{{ ap.id }}/triggers">
+    <input name="cron" placeholder="*/5 * * * *" size="14" required>
+    <button type="submit">Add trigger</button>
+  </form>
+  <form class="inline" method="post" action="/autopilots/{{ ap.id }}/trigger-now">
+    <button type="submit">Run now</button>
+  </form>
+</div>
+{% endfor %}
+<div class="card">
+  <form method="post" action="/autopilots">
+    <input name="name" placeholder="autopilot name" required>
+    <select name="agent_id">{% for a in agents %}<option value="{{ a.id }}">{{ a.name }}</option>{% endfor %}</select>
+    <select name="project_id">
+      <option value="">(any project)</option>
+      {% for p in projects %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}
+    </select>
+    <select name="filter_status">
+      <option value="">(any status)</option>
+      {% for s in statuses %}<option value="{{ s.value }}">{{ s.value.replace('_',' ') }}</option>{% endfor %}
+    </select>
+    <button class="primary" type="submit">Create autopilot</button>
+  </form>
+</div>
+{% endblock %}

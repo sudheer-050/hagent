@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Projects</h2>
+<table>
+  <tr><th>Name</th><th>Status</th><th>Issues</th><th></th></tr>
+  {% for p in projects %}
+  <tr>
+    <td><a href="/projects/{{ p.id }}">{{ p.name }}</a></td>
+    <td class="status-{{ p.status.value }}">{{ p.status.value }}</td>
+    <td>{{ p.issues|length }}</td>
+    <td><code>{{ p.id }}</code></td>
+  </tr>
+  {% endfor %}
+</table>
+<div class="card">
+  <form method="post" action="/projects">
+    <input name="name" placeholder="project name" required>
+    <input name="description" placeholder="description (optional)" size="40">
+    <button class="primary" type="submit">Create project</button>
+  </form>
+</div>
+{% endblock %}

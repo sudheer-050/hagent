@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+<p><a href="/projects">&larr; Projects</a></p>
+<h2>{{ project.name }}</h2>
+<p style="color:#666">{{ project.description }}</p>
+
+<div class="board">
+  {% for status in statuses %}
+  <div class="board-column">
+    <h3>{{ status.value.replace('_', ' ') }} ({{ issues_by_status[status]|length }})</h3>
+    {% for i in issues_by_status[status] %}
+    <div class="issue-card">
+      <a href="/issues/{{ i.id }}">{{ i.title }}</a>
+      <div class="meta">
+        {% for l in i.labels %}<span class="label-chip" style="background:{{ l.color }}">{{ l.name }}</span>{% endfor %}
+        {% if i.assignee %}<span class="chip">{{ i.assignee.name }}</span>{% endif %}
+      </div>
+      <form class="inline" method="post" action="/issues/{{ i.id }}/status" style="margin-top:0.35rem">
+        <select name="status" onchange="this.form.submit()">
+          {% for s2 in statuses %}
+          <option value="{{ s2.value }}" {{ 'selected' if s2 == i.status }}>{{ s2.value.replace('_',' ') }}</option>
+          {% endfor %}
+        </select>
+      </form>
+    </div>
+    {% endfor %}
+  </div>
+  {% endfor %}
+</div>
+
+<div class="card" style="max-width:500px">
+  <h3 style="margin-top:0">New issue</h3>
+  <form method="post" action="/issues">
+    <input type="hidden" name="project_id" value="{{ project.id }}">
+    <div><input name="title" placeholder="title" required style="width:100%"></div>
+    <div><textarea name="description" placeholder="description / prompt" rows="3" style="width:100%"></textarea></div>
+    <select name="assignee_agent_id">
+      <option value="">(unassigned)</option>
+      {% for a in agents %}
+      <option value="{{ a.id }}">{{ a.name }}</option>
+      {% endfor %}
+    </select>
+    <button class="primary" type="submit">Create issue</button>
+  </form>
+</div>
+{% endblock %}
