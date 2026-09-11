@@ -8,7 +8,7 @@ import os
 
 import httpx
 
-from holly.adapters.base import BaseRuntime, RuntimeResult
+from hagent.adapters.base import BaseRuntime, RuntimeResult
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 

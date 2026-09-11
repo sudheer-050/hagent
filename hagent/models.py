@@ -1,4 +1,4 @@
-"""SQLAlchemy models for Holly's core object model."""
+"""SQLAlchemy models for Hagent's core object model."""
 
 import enum
 import uuid

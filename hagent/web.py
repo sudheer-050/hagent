@@ -7,11 +7,11 @@ from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 
-from holly.db import get_or_create_default_workspace, get_session, init_db
-from holly.engine import run_task as engine_run_task
-from holly.models import Agent, Runtime, Task
+from hagent.db import get_or_create_default_workspace, get_session, init_db
+from hagent.engine import run_task as engine_run_task
+from hagent.models import Agent, Runtime, Task
 
-app = FastAPI(title="Holly")
+app = FastAPI(title="Hagent")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 

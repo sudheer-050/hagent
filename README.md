@@ -1,12 +1,12 @@
-# Holly
+# Hagent
 
 A self-hosted multi-agent orchestration platform: define **agents**, bind each one to a pluggable **runtime** (Claude, OpenAI, local Ollama), and run **tasks** through them from a CLI or a web dashboard.
 
-Holly is a from-scratch reimplementation of the core ideas behind commercial multi-agent orchestration tools (Multica and similar): a workspace holding agents, runtimes, and tasks, with a clean adapter boundary so any AI backend can be plugged in without touching the rest of the system.
+Hagent is a from-scratch reimplementation of the core ideas behind commercial multi-agent orchestration tools (Multica and similar): a workspace holding agents, runtimes, and tasks, with a clean adapter boundary so any AI backend can be plugged in without touching the rest of the system.
 
 ## Why this exists
 
-Most orchestration platforms are closed SaaS products. Holly is built to:
+Most orchestration platforms are closed SaaS products. Hagent is built to:
 - Run entirely locally — no dependency on a hosted backend, own your data and workflow.
 - Support any AI runtime interchangeably (cloud APIs or local models) behind one interface.
 - Be simple enough to read end-to-end: the whole execution path (CLI/web → Task → Agent → Runtime → result) is under a thousand lines.
@@ -14,12 +14,12 @@ Most orchestration platforms are closed SaaS products. Holly is built to:
 ## Architecture
 
 ```
-holly/
+hagent/
   models.py       SQLAlchemy models: Workspace, Agent, Runtime, Task
   db.py           Engine/session setup (SQLite by default)
   adapters/       BaseRuntime interface + ClaudeRuntime, OllamaRuntime, OpenAIRuntime
   engine.py       Task execution engine: Task -> Agent -> Runtime -> result
-  cli.py          click CLI (holly agent/runtime/task ...)
+  cli.py          click CLI (hagent agent/runtime/task ...)
   web.py          FastAPI + Jinja2 dashboard
   templates/      Dashboard HTML templates
 ```
@@ -36,18 +36,18 @@ export ANTHROPIC_API_KEY=...   # only needed for ClaudeRuntime
 ## CLI usage
 
 ```bash
-holly runtime list
-holly agent create --name "Researcher" --runtime ollama --model qwen3-fast8b
-holly agent list
-holly task create --agent <agent-id> --prompt "Summarize this repo's README"
-holly task run <task-id>
-holly task get <task-id>
+hagent runtime list
+hagent agent create --name "Researcher" --runtime ollama --model qwen3-fast8b
+hagent agent list
+hagent task create --agent <agent-id> --prompt "Summarize this repo's README"
+hagent task run <task-id>
+hagent task get <task-id>
 ```
 
 ## Web dashboard
 
 ```bash
-uvicorn holly.web:app --reload
+uvicorn hagent.web:app --reload
 ```
 
 Then open http://127.0.0.1:8000 to view agents, runtimes, and tasks, and trigger a task run from the browser.

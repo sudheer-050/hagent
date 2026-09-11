@@ -1,16 +1,16 @@
-"""click-based CLI: holly agent/runtime/task ..."""
+"""click-based CLI: hagent agent/runtime/task ..."""
 
 import click
 from sqlalchemy import select
 
-from holly.db import get_or_create_default_workspace, get_session, init_db
-from holly.engine import run_task as engine_run_task
-from holly.models import Agent, Runtime, RuntimeType, Task
+from hagent.db import get_or_create_default_workspace, get_session, init_db
+from hagent.engine import run_task as engine_run_task
+from hagent.models import Agent, Runtime, RuntimeType, Task
 
 
 @click.group()
 def cli():
-    """Holly: self-hosted multi-agent orchestration."""
+    """Hagent: self-hosted multi-agent orchestration."""
     init_db()
 
 

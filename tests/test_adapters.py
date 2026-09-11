@@ -1,9 +1,9 @@
 import httpx
 import pytest
 
-from holly.adapters.claude import ClaudeRuntime
-from holly.adapters.ollama import OllamaRuntime
-from holly.adapters.openai import OpenAIRuntime
+from hagent.adapters.claude import ClaudeRuntime
+from hagent.adapters.ollama import OllamaRuntime
+from hagent.adapters.openai import OpenAIRuntime
 
 
 class FakeContentBlock:

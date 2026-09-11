@@ -1,8 +1,8 @@
-from holly.adapters.base import BaseRuntime, RuntimeResult
-from holly.adapters.claude import ClaudeRuntime
-from holly.adapters.ollama import OllamaRuntime
-from holly.adapters.openai import OpenAIRuntime
-from holly.models import RuntimeType
+from hagent.adapters.base import BaseRuntime, RuntimeResult
+from hagent.adapters.claude import ClaudeRuntime
+from hagent.adapters.ollama import OllamaRuntime
+from hagent.adapters.openai import OpenAIRuntime
+from hagent.models import RuntimeType
 
 RUNTIME_CLASSES: dict[RuntimeType, type[BaseRuntime]] = {
     RuntimeType.CLAUDE: ClaudeRuntime,
