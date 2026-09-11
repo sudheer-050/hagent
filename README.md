@@ -15,8 +15,8 @@ Most orchestration platforms are closed SaaS products. Hagent is built to:
 
 ```
 hagent/
-  models.py       SQLAlchemy models: Workspace, Project, Issue, Label, Property, Comment,
-                   Run, Agent, Runtime, Squad, Skill, Autopilot, AutopilotTrigger, Repo
+  models.py       SQLAlchemy models for workspaces, issue extras, skills, chat,
+                   attachments, repos, autopilots, and MCP server bindings
   db.py           Engine/session setup (SQLite by default)
   adapters/       BaseRuntime interface + ClaudeRuntime, OllamaRuntime, OpenAIRuntime
   engine.py       run_issue(): Issue -> Agent -> Runtime -> Run result
@@ -50,7 +50,9 @@ hagent autopilot trigger-add <autopilot-id> --cron "*/5 * * * *"
 hagent daemon start                         # run the autopilot scheduler in the foreground
 ```
 
-Run `hagent <noun> --help` for the full command set (project/label/property/issue/squad/skill/autopilot/repo/agent/runtime/daemon).
+Run `hagent <noun> --help` for the full command set, including workspace/user profile,
+issue search/timeline/metadata/subscribers, skill import/refresh/search, squad activity,
+webhook triggers, repo checkout, attachments, chat, and MCP server bindings.
 
 ## Web dashboard
 
@@ -68,6 +70,10 @@ pytest
 
 ## Status
 
-Phase 2: full issue-tracker object model (projects/issues/labels/properties/comments/sub-issues), squads, skills, autopilots with cron scheduling, and a kanban web UI — all verified live (CLI smoke tests, a real autonomous cron firing, and a real browser session), not just unit tests.
+Phase 3 adds local workspace/profile management, issue extras and timeline events,
+multi-file skill bundles, squad activity, cron and webhook triggers, real git checkout,
+attachments, standalone chat, and MCP protocol tool invocation in runtime loops.
 
-Deliberately out of scope (see the project plan for why): skill marketplace import, MCP server management, webhook autopilot triggers, multi-user auth, and sandboxed repo checkout.
+Marketplace-specific skill discovery and public webhook exposure remain intentionally
+out of scope: local archives/direct URLs are supported, and a user must expose a local
+webhook endpoint through their own tunnel or reverse proxy when needed.

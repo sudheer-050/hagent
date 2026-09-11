@@ -66,7 +66,7 @@ def sync_scheduler_jobs(scheduler: BackgroundScheduler) -> int:
         triggers = session.scalars(select(AutopilotTrigger)).all()
         for trig in triggers:
             autopilot = session.get(Autopilot, trig.autopilot_id)
-            if not autopilot or not autopilot.enabled:
+            if not autopilot or not autopilot.enabled or not trig.cron_expression or trig.type.value != "cron":
                 continue
             scheduler.add_job(
                 run_autopilot_once,
@@ -77,6 +77,11 @@ def sync_scheduler_jobs(scheduler: BackgroundScheduler) -> int:
             )
             count += 1
     return count
+
+
+def find_webhook_trigger(token: str) -> AutopilotTrigger | None:
+    with get_session() as session:
+        return session.scalar(select(AutopilotTrigger).where(AutopilotTrigger.webhook_token == token))
 
 
 def start_scheduler() -> BackgroundScheduler:

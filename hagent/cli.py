@@ -1,12 +1,21 @@
 """click-based CLI mirroring Multica's noun/verb structure: hagent <noun> <verb> ..."""
 
 import json
+import os
 import time
+import secrets
+import shutil
+import subprocess
+import tempfile
+import urllib.request
+import zipfile
+from pathlib import Path
+from datetime import datetime, timezone
 
 import click
 from sqlalchemy import select
 
-from hagent.db import get_or_create_default_workspace, get_session, init_db
+from hagent.db import get_active_workspace, get_or_create_default_workspace, get_session, init_db, set_active_workspace
 from hagent.engine import run_issue as engine_run_issue
 from hagent.models import (
     Agent,
@@ -24,10 +33,28 @@ from hagent.models import (
     Repo,
     Runtime,
     RuntimeType,
+    Run,
+    RunStatus,
     Skill,
     Squad,
     SquadMember,
+    Attachment,
+    ChatMessage,
+    ChatThread,
+    IssueMetadata,
+    IssueSubscriber,
+    TimelineEvent,
+    SkillFile,
+    SquadActivity,
+    TriggerType,
+    UserProfile,
+    Workspace,
+    WorkspaceMember,
+    McpServer,
 )
+
+# All workspace-scoped CLI writes follow the locally selected workspace.
+get_or_create_default_workspace = get_active_workspace
 
 
 @click.group()
@@ -294,6 +321,7 @@ def issue_status(issue_id, status):
         if not i:
             raise click.ClickException(f"Issue {issue_id} not found")
         i.status = IssueStatus(status)
+        s.add(TimelineEvent(issue_id=i.id, event_type="status_changed", detail=status))
         s.commit()
         click.echo(f"Issue {i.id} -> {status}")
 
@@ -308,6 +336,7 @@ def issue_assign(issue_id, agent_id):
         if not i or not a:
             raise click.ClickException("Issue or agent not found")
         i.assignee_agent_id = a.id
+        s.add(TimelineEvent(issue_id=i.id, event_type="assigned", detail=a.name))
         s.commit()
         click.echo(f"Issue {i.id} assigned to {a.name}")
 
@@ -490,7 +519,8 @@ def skill_get(skill_id):
         sk = s.get(Skill, skill_id)
         if not sk:
             raise click.ClickException(f"Skill {skill_id} not found")
-        click.echo(f"id: {sk.id}\nname: {sk.name}\ndescription: {sk.description}\ncontent:\n{sk.content}")
+        files = "\n".join(f"- {item.filename}" for item in sk.files)
+        click.echo(f"id: {sk.id}\nname: {sk.name}\ndescription: {sk.description}\nsource_url: {sk.source_url or ''}\nfiles:\n{files or '(none)'}\ncontent:\n{sk.content}")
 
 
 # --- autopilot ---
@@ -532,16 +562,24 @@ def autopilot_list():
 
 @autopilot.command("trigger-add")
 @click.argument("autopilot_id")
-@click.option("--cron", required=True, help="Standard 5-field cron expression, e.g. '*/5 * * * *'")
-def autopilot_trigger_add(autopilot_id, cron):
+@click.option("--cron", default=None, help="Standard 5-field cron expression, e.g. '*/5 * * * *'")
+@click.option("--webhook", is_flag=True, help="Create an HTTP webhook trigger")
+def autopilot_trigger_add(autopilot_id, cron, webhook):
     with get_session() as s:
         ap = s.get(Autopilot, autopilot_id)
         if not ap:
             raise click.ClickException(f"Autopilot {autopilot_id} not found")
-        t = AutopilotTrigger(autopilot_id=ap.id, cron_expression=cron)
+        if bool(cron) == webhook:
+            raise click.UsageError("Pass exactly one of --cron or --webhook")
+        t = AutopilotTrigger(
+            autopilot_id=ap.id,
+            cron_expression=cron,
+            type=TriggerType.WEBHOOK if webhook else TriggerType.CRON,
+            webhook_token=secrets.token_urlsafe(32) if webhook else None,
+        )
         s.add(t)
         s.commit()
-        click.echo(f"Added trigger {t.id} ({cron}) to autopilot {ap.name}")
+        click.echo(f"Added trigger {t.id} ({t.webhook_token or cron}) to autopilot {ap.name}")
 
 
 @autopilot.command("trigger")
@@ -613,6 +651,519 @@ def daemon_start():
     except KeyboardInterrupt:
         sched.shutdown()
         click.echo("Scheduler stopped.")
+
+
+# --- Phase 3: workspace, user, and issue extras ---
+
+@cli.group()
+def workspace():
+    """Manage local workspaces and their members."""
+
+
+@workspace.command("create")
+@click.option("--name", required=True)
+def workspace_create(name):
+    with get_session() as s:
+        ws = Workspace(name=name)
+        s.add(ws)
+        s.commit()
+        click.echo(ws.id)
+
+
+@workspace.command("list")
+def workspace_list():
+    with get_session() as s:
+        active = get_active_workspace(s).id
+        for ws in s.scalars(select(Workspace)).all():
+            click.echo(f"{ws.id}  {'*' if ws.id == active else ' '} {ws.name}")
+
+
+@workspace.command("get")
+@click.argument("workspace_id")
+def workspace_get(workspace_id):
+    with get_session() as s:
+        ws = s.get(Workspace, workspace_id)
+        if not ws:
+            raise click.ClickException("Workspace not found")
+        click.echo(f"id: {ws.id}\nname: {ws.name}\ncreated_at: {ws.created_at}")
+
+
+@workspace.command("update")
+@click.argument("workspace_id")
+@click.option("--name", required=True)
+def workspace_update(workspace_id, name):
+    with get_session() as s:
+        ws = s.get(Workspace, workspace_id)
+        if not ws:
+            raise click.ClickException("Workspace not found")
+        ws.name = name
+        s.commit()
+        click.echo(ws.id)
+
+
+@workspace.command("switch")
+@click.argument("workspace_id")
+def workspace_switch(workspace_id):
+    with get_session() as s:
+        if not s.get(Workspace, workspace_id):
+            raise click.ClickException("Workspace not found")
+    set_active_workspace(workspace_id)
+    click.echo(f"Active workspace: {workspace_id}")
+
+
+@workspace.group("member")
+def workspace_member():
+    """Manage workspace members."""
+
+
+@workspace_member.command("add")
+@click.argument("workspace_id")
+@click.option("--name", required=True)
+@click.option("--role", default="member")
+def workspace_member_add(workspace_id, name, role):
+    with get_session() as s:
+        if not s.get(Workspace, workspace_id):
+            raise click.ClickException("Workspace not found")
+        member = WorkspaceMember(workspace_id=workspace_id, name=name, role=role)
+        s.add(member)
+        s.commit()
+        click.echo(member.id)
+
+
+@workspace_member.command("list")
+@click.argument("workspace_id")
+def workspace_member_list(workspace_id):
+    with get_session() as s:
+        for m in s.scalars(select(WorkspaceMember).where(WorkspaceMember.workspace_id == workspace_id)).all():
+            click.echo(f"{m.id}  {m.role:<10} {m.name}")
+
+
+@cli.group()
+def user():
+    """Manage the local user profile."""
+
+
+@user.group("profile")
+def user_profile():
+    pass
+
+
+@user_profile.command("get")
+def user_profile_get():
+    with get_session() as s:
+        profile = s.scalar(select(UserProfile).order_by(UserProfile.updated_at.desc()))
+        if not profile:
+            click.echo("No profile configured")
+            return
+        click.echo(f"id: {profile.id}\nname: {profile.name}\nemail: {profile.email}\nbio: {profile.bio}")
+
+
+@user_profile.command("update")
+@click.option("--name", default=None)
+@click.option("--email", default=None)
+@click.option("--bio", default=None)
+def user_profile_update(name, email, bio):
+    with get_session() as s:
+        profile = s.scalar(select(UserProfile).order_by(UserProfile.updated_at.desc()))
+        if not profile:
+            profile = UserProfile()
+            s.add(profile)
+        if name is not None: profile.name = name
+        if email is not None: profile.email = email
+        if bio is not None: profile.bio = bio
+        s.commit()
+        click.echo(profile.id)
+
+
+@issue.command("children")
+@click.argument("issue_id")
+def issue_children(issue_id):
+    with get_session() as s:
+        for child in s.scalars(select(Issue).where(Issue.parent_issue_id == issue_id).order_by(Issue.position, Issue.created_at)).all():
+            click.echo(f"{child.status.value}: {child.id} {child.title}")
+
+
+@issue.command("search")
+@click.argument("query")
+def issue_search(query):
+    needle = query.lower()
+    with get_session() as s:
+        for i in s.scalars(select(Issue)).all():
+            if needle in (" ".join([i.title, i.description] + [c.body for c in i.comments])).lower():
+                click.echo(f"{i.id}  {i.status.value:<12} {i.title}")
+
+
+@issue.command("usage")
+@click.argument("issue_id")
+def issue_usage(issue_id):
+    with get_session() as s:
+        runs = s.scalars(select(Run).where(Run.issue_id == issue_id)).all()
+        click.echo(f"estimated_tokens: {sum(r.token_estimate or 0 for r in runs)}\nruns: {len(runs)}")
+
+
+@issue.command("cancel-task")
+@click.argument("issue_id")
+def issue_cancel_task(issue_id):
+    with get_session() as s:
+        runs = s.scalars(select(Run).where(Run.issue_id == issue_id, Run.status == RunStatus.RUNNING)).all()
+        for run in runs:
+            run.status, run.error, run.finished_at = RunStatus.FAILED, "cancelled by user", datetime.now(timezone.utc)
+        s.commit()
+        click.echo(f"Cancelled {len(runs)} running task(s)")
+
+
+@issue.command("timeline")
+@click.argument("issue_id")
+def issue_timeline(issue_id):
+    with get_session() as s:
+        for event in s.scalars(select(TimelineEvent).where(TimelineEvent.issue_id == issue_id).order_by(TimelineEvent.created_at)).all():
+            click.echo(f"[{event.created_at}] {event.event_type}: {event.detail}")
+
+
+@issue.group("subscriber")
+def issue_subscriber():
+    pass
+
+
+@issue_subscriber.command("add")
+@click.argument("issue_id")
+@click.option("--name", required=True)
+def issue_subscriber_add(issue_id, name):
+    with get_session() as s:
+        item = IssueSubscriber(issue_id=issue_id, name=name)
+        s.add(item); s.commit(); click.echo(item.id)
+
+
+@issue_subscriber.command("list")
+@click.argument("issue_id")
+def issue_subscriber_list(issue_id):
+    with get_session() as s:
+        for item in s.scalars(select(IssueSubscriber).where(IssueSubscriber.issue_id == issue_id)).all():
+            click.echo(f"{item.id}  {item.name}")
+
+
+@issue.group("metadata")
+def issue_metadata():
+    pass
+
+
+@issue_metadata.command("set")
+@click.argument("issue_id")
+@click.option("--key", required=True)
+@click.option("--value", required=True)
+def issue_metadata_set(issue_id, key, value):
+    with get_session() as s:
+        item = s.scalar(select(IssueMetadata).where(IssueMetadata.issue_id == issue_id, IssueMetadata.key == key))
+        if not item:
+            item = IssueMetadata(issue_id=issue_id, key=key); s.add(item)
+        item.value = value; s.commit(); click.echo(f"{key}={value}")
+
+
+@issue_metadata.command("get")
+@click.argument("issue_id")
+def issue_metadata_get(issue_id):
+    with get_session() as s:
+        for item in s.scalars(select(IssueMetadata).where(IssueMetadata.issue_id == issue_id)).all():
+            click.echo(f"{item.key}={item.value}")
+
+
+@issue.command("reorder")
+@click.argument("issue_id")
+@click.option("--position", required=True, type=int)
+def issue_reorder(issue_id, position):
+    with get_session() as s:
+        item = s.get(Issue, issue_id)
+        if not item: raise click.ClickException("Issue not found")
+        item.position = position; s.commit(); click.echo(f"{item.id}: position={position}")
+
+
+def _read_skill_source(source):
+    cleanup = None
+    if source.startswith("http://") or source.startswith("https://"):
+        fd, archive = tempfile.mkstemp(suffix=".zip")
+        os.close(fd)
+        Path(archive).unlink(missing_ok=True)
+        urllib.request.urlretrieve(source, archive)
+        root = Path(tempfile.mkdtemp())
+        with zipfile.ZipFile(archive) as zf: zf.extractall(root)
+        Path(archive).unlink(missing_ok=True); cleanup = root
+    else:
+        root = Path(source)
+        if root.is_file() and root.suffix.lower() == ".zip":
+            target = Path(tempfile.mkdtemp())
+            with zipfile.ZipFile(root) as zf: zf.extractall(target)
+            root, cleanup = target, target
+    if not root.exists(): raise click.ClickException(f"Skill source not found: {source}")
+    files = [(str(p.relative_to(root)), p.read_text(encoding="utf-8")) for p in root.rglob("*") if p.is_file()]
+    return files, cleanup
+
+
+@skill.command("import")
+@click.argument("source")
+@click.option("--name", default=None)
+@click.option("--description", default="")
+def skill_import(source, name, description):
+    files, cleanup = _read_skill_source(source)
+    try:
+        with get_session() as s:
+            ws = get_active_workspace(s)
+            sk = Skill(workspace_id=ws.id, name=name or Path(source).stem, description=description, source_url=source)
+            s.add(sk); s.flush()
+            for filename, content in files: s.add(SkillFile(skill_id=sk.id, filename=filename, content=content))
+            s.commit(); click.echo(sk.id)
+    finally:
+        if cleanup: shutil.rmtree(cleanup, ignore_errors=True)
+
+
+@skill.command("refresh")
+@click.argument("skill_id")
+def skill_refresh(skill_id):
+    with get_session() as s:
+        sk = s.get(Skill, skill_id)
+        if not sk or not sk.source_url: raise click.ClickException("Skill has no import source")
+        files, cleanup = _read_skill_source(sk.source_url)
+        try:
+            sk.files.clear()
+            for filename, content in files: sk.files.append(SkillFile(filename=filename, content=content))
+            s.commit(); click.echo(f"Refreshed {sk.id}")
+        finally:
+            if cleanup: shutil.rmtree(cleanup, ignore_errors=True)
+
+
+@skill.command("search")
+@click.argument("query")
+def skill_search(query):
+    with get_session() as s:
+        q = query.lower()
+        for sk in s.scalars(select(Skill)).all():
+            if q in f"{sk.name} {sk.description}".lower(): click.echo(f"{sk.id}  {sk.name}")
+
+
+@squad.group("activity")
+def squad_activity():
+    pass
+
+
+@squad_activity.command("add")
+@click.argument("squad_id")
+@click.option("--evaluation", required=True)
+@click.option("--issue", "issue_id", default=None)
+def squad_activity_add(squad_id, evaluation, issue_id):
+    with get_session() as s:
+        item = SquadActivity(squad_id=squad_id, issue_id=issue_id, evaluation=evaluation)
+        s.add(item); s.commit(); click.echo(item.id)
+
+
+@squad_activity.command("list")
+@click.argument("squad_id")
+def squad_activity_list(squad_id):
+    with get_session() as s:
+        for item in s.scalars(select(SquadActivity).where(SquadActivity.squad_id == squad_id).order_by(SquadActivity.created_at)).all():
+            click.echo(f"[{item.created_at}] {item.evaluation}")
+
+
+@autopilot.command("trigger-list")
+@click.argument("autopilot_id")
+def autopilot_trigger_list(autopilot_id):
+    with get_session() as s:
+        for t in s.scalars(select(AutopilotTrigger).where(AutopilotTrigger.autopilot_id == autopilot_id)).all():
+            secret = f" /webhooks/{t.webhook_token}" if t.webhook_token else ""
+            click.echo(f"{t.id}  {t.type.value}  {t.cron_expression or ''}{secret}")
+
+
+@autopilot.command("trigger-delete")
+@click.argument("trigger_id")
+def autopilot_trigger_delete(trigger_id):
+    with get_session() as s:
+        t = s.get(AutopilotTrigger, trigger_id)
+        if not t: raise click.ClickException("Trigger not found")
+        s.delete(t); s.commit(); click.echo("deleted")
+
+
+@autopilot.command("trigger-update")
+@click.argument("trigger_id")
+@click.option("--cron", default=None)
+@click.option("--enabled", type=bool, default=None)
+def autopilot_trigger_update(trigger_id, cron, enabled):
+    with get_session() as s:
+        t = s.get(AutopilotTrigger, trigger_id)
+        if not t: raise click.ClickException("Trigger not found")
+        if cron is not None: t.cron_expression = cron; t.type = TriggerType.CRON
+        s.commit(); click.echo(t.id)
+
+
+@autopilot.command("trigger-rotate-url")
+@click.argument("trigger_id")
+def autopilot_trigger_rotate_url(trigger_id):
+    with get_session() as s:
+        t = s.get(AutopilotTrigger, trigger_id)
+        if not t: raise click.ClickException("Trigger not found")
+        t.webhook_token = secrets.token_urlsafe(32); t.type = TriggerType.WEBHOOK
+        s.commit(); click.echo(f"/webhooks/{t.webhook_token}")
+
+
+@repo.command("checkout")
+@click.argument("repo_id")
+@click.option("--path", required=True, type=click.Path(file_okay=False))
+def repo_checkout(repo_id, path):
+    with get_session() as s:
+        r = s.get(Repo, repo_id)
+        if not r: raise click.ClickException("Repo not found")
+        target = Path(path).resolve()
+        if target.exists() and any(target.iterdir()):
+            command = ["git", "-C", str(target), "pull", "--ff-only"]
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            command = ["git", "clone", r.url, str(target)]
+        completed = subprocess.run(command, capture_output=True, text=True)
+        if completed.returncode: raise click.ClickException(completed.stderr.strip())
+        r.local_path = str(target); s.commit(); click.echo(str(target))
+
+
+@repo.command("remove")
+@click.argument("repo_id")
+def repo_remove(repo_id):
+    with get_session() as s:
+        r = s.get(Repo, repo_id)
+        if not r: raise click.ClickException("Repo not found")
+        if r.local_path and Path(r.local_path).exists(): shutil.rmtree(r.local_path)
+        s.delete(r); s.commit(); click.echo("removed")
+
+
+@cli.group()
+def attachment():
+    """Upload and download local issue attachments."""
+
+
+@attachment.command("upload")
+@click.argument("file", type=click.Path(exists=True, dir_okay=False))
+@click.option("--issue", "issue_id", default=None)
+@click.option("--comment", "comment_id", default=None)
+def attachment_upload(file, issue_id, comment_id):
+    source = Path(file).resolve()
+    if not issue_id and not comment_id: raise click.UsageError("Pass --issue or --comment")
+    target_dir = Path("attachments"); target_dir.mkdir(exist_ok=True)
+    stored = target_dir / f"{secrets.token_hex(8)}-{source.name}"
+    shutil.copy2(source, stored)
+    with get_session() as s:
+        item = Attachment(comment_id=comment_id, issue_id=issue_id, filename=source.name, path=str(stored))
+        s.add(item); s.commit(); click.echo(item.id)
+
+
+@attachment.command("download")
+@click.argument("attachment_id")
+@click.option("--out", required=True, type=click.Path(dir_okay=False))
+def attachment_download(attachment_id, out):
+    with get_session() as s:
+        item = s.get(Attachment, attachment_id)
+        if not item: raise click.ClickException("Attachment not found")
+        shutil.copy2(item.path, out); click.echo(out)
+
+
+@cli.group()
+def chat():
+    """Manage standalone chat threads."""
+
+
+@chat.command("create")
+@click.option("--title", required=True)
+@click.option("--body", default=None)
+def chat_create(title, body):
+    with get_session() as s:
+        thread = ChatThread(title=title); s.add(thread); s.flush()
+        if body: s.add(ChatMessage(thread_id=thread.id, body=body))
+        s.commit(); click.echo(thread.id)
+
+
+@chat.command("history")
+def chat_history():
+    with get_session() as s:
+        for thread in s.scalars(select(ChatThread).order_by(ChatThread.created_at.desc())).all():
+            latest = thread.messages[-1].body if thread.messages else ""
+            click.echo(f"{thread.id}  {thread.title}: {latest}")
+
+
+@chat.command("thread")
+@click.argument("thread_id")
+def chat_thread(thread_id):
+    with get_session() as s:
+        thread = s.get(ChatThread, thread_id)
+        if not thread: raise click.ClickException("Chat thread not found")
+        click.echo(thread.title)
+        for message in thread.messages: click.echo(f"[{message.created_at}] {message.author}: {message.body}")
+
+
+@chat.command("send")
+@click.argument("thread_id")
+@click.option("--body", required=True)
+@click.option("--author", default="you")
+def chat_send(thread_id, body, author):
+    with get_session() as s:
+        if not s.get(ChatThread, thread_id): raise click.ClickException("Chat thread not found")
+        s.add(ChatMessage(thread_id=thread_id, author=author, body=body)); s.commit(); click.echo("sent")
+
+
+@workspace.group("mcp")
+def workspace_mcp():
+    """Register MCP protocol servers."""
+
+
+@workspace_mcp.command("add")
+@click.option("--name", required=True)
+@click.option("--transport", type=click.Choice(["stdio", "sse"]), default="stdio")
+@click.option("--command", default=None)
+@click.option("--args", "args_json", default="[]")
+@click.option("--url", default=None)
+@click.option("--config", default="{}")
+def workspace_mcp_add(name, transport, command, args_json, url, config):
+    if transport == "stdio" and not command: raise click.UsageError("stdio requires --command")
+    if transport == "sse" and not url: raise click.UsageError("sse requires --url")
+    with get_session() as s:
+        ws = get_active_workspace(s)
+        item = McpServer(workspace_id=ws.id, name=name, transport=transport, command=command, args_json=args_json, url=url, config_json=config)
+        s.add(item); s.commit(); click.echo(item.id)
+
+
+@workspace_mcp.command("list")
+def workspace_mcp_list():
+    with get_session() as s:
+        for item in s.scalars(select(McpServer)).all(): click.echo(f"{item.id}  {item.transport}  {item.name}")
+
+
+@workspace_mcp.command("remove")
+@click.argument("server_id")
+def workspace_mcp_remove(server_id):
+    with get_session() as s:
+        item = s.get(McpServer, server_id)
+        if not item: raise click.ClickException("MCP server not found")
+        s.delete(item); s.commit(); click.echo("removed")
+
+
+@agent.group("mcp")
+def agent_mcp():
+    """Attach MCP servers to agents."""
+
+
+@agent_mcp.command("add")
+@click.argument("agent_id")
+@click.option("--server", "server_id", required=True)
+def agent_mcp_add(agent_id, server_id):
+    with get_session() as s:
+        a, server = s.get(Agent, agent_id), s.get(McpServer, server_id)
+        if not a or not server: raise click.ClickException("Agent or MCP server not found")
+        if server not in a.mcp_servers: a.mcp_servers.append(server); s.commit()
+        click.echo("attached")
+
+
+@agent_mcp.command("remove")
+@click.argument("agent_id")
+@click.option("--server", "server_id", required=True)
+def agent_mcp_remove(agent_id, server_id):
+    with get_session() as s:
+        a, server = s.get(Agent, agent_id), s.get(McpServer, server_id)
+        if not a or not server: raise click.ClickException("Agent or MCP server not found")
+        if server in a.mcp_servers: a.mcp_servers.remove(server); s.commit()
+        click.echo("detached")
 
 
 if __name__ == "__main__":

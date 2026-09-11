@@ -58,6 +58,11 @@ class RunStatus(str, enum.Enum):
     FAILED = "failed"
 
 
+class TriggerType(str, enum.Enum):
+    CRON = "cron"
+    WEBHOOK = "webhook"
+
+
 class PropertyType(str, enum.Enum):
     TEXT = "text"
     NUMBER = "number"
@@ -71,6 +76,25 @@ class Workspace(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     name: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class WorkspaceMember(Base):
+    __tablename__ = "workspace_members"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    role: Mapped[str] = mapped_column(String, default="member")
+
+
+class UserProfile(Base):
+    __tablename__ = "user_profiles"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String, default="")
+    email: Mapped[str] = mapped_column(String, default="")
+    bio: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
 
 class Runtime(Base):
@@ -94,6 +118,13 @@ agent_skills = Table(
     Column("skill_id", ForeignKey("skills.id"), primary_key=True),
 )
 
+agent_mcp_servers = Table(
+    "agent_mcp_servers",
+    Base.metadata,
+    Column("agent_id", ForeignKey("agents.id"), primary_key=True),
+    Column("server_id", ForeignKey("mcp_servers.id"), primary_key=True),
+)
+
 issue_labels = Table(
     "issue_labels",
     Base.metadata,
@@ -115,6 +146,7 @@ class Agent(Base):
     runtime: Mapped["Runtime"] = relationship(back_populates="agents")
     runs: Mapped[list["Run"]] = relationship(back_populates="agent")
     skills: Mapped[list["Skill"]] = relationship(secondary=agent_skills, back_populates="agents")
+    mcp_servers: Mapped[list["McpServer"]] = relationship(secondary=agent_mcp_servers, back_populates="agents")
 
 
 class Project(Base):
@@ -151,6 +183,10 @@ class Issue(Base):
     runs: Mapped[list["Run"]] = relationship(back_populates="issue", order_by="Run.created_at")
     labels: Mapped[list["Label"]] = relationship(secondary=issue_labels, back_populates="issues")
     property_values: Mapped[list["PropertyValue"]] = relationship(back_populates="issue")
+    metadata_values: Mapped[list["IssueMetadata"]] = relationship(back_populates="issue", cascade="all, delete-orphan")
+    subscribers: Mapped[list["IssueSubscriber"]] = relationship(back_populates="issue", cascade="all, delete-orphan")
+    timeline: Mapped[list["TimelineEvent"]] = relationship(back_populates="issue", order_by="TimelineEvent.created_at", cascade="all, delete-orphan")
+    attachments: Mapped[list["Attachment"]] = relationship(back_populates="issue", cascade="all, delete-orphan")
 
 
 class Label(Base):
@@ -199,6 +235,36 @@ class Comment(Base):
     issue: Mapped["Issue"] = relationship(back_populates="comments")
 
 
+class IssueMetadata(Base):
+    __tablename__ = "issue_metadata"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    issue_id: Mapped[str] = mapped_column(ForeignKey("issues.id"), nullable=False)
+    key: Mapped[str] = mapped_column(String, nullable=False)
+    value: Mapped[str] = mapped_column(Text, default="")
+    issue: Mapped["Issue"] = relationship(back_populates="metadata_values")
+
+
+class IssueSubscriber(Base):
+    __tablename__ = "issue_subscribers"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    issue_id: Mapped[str] = mapped_column(ForeignKey("issues.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    issue: Mapped["Issue"] = relationship(back_populates="subscribers")
+
+
+class TimelineEvent(Base):
+    __tablename__ = "timeline_events"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    issue_id: Mapped[str] = mapped_column(ForeignKey("issues.id"), nullable=False)
+    event_type: Mapped[str] = mapped_column(String, nullable=False)
+    detail: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    issue: Mapped["Issue"] = relationship(back_populates="timeline")
+
+
 class Run(Base):
     __tablename__ = "runs"
 
@@ -209,6 +275,7 @@ class Run(Base):
     status: Mapped[RunStatus] = mapped_column(Enum(RunStatus), default=RunStatus.PENDING)
     output: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    token_estimate: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -240,6 +307,16 @@ class SquadMember(Base):
     agent: Mapped["Agent"] = relationship()
 
 
+class SquadActivity(Base):
+    __tablename__ = "squad_activities"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    squad_id: Mapped[str] = mapped_column(ForeignKey("squads.id"), nullable=False)
+    issue_id: Mapped[str | None] = mapped_column(ForeignKey("issues.id"), nullable=True)
+    evaluation: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
 class Skill(Base):
     __tablename__ = "skills"
 
@@ -248,8 +325,20 @@ class Skill(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     description: Mapped[str] = mapped_column(Text, default="")
     content: Mapped[str] = mapped_column(Text, default="")
+    source_url: Mapped[str | None] = mapped_column(String, nullable=True)
 
     agents: Mapped[list["Agent"]] = relationship(secondary=agent_skills, back_populates="skills")
+    files: Mapped[list["SkillFile"]] = relationship(back_populates="skill", cascade="all, delete-orphan")
+
+
+class SkillFile(Base):
+    __tablename__ = "skill_files"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    skill_id: Mapped[str] = mapped_column(ForeignKey("skills.id"), nullable=False)
+    filename: Mapped[str] = mapped_column(String, nullable=False)
+    content: Mapped[str] = mapped_column(Text, default="")
+    skill: Mapped["Skill"] = relationship(back_populates="files")
 
 
 class Autopilot(Base):
@@ -273,7 +362,9 @@ class AutopilotTrigger(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     autopilot_id: Mapped[str] = mapped_column(ForeignKey("autopilots.id"), nullable=False)
-    cron_expression: Mapped[str] = mapped_column(String, nullable=False)
+    cron_expression: Mapped[str | None] = mapped_column(String, nullable=True)
+    type: Mapped[TriggerType] = mapped_column(Enum(TriggerType), default=TriggerType.CRON, nullable=False)
+    webhook_token: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     autopilot: Mapped["Autopilot"] = relationship(back_populates="triggers")
@@ -298,3 +389,49 @@ class Repo(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     url: Mapped[str] = mapped_column(String, nullable=False)
     local_path: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class Attachment(Base):
+    __tablename__ = "attachments"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    comment_id: Mapped[str | None] = mapped_column(ForeignKey("comments.id"), nullable=True)
+    issue_id: Mapped[str | None] = mapped_column(ForeignKey("issues.id"), nullable=True)
+    filename: Mapped[str] = mapped_column(String, nullable=False)
+    path: Mapped[str] = mapped_column(String, nullable=False)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    issue: Mapped["Issue | None"] = relationship(back_populates="attachments")
+
+
+class ChatThread(Base):
+    __tablename__ = "chat_threads"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    messages: Mapped[list["ChatMessage"]] = relationship(back_populates="thread", order_by="ChatMessage.created_at", cascade="all, delete-orphan")
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    thread_id: Mapped[str] = mapped_column(ForeignKey("chat_threads.id"), nullable=False)
+    author: Mapped[str] = mapped_column(String, default="you")
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    thread: Mapped["ChatThread"] = relationship(back_populates="messages")
+
+
+class McpServer(Base):
+    __tablename__ = "mcp_servers"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    transport: Mapped[str] = mapped_column(String, default="stdio")
+    command: Mapped[str | None] = mapped_column(String, nullable=True)
+    args_json: Mapped[str] = mapped_column(Text, default="[]")
+    url: Mapped[str | None] = mapped_column(String, nullable=True)
+    config_json: Mapped[str] = mapped_column(Text, default="{}")
+    agents: Mapped[list["Agent"]] = relationship(secondary=agent_mcp_servers, back_populates="mcp_servers")

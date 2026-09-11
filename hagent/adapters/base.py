@@ -7,6 +7,7 @@ this one interface. The task engine, CLI, and web dashboard only ever talk to
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Callable
 
 
 @dataclass
@@ -21,7 +22,13 @@ class BaseRuntime(ABC):
         self.config = config
 
     @abstractmethod
-    def run(self, prompt: str, context: str = "") -> RuntimeResult:
+    def run(
+        self,
+        prompt: str,
+        context: str = "",
+        tools: list[dict] | None = None,
+        tool_executor: Callable[[str, dict], dict | str] | None = None,
+    ) -> RuntimeResult:
         """Execute a prompt (with optional agent instructions as context) and return the result.
 
         Raises RuntimeError (or a subclass) on failure — callers persist that as the

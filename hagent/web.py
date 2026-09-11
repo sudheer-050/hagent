@@ -3,11 +3,11 @@
 from pathlib import Path
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, JSONResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 
-from hagent.db import get_or_create_default_workspace, get_session, init_db
+from hagent.db import get_active_workspace, get_or_create_default_workspace, get_session, init_db
 from hagent.engine import run_issue as engine_run_issue
 from hagent.models import (
     Agent,
@@ -24,8 +24,15 @@ from hagent.models import (
     Skill,
     Squad,
     SquadMember,
+    TimelineEvent,
+    ChatThread,
+    ChatMessage,
+    Workspace,
+    UserProfile,
 )
-from hagent.scheduler import run_autopilot_once, start_scheduler, sync_scheduler_jobs
+from hagent.scheduler import find_webhook_trigger, run_autopilot_once, start_scheduler, sync_scheduler_jobs
+
+get_or_create_default_workspace = get_active_workspace
 
 app = FastAPI(title="Hagent")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -40,6 +47,41 @@ def _startup():
 @app.get("/")
 def root():
     return RedirectResponse(url="/projects")
+
+
+@app.post("/webhooks/{token}")
+def autopilot_webhook(token: str):
+    trigger = find_webhook_trigger(token)
+    if not trigger:
+        return JSONResponse({"error": "unknown webhook"}, status_code=404)
+    result = run_autopilot_once(trigger.autopilot_id)
+    if result is None:
+        return JSONResponse({"error": "autopilot disabled"}, status_code=409)
+    return {"autopilot_run_id": result.id, "status": result.status, "summary": result.summary}
+
+
+@app.get("/workspaces")
+def workspaces_page():
+    with get_session() as s:
+        rows = s.scalars(select(Workspace)).all()
+        return HTMLResponse("<h1>Workspaces</h1>" + "".join(f"<p>{w.id} {w.name}</p>" for w in rows))
+
+
+@app.get("/profile")
+def profile_page():
+    with get_session() as s:
+        profile = s.scalar(select(UserProfile).order_by(UserProfile.updated_at.desc()))
+        if not profile:
+            return HTMLResponse("<h1>Profile</h1><p>No profile configured.</p>")
+        return HTMLResponse(f"<h1>{profile.name}</h1><p>{profile.email}</p><p>{profile.bio}</p>")
+
+
+@app.get("/chat")
+def chat_page():
+    with get_session() as s:
+        threads = s.scalars(select(ChatThread).order_by(ChatThread.created_at.desc())).all()
+        html = "<h1>Chat</h1>" + "".join(f"<article><h2>{t.title}</h2>" + "".join(f"<p>{m.author}: {m.body}</p>" for m in t.messages) + "</article>" for t in threads)
+        return HTMLResponse(html)
 
 
 # --- projects ---
@@ -121,6 +163,7 @@ def issue_set_status(issue_id: str, status: str = Form(...)):
     with get_session() as s:
         i = s.get(Issue, issue_id)
         i.status = IssueStatus(status)
+        s.add(TimelineEvent(issue_id=i.id, event_type="status_changed", detail=status))
         s.commit()
         project_id = i.project_id
     return RedirectResponse(url=f"/projects/{project_id}", status_code=303)
@@ -131,6 +174,7 @@ def issue_assign(issue_id: str, agent_id: str = Form("")):
     with get_session() as s:
         i = s.get(Issue, issue_id)
         i.assignee_agent_id = agent_id or None
+        s.add(TimelineEvent(issue_id=i.id, event_type="assigned", detail=agent_id or "unassigned"))
         s.commit()
     return RedirectResponse(url=f"/issues/{issue_id}", status_code=303)
 
