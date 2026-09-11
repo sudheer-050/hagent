@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+{% if task %}
+<h2>Task <code>{{ task.id }}</code></h2>
+<p><strong>Status:</strong> <span class="status-{{ task.status.value }}">{{ task.status.value }}</span></p>
+<p><strong>Agent:</strong> <code>{{ task.agent_id }}</code></p>
+<p><strong>Prompt:</strong></p>
+<pre>{{ task.prompt }}</pre>
+{% if task.output %}
+<p><strong>Output:</strong></p>
+<pre>{{ task.output }}</pre>
+{% endif %}
+{% if task.error %}
+<p><strong>Error:</strong></p>
+<pre style="color:#d1242f">{{ task.error }}</pre>
+{% endif %}
+<form method="post" action="/tasks/{{ task.id }}/run">
+  <button type="submit">Run again</button>
+</form>
+{% else %}
+<p>Task not found.</p>
+{% endif %}
+<p><a href="/">&larr; back to dashboard</a></p>
+{% endblock %}
