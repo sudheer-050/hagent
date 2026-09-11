@@ -1070,7 +1070,7 @@ def chat():
 @click.option("--body", default=None)
 def chat_create(title, body):
     with get_session() as s:
-        thread = ChatThread(title=title); s.add(thread); s.flush()
+        thread = ChatThread(workspace_id=get_active_workspace(s).id, title=title); s.add(thread); s.flush()
         if body: s.add(ChatMessage(thread_id=thread.id, body=body))
         s.commit(); click.echo(thread.id)
 
@@ -1166,5 +1166,606 @@ def agent_mcp_remove(agent_id, server_id):
         click.echo("detached")
 
 
+
+# --- Multica-compatible lifecycle and history commands ---
+
+@agent.command("archive")
+@click.argument("agent_id")
+def agent_archive(agent_id):
+    with get_session() as s:
+        item = s.get(Agent, agent_id)
+        if not item:
+            raise click.ClickException("Agent not found")
+        item.archived = True
+        s.commit()
+        click.echo(f"Archived agent {item.id}")
+
+
+@agent.command("restore")
+@click.argument("agent_id")
+def agent_restore(agent_id):
+    with get_session() as s:
+        item = s.get(Agent, agent_id)
+        if not item:
+            raise click.ClickException("Agent not found")
+        item.archived = False
+        s.commit()
+        click.echo(f"Restored agent {item.id}")
+
+
+@agent.command("update")
+@click.argument("agent_id")
+@click.option("--name", default=None)
+@click.option("--runtime", "runtime_id", default=None)
+@click.option("--instructions", default=None)
+def agent_update(agent_id, name, runtime_id, instructions):
+    with get_session() as s:
+        item = s.get(Agent, agent_id)
+        if not item:
+            raise click.ClickException("Agent not found")
+        if name is not None:
+            item.name = name
+        if runtime_id is not None:
+            if not s.get(Runtime, runtime_id):
+                raise click.ClickException("Runtime not found")
+            item.runtime_id = runtime_id
+        if instructions is not None:
+            item.instructions = instructions
+        s.commit()
+        click.echo(item.id)
+
+
+@agent.command("copy")
+@click.argument("agent_id")
+@click.option("--name", required=True)
+@click.option("--runtime", "runtime_id", default=None)
+def agent_copy(agent_id, name, runtime_id):
+    with get_session() as s:
+        source = s.get(Agent, agent_id)
+        if not source:
+            raise click.ClickException("Agent not found")
+        target = Agent(
+            workspace_id=source.workspace_id,
+            runtime_id=runtime_id or source.runtime_id,
+            name=name,
+            instructions=source.instructions,
+            env_json=source.env_json,
+        )
+        if not s.get(Runtime, target.runtime_id):
+            raise click.ClickException("Runtime not found")
+        s.add(target)
+        s.flush()
+        target.skills.extend(source.skills)
+        target.mcp_servers.extend(source.mcp_servers)
+        s.commit()
+        click.echo(target.id)
+
+
+@agent.command("tasks")
+@click.argument("agent_id")
+def agent_tasks(agent_id):
+    with get_session() as s:
+        if not s.get(Agent, agent_id):
+            raise click.ClickException("Agent not found")
+        for run in s.scalars(select(Run).where(Run.agent_id == agent_id).order_by(Run.created_at.desc())).all():
+            click.echo(f"{run.id}  {run.status.value:<10} {run.issue_id}  {run.prompt}")
+
+
+@agent.group("env")
+def agent_env():
+    """Read and update an agent's custom environment."""
+
+
+@agent_env.command("get")
+@click.argument("agent_id")
+def agent_env_get(agent_id):
+    with get_session() as s:
+        item = s.get(Agent, agent_id)
+        if not item:
+            raise click.ClickException("Agent not found")
+        click.echo(item.env_json or "{}")
+
+
+@agent_env.command("set")
+@click.argument("agent_id")
+@click.option("--key", required=True)
+@click.option("--value", required=True)
+def agent_env_set(agent_id, key, value):
+    with get_session() as s:
+        item = s.get(Agent, agent_id)
+        if not item:
+            raise click.ClickException("Agent not found")
+        values = json.loads(item.env_json or "{}")
+        values[key] = value
+        item.env_json = json.dumps(values, sort_keys=True)
+        s.commit()
+        click.echo(item.env_json)
+
+
+@agent.command("avatar")
+@click.argument("agent_id")
+@click.argument("file", type=click.Path(exists=True, dir_okay=False))
+def agent_avatar(agent_id, file):
+    with get_session() as s:
+        item = s.get(Agent, agent_id)
+        if not item:
+            raise click.ClickException("Agent not found")
+        target_dir = Path(".hagent") / "avatars"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / f"{item.id}-{Path(file).name}"
+        shutil.copy2(file, target)
+        item.avatar_path = str(target)
+        s.commit()
+        click.echo(str(target))
+
+
+@runtime.command("rename")
+@click.argument("runtime_id")
+@click.option("--name", required=True)
+def runtime_rename(runtime_id, name):
+    with get_session() as s:
+        item = s.get(Runtime, runtime_id)
+        if not item:
+            raise click.ClickException("Runtime not found")
+        item.name = name
+        s.commit()
+        click.echo(item.id)
+
+
+@runtime.command("update")
+@click.argument("runtime_id")
+@click.option("--model", default=None)
+@click.option("--config", default=None)
+def runtime_update(runtime_id, model, config):
+    with get_session() as s:
+        item = s.get(Runtime, runtime_id)
+        if not item:
+            raise click.ClickException("Runtime not found")
+        if model is not None:
+            item.model = model
+        if config is not None:
+            json.loads(config)
+            item.config_json = config
+        s.commit()
+        click.echo(item.id)
+
+
+@runtime.command("delete")
+@click.argument("runtime_id")
+def runtime_delete(runtime_id):
+    with get_session() as s:
+        item = s.get(Runtime, runtime_id)
+        if not item:
+            raise click.ClickException("Runtime not found")
+        if item.agents:
+            raise click.ClickException("Runtime is still used by an agent")
+        s.delete(item)
+        s.commit()
+        click.echo("deleted")
+
+
+@runtime.command("usage")
+@click.argument("runtime_id")
+def runtime_usage(runtime_id):
+    with get_session() as s:
+        item = s.get(Runtime, runtime_id)
+        if not item:
+            raise click.ClickException("Runtime not found")
+        runs = s.scalars(select(Run).join(Agent).where(Agent.runtime_id == runtime_id)).all()
+        click.echo(f"estimated_tokens: {sum(r.token_estimate or 0 for r in runs)}\nruns: {len(runs)}")
+
+
+@runtime.command("activity")
+@click.argument("runtime_id")
+def runtime_activity(runtime_id):
+    with get_session() as s:
+        if not s.get(Runtime, runtime_id):
+            raise click.ClickException("Runtime not found")
+        runs = s.scalars(select(Run).join(Agent).where(Agent.runtime_id == runtime_id).order_by(Run.created_at.desc())).all()
+        for run in runs:
+            click.echo(f"{run.created_at}  {run.status.value:<10} {run.id}")
+
+
+@runtime.group("profile")
+def runtime_profile():
+    """Manage named local runtime profiles."""
+
+
+@runtime_profile.command("list")
+@click.argument("runtime_id")
+def runtime_profile_list(runtime_id):
+    with get_session() as s:
+        item = s.get(Runtime, runtime_id)
+        if not item:
+            raise click.ClickException("Runtime not found")
+        profiles = json.loads(item.config_json or "{}").get("profiles", {})
+        for name in profiles:
+            click.echo(name)
+
+
+@runtime_profile.command("set")
+@click.argument("runtime_id")
+@click.argument("profile_name")
+@click.option("--config", required=True)
+def runtime_profile_set(runtime_id, profile_name, config):
+    with get_session() as s:
+        item = s.get(Runtime, runtime_id)
+        if not item:
+            raise click.ClickException("Runtime not found")
+        profile = json.loads(config)
+        values = json.loads(item.config_json or "{}")
+        values.setdefault("profiles", {})[profile_name] = profile
+        item.config_json = json.dumps(values, sort_keys=True)
+        s.commit()
+        click.echo(profile_name)
+
+
+@skill.command("delete")
+@click.argument("skill_id")
+def skill_delete(skill_id):
+    with get_session() as s:
+        item = s.get(Skill, skill_id)
+        if not item:
+            raise click.ClickException("Skill not found")
+        s.delete(item)
+        s.commit()
+        click.echo("deleted")
+
+
+@skill.command("update")
+@click.argument("skill_id")
+@click.option("--name", default=None)
+@click.option("--description", default=None)
+@click.option("--content", default=None)
+def skill_update(skill_id, name, description, content):
+    with get_session() as s:
+        item = s.get(Skill, skill_id)
+        if not item:
+            raise click.ClickException("Skill not found")
+        if name is not None:
+            item.name = name
+        if description is not None:
+            item.description = description
+        if content is not None:
+            item.content = content
+        s.commit()
+        click.echo(item.id)
+
+
+@skill.group("files")
+def skill_files():
+    """Work with the files in a skill bundle."""
+
+
+@skill_files.command("list")
+@click.argument("skill_id")
+def skill_files_list(skill_id):
+    with get_session() as s:
+        item = s.get(Skill, skill_id)
+        if not item:
+            raise click.ClickException("Skill not found")
+        for file in item.files:
+            click.echo(f"{file.id}  {file.filename}")
+
+
+@skill_files.command("get")
+@click.argument("skill_id")
+@click.argument("filename")
+def skill_files_get(skill_id, filename):
+    with get_session() as s:
+        item = s.get(Skill, skill_id)
+        if not item:
+            raise click.ClickException("Skill not found")
+        file = next((f for f in item.files if f.filename == filename), None)
+        if not file:
+            raise click.ClickException("Skill file not found")
+        click.echo(file.content)
+
+
+@squad.command("get")
+@click.argument("squad_id")
+def squad_get(squad_id):
+    with get_session() as s:
+        item = s.get(Squad, squad_id)
+        if not item:
+            raise click.ClickException("Squad not found")
+        click.echo(f"id: {item.id}\nname: {item.name}\ndescription: {item.description}\narchived: {item.archived}")
+        for member in item.members:
+            click.echo(f"member: {member.agent_id}  {member.role}")
+
+
+@squad.command("update")
+@click.argument("squad_id")
+@click.option("--name", default=None)
+@click.option("--description", default=None)
+def squad_update(squad_id, name, description):
+    with get_session() as s:
+        item = s.get(Squad, squad_id)
+        if not item:
+            raise click.ClickException("Squad not found")
+        if name is not None:
+            item.name = name
+        if description is not None:
+            item.description = description
+        s.commit()
+        click.echo(item.id)
+
+
+@squad.command("delete")
+@click.argument("squad_id")
+def squad_delete(squad_id):
+    with get_session() as s:
+        item = s.get(Squad, squad_id)
+        if not item:
+            raise click.ClickException("Squad not found")
+        item.archived = True
+        s.commit()
+        click.echo(f"Archived squad {item.id}")
+
+
+@autopilot.command("get")
+@click.argument("autopilot_id")
+def autopilot_get(autopilot_id):
+    with get_session() as s:
+        item = s.get(Autopilot, autopilot_id)
+        if not item:
+            raise click.ClickException("Autopilot not found")
+        click.echo(f"id: {item.id}\nname: {item.name}\nagent_id: {item.agent_id}\nproject_id: {item.project_id}\nenabled: {item.enabled}")
+        for trigger in item.triggers:
+            value = trigger.cron_expression if trigger.type.value == "cron" else "<redacted>"
+            click.echo(f"trigger: {trigger.id} {trigger.type.value} {value}")
+
+
+@autopilot.command("update")
+@click.argument("autopilot_id")
+@click.option("--name", default=None)
+@click.option("--enabled/--disabled", default=None)
+@click.option("--filter-status", default=None, type=click.Choice([s.value for s in IssueStatus]))
+def autopilot_update(autopilot_id, name, enabled, filter_status):
+    with get_session() as s:
+        item = s.get(Autopilot, autopilot_id)
+        if not item:
+            raise click.ClickException("Autopilot not found")
+        if name is not None:
+            item.name = name
+        if enabled is not None:
+            item.enabled = enabled
+        if filter_status is not None:
+            item.filter_status = IssueStatus(filter_status)
+        s.commit()
+        click.echo(item.id)
+
+
+@autopilot.command("delete")
+@click.argument("autopilot_id")
+def autopilot_delete(autopilot_id):
+    with get_session() as s:
+        item = s.get(Autopilot, autopilot_id)
+        if not item:
+            raise click.ClickException("Autopilot not found")
+        item.enabled = False
+        s.commit()
+        click.echo(f"Disabled autopilot {item.id}")
+
+
+@issue.command("update")
+@click.argument("issue_id")
+@click.option("--title", default=None)
+@click.option("--description", default=None)
+@click.option("--status", default=None, type=click.Choice([s.value for s in IssueStatus]))
+@click.option("--assignee", "assignee_agent_id", default=None)
+@click.option("--parent", "parent_issue_id", default=None)
+@click.option("--position", default=None, type=int)
+def issue_update(issue_id, title, description, status, assignee_agent_id, parent_issue_id, position):
+    with get_session() as s:
+        item = s.get(Issue, issue_id)
+        if not item:
+            raise click.ClickException("Issue not found")
+        if title is not None:
+            item.title = title
+        if description is not None:
+            item.description = description
+        if status is not None:
+            item.status = IssueStatus(status)
+            s.add(TimelineEvent(issue_id=item.id, event_type="status_changed", detail=status))
+        if assignee_agent_id is not None:
+            if assignee_agent_id and not s.get(Agent, assignee_agent_id):
+                raise click.ClickException("Agent not found")
+            item.assignee_agent_id = assignee_agent_id or None
+            s.add(TimelineEvent(issue_id=item.id, event_type="assigned", detail=assignee_agent_id or "unassigned"))
+        if parent_issue_id is not None:
+            item.parent_issue_id = parent_issue_id or None
+        if position is not None:
+            item.position = position
+        s.commit()
+        click.echo(item.id)
+
+
+@issue.command("runs")
+@click.argument("issue_id")
+def issue_runs(issue_id):
+    with get_session() as s:
+        if not s.get(Issue, issue_id):
+            raise click.ClickException("Issue not found")
+        for run in s.scalars(select(Run).where(Run.issue_id == issue_id).order_by(Run.created_at.desc())).all():
+            click.echo(f"{run.id}  {run.status.value:<10} {run.created_at}  {run.agent_id}")
+
+
+@issue.command("run-messages")
+@click.argument("run_id")
+def issue_run_messages(run_id):
+    with get_session() as s:
+        run = s.get(Run, run_id)
+        if not run:
+            raise click.ClickException("Run not found")
+        transcript = json.loads(run.transcript_json or "{}")
+        if transcript:
+            click.echo(json.dumps(transcript, indent=2))
+        if run.output:
+            click.echo(run.output)
+
+
+@project.command("update")
+@click.argument("project_id")
+@click.option("--name", default=None)
+@click.option("--description", default=None)
+def project_update(project_id, name, description):
+    with get_session() as s:
+        item = s.get(Project, project_id)
+        if not item:
+            raise click.ClickException("Project not found")
+        if name is not None:
+            item.name = name
+        if description is not None:
+            item.description = description
+        s.commit()
+        click.echo(item.id)
+
+
+@project.command("delete")
+@click.argument("project_id")
+def project_delete(project_id):
+    with get_session() as s:
+        item = s.get(Project, project_id)
+        if not item:
+            raise click.ClickException("Project not found")
+        item.status = ProjectStatus.COMPLETED
+        s.commit()
+        click.echo(f"Archived project {item.id}")
+
+
+@label.command("get")
+@click.argument("label_id")
+def label_get(label_id):
+    with get_session() as s:
+        item = s.get(Label, label_id)
+        if not item:
+            raise click.ClickException("Label not found")
+        click.echo(f"id: {item.id}\nname: {item.name}\ncolor: {item.color}")
+
+
+@label.command("update")
+@click.argument("label_id")
+@click.option("--name", default=None)
+@click.option("--color", default=None)
+def label_update(label_id, name, color):
+    with get_session() as s:
+        item = s.get(Label, label_id)
+        if not item:
+            raise click.ClickException("Label not found")
+        if name is not None:
+            item.name = name
+        if color is not None:
+            item.color = color
+        s.commit()
+        click.echo(item.id)
+
+
+@label.command("delete")
+@click.argument("label_id")
+def label_delete(label_id):
+    with get_session() as s:
+        item = s.get(Label, label_id)
+        if not item:
+            raise click.ClickException("Label not found")
+        s.delete(item)
+        s.commit()
+        click.echo("deleted")
+
+
+@property.command("get")
+@click.argument("property_id")
+def property_get(property_id):
+    with get_session() as s:
+        item = s.get(Property, property_id)
+        if not item:
+            raise click.ClickException("Property not found")
+        click.echo(f"id: {item.id}\nname: {item.name}\ntype: {item.type.value}\narchived: {item.archived}\noptions: {item.options_json}")
+
+
+@property.command("update")
+@click.argument("property_id")
+@click.option("--name", default=None)
+@click.option("--options", default=None)
+def property_update(property_id, name, options):
+    with get_session() as s:
+        item = s.get(Property, property_id)
+        if not item:
+            raise click.ClickException("Property not found")
+        if name is not None:
+            item.name = name
+        if options is not None:
+            json.loads(options)
+            item.options_json = options
+        s.commit()
+        click.echo(item.id)
+
+
+@property.command("archive")
+@click.argument("property_id")
+def property_archive(property_id):
+    with get_session() as s:
+        item = s.get(Property, property_id)
+        if not item:
+            raise click.ClickException("Property not found")
+        item.archived = True
+        s.commit()
+        click.echo(item.id)
+
+
+@property.command("unarchive")
+@click.argument("property_id")
+def property_unarchive(property_id):
+    with get_session() as s:
+        item = s.get(Property, property_id)
+        if not item:
+            raise click.ClickException("Property not found")
+        item.archived = False
+        s.commit()
+        click.echo(item.id)
+
+
+@daemon.command("status")
+def daemon_status():
+    from hagent.scheduler import get_scheduler
+    scheduler = get_scheduler()
+    if scheduler is None or not scheduler.running:
+        click.echo("stopped")
+        return
+    click.echo(f"running jobs={len(scheduler.get_jobs())}")
+
+
+@daemon.command("stop")
+def daemon_stop():
+    from hagent.scheduler import get_scheduler
+    scheduler = get_scheduler()
+    if scheduler is None or not scheduler.running:
+        click.echo("stopped")
+        return
+    scheduler.shutdown()
+    click.echo("stopped")
+
+
+@daemon.command("restart")
+def daemon_restart():
+    from hagent.scheduler import start_scheduler
+    from hagent.scheduler import get_scheduler
+    scheduler = get_scheduler()
+    if scheduler is not None and scheduler.running:
+        scheduler.shutdown()
+    start_scheduler()
+    click.echo("running")
+
+
+@daemon.command("disk-usage")
+def daemon_disk_usage():
+    root = Path(".")
+    total = sum(path.stat().st_size for path in root.rglob("*") if path.is_file() and ".git" not in path.parts)
+    click.echo(f"workspace_bytes: {total}")
+
+
+@daemon.command("logs")
+def daemon_logs():
+    click.echo("Hagent scheduler logs are emitted by the foreground process.")
 if __name__ == "__main__":
     cli()

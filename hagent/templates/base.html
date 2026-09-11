@@ -22,6 +22,7 @@
     .sidebar nav a:hover { background: #f0f0f0; }
     .sidebar nav a.active { background: #eef2ff; color: #3730a3; font-weight: 600; }
     .main { flex: 1; padding: 1.5rem 2rem; max-width: 1200px; }
+    .muted { color: #777; }
     h2 { margin-top: 0; }
     table { border-collapse: collapse; width: 100%; margin-top: 0.5rem; background: #fff; }
     th, td { text-align: left; padding: 0.45rem 0.6rem; border-bottom: 1px solid #eee; font-size: 0.88rem; }
@@ -64,6 +65,9 @@
     <h1><a href="/">Hagent</a></h1>
     <nav>
       <a href="/projects" class="{{ 'active' if active == 'projects' }}">Projects</a>
+      <a href="/workspaces" class="{{ 'active' if active == 'workspaces' }}">Workspaces</a>
+      <a href="/profile" class="{{ 'active' if active == 'profile' }}">Profile</a>
+      <a href="/chat" class="{{ 'active' if active == 'chat' }}">Chat</a>
       <a href="/agents" class="{{ 'active' if active == 'agents' }}">Agents &amp; Runtimes</a>
       <a href="/squads" class="{{ 'active' if active == 'squads' }}">Squads</a>
       <a href="/skills" class="{{ 'active' if active == 'skills' }}">Skills</a>

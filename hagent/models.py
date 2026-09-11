@@ -56,6 +56,7 @@ class RunStatus(str, enum.Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class TriggerType(str, enum.Enum):
@@ -106,6 +107,7 @@ class Runtime(Base):
     type: Mapped[RuntimeType] = mapped_column(Enum(RuntimeType), nullable=False)
     model: Mapped[str] = mapped_column(String, nullable=False)
     config_json: Mapped[str] = mapped_column(Text, default="{}")
+    archived: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     agents: Mapped[list["Agent"]] = relationship(back_populates="runtime")
@@ -141,6 +143,9 @@ class Agent(Base):
     runtime_id: Mapped[str] = mapped_column(ForeignKey("runtimes.id"), nullable=False)
     name: Mapped[str] = mapped_column(String, nullable=False)
     instructions: Mapped[str] = mapped_column(Text, default="")
+    archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    avatar_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    env_json: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     runtime: Mapped["Runtime"] = relationship(back_populates="agents")
@@ -276,6 +281,7 @@ class Run(Base):
     output: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     token_estimate: Mapped[int] = mapped_column(Integer, default=0)
+    transcript_json: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -291,6 +297,7 @@ class Squad(Base):
     workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
     name: Mapped[str] = mapped_column(String, nullable=False)
     description: Mapped[str] = mapped_column(Text, default="")
+    archived: Mapped[bool] = mapped_column(Boolean, default=False)
 
     members: Mapped[list["SquadMember"]] = relationship(back_populates="squad")
 
@@ -364,6 +371,7 @@ class AutopilotTrigger(Base):
     autopilot_id: Mapped[str] = mapped_column(ForeignKey("autopilots.id"), nullable=False)
     cron_expression: Mapped[str | None] = mapped_column(String, nullable=True)
     type: Mapped[TriggerType] = mapped_column(Enum(TriggerType), default=TriggerType.CRON, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     webhook_token: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -405,6 +413,8 @@ class Attachment(Base):
 
 class ChatThread(Base):
     __tablename__ = "chat_threads"
+
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     title: Mapped[str] = mapped_column(String, nullable=False)

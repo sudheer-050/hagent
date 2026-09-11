@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Workspaces</h2>
+<p class="muted">Local workspaces keep projects, agents, and automations separated.</p>
+{% for workspace in workspaces %}
+<div class="card"><strong>{{ workspace.name }}</strong><br><code>{{ workspace.id }}</code></div>
+{% else %}
+<p class="muted">No workspaces yet.</p>
+{% endfor %}
+{% endblock %}

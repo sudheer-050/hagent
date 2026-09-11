@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Profile</h2>
+{% if profile %}
+<div class="card"><h3>{{ profile.name or "Your profile" }}</h3><p>{{ profile.email }}</p><p>{{ profile.bio }}</p></div>
+{% else %}
+<div class="card"><p class="muted">No profile configured.</p></div>
+{% endif %}
+{% endblock %}

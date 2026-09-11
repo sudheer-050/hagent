@@ -32,6 +32,7 @@ Every runtime backend implements one method — `run(prompt, context) -> Runtime
 
 ```bash
 pip install -r requirements.txt
+pip install -e .                    # installs the hagent command
 export ANTHROPIC_API_KEY=...   # only needed for ClaudeRuntime
 ```
 
@@ -73,6 +74,8 @@ pytest
 Phase 3 adds local workspace/profile management, issue extras and timeline events,
 multi-file skill bundles, squad activity, cron and webhook triggers, real git checkout,
 attachments, standalone chat, and MCP protocol tool invocation in runtime loops.
+
+Existing Phase 1/2 SQLite databases are upgraded additively on first start; no data reset is required.
 
 Marketplace-specific skill discovery and public webhook exposure remain intentionally
 out of scope: local archives/direct URLs are supported, and a user must expose a local

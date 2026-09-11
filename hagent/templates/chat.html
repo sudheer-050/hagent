@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Chat</h2>
+<p class="muted">Conversation history for this local Hagent workspace.</p>
+{% for thread in threads %}
+<section class="card"><h3>{{ thread.title }}</h3>
+{% for message in thread.messages %}<p><strong>{{ message.author }}</strong> <span class="muted">{{ message.created_at }}</span><br>{{ message.body }}</p>{% endfor %}
+</section>
+{% else %}
+<div class="card"><p class="muted">No conversations yet.</p></div>
+{% endfor %}
+{% endblock %}

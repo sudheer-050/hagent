@@ -61,27 +61,26 @@ def autopilot_webhook(token: str):
 
 
 @app.get("/workspaces")
-def workspaces_page():
+def workspaces_page(request: Request):
     with get_session() as s:
         rows = s.scalars(select(Workspace)).all()
-        return HTMLResponse("<h1>Workspaces</h1>" + "".join(f"<p>{w.id} {w.name}</p>" for w in rows))
+        return templates.TemplateResponse(request, "workspaces.html", {"workspaces": rows, "active": "workspaces"})
 
 
 @app.get("/profile")
-def profile_page():
+def profile_page(request: Request):
     with get_session() as s:
         profile = s.scalar(select(UserProfile).order_by(UserProfile.updated_at.desc()))
         if not profile:
-            return HTMLResponse("<h1>Profile</h1><p>No profile configured.</p>")
-        return HTMLResponse(f"<h1>{profile.name}</h1><p>{profile.email}</p><p>{profile.bio}</p>")
+            return templates.TemplateResponse(request, "profile.html", {"profile": None, "active": "profile"})
+        return templates.TemplateResponse(request, "profile.html", {"profile": profile, "active": "profile"})
 
 
 @app.get("/chat")
-def chat_page():
+def chat_page(request: Request):
     with get_session() as s:
         threads = s.scalars(select(ChatThread).order_by(ChatThread.created_at.desc())).all()
-        html = "<h1>Chat</h1>" + "".join(f"<article><h2>{t.title}</h2>" + "".join(f"<p>{m.author}: {m.body}</p>" for m in t.messages) + "</article>" for t in threads)
-        return HTMLResponse(html)
+        return templates.TemplateResponse(request, "chat.html", {"threads": threads, "active": "chat"})
 
 
 # --- projects ---

@@ -69,6 +69,7 @@ def run_issue(session: Session, issue: Issue, agent: Agent, prompt: str | None =
         run.status = RunStatus.FAILED
         run.error = str(exc)
         run.token_estimate = len((run.prompt or "").split())
+        run.transcript_json = json.dumps({"error": str(exc)})
         run.finished_at = datetime.now(timezone.utc)
         session.add(TimelineEvent(issue_id=issue.id, event_type="run_failed", detail=str(exc)))
         session.commit()
@@ -77,6 +78,7 @@ def run_issue(session: Session, issue: Issue, agent: Agent, prompt: str | None =
     run.status = RunStatus.COMPLETED
     run.output = result.output
     run.token_estimate = len((run.prompt or "").split()) + len((run.output or "").split())
+    run.transcript_json = json.dumps(result.raw or {})
     run.finished_at = datetime.now(timezone.utc)
     issue.status = IssueStatus.IN_REVIEW
     session.add(TimelineEvent(issue_id=issue.id, event_type="run_completed", detail=f"Estimated {run.token_estimate} tokens"))

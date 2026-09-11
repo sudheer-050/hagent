@@ -14,13 +14,13 @@ from sqlalchemy import select
 
 from hagent.db import get_session
 from hagent.engine import run_issue
-from hagent.models import Autopilot, AutopilotRun, AutopilotTrigger, Issue
+from hagent.models import Autopilot, AutopilotRun, AutopilotTrigger, Issue, Project, TriggerType
 
 _scheduler: BackgroundScheduler | None = None
 
 
 def find_matching_issues(session, autopilot: Autopilot) -> list[Issue]:
-    stmt = select(Issue)
+    stmt = select(Issue).join(Project).where(Project.workspace_id == autopilot.workspace_id)
     if autopilot.project_id:
         stmt = stmt.where(Issue.project_id == autopilot.project_id)
     if autopilot.filter_status:
@@ -29,11 +29,14 @@ def find_matching_issues(session, autopilot: Autopilot) -> list[Issue]:
 
 
 def run_autopilot_once(autopilot_id: str) -> AutopilotRun | None:
-    with get_session() as session:
+    with get_session(scoped=False) as session:
         autopilot = session.get(Autopilot, autopilot_id)
         if not autopilot or not autopilot.enabled:
             return None
 
+        session.info["workspace_id"] = autopilot.workspace_id
+        if not autopilot.agent or autopilot.agent.workspace_id != autopilot.workspace_id:
+            raise ValueError("Autopilot agent crosses workspaces")
         autopilot_run = AutopilotRun(autopilot_id=autopilot.id, status="running")
         session.add(autopilot_run)
         session.commit()
@@ -62,11 +65,11 @@ def sync_scheduler_jobs(scheduler: BackgroundScheduler) -> int:
         scheduler.remove_job(job.id)
 
     count = 0
-    with get_session() as session:
+    with get_session(scoped=False) as session:
         triggers = session.scalars(select(AutopilotTrigger)).all()
         for trig in triggers:
             autopilot = session.get(Autopilot, trig.autopilot_id)
-            if not autopilot or not autopilot.enabled or not trig.cron_expression or trig.type.value != "cron":
+            if not autopilot or not autopilot.enabled or not trig.enabled or not trig.cron_expression or trig.type.value != "cron":
                 continue
             scheduler.add_job(
                 run_autopilot_once,
@@ -80,13 +83,13 @@ def sync_scheduler_jobs(scheduler: BackgroundScheduler) -> int:
 
 
 def find_webhook_trigger(token: str) -> AutopilotTrigger | None:
-    with get_session() as session:
-        return session.scalar(select(AutopilotTrigger).where(AutopilotTrigger.webhook_token == token))
+    with get_session(scoped=False) as session:
+        return session.scalar(select(AutopilotTrigger).where(AutopilotTrigger.webhook_token == token, AutopilotTrigger.type == TriggerType.WEBHOOK, AutopilotTrigger.enabled.is_(True)))
 
 
 def start_scheduler() -> BackgroundScheduler:
     global _scheduler
-    if _scheduler is not None:
+    if _scheduler is not None and _scheduler.running:
         return _scheduler
     _scheduler = BackgroundScheduler()
     sync_scheduler_jobs(_scheduler)
