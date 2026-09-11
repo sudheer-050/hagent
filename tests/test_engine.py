@@ -1,6 +1,6 @@
-from orkestra.adapters.base import RuntimeResult
-from orkestra.engine import run_task
-from orkestra.models import Agent, Runtime, RuntimeType, Task, TaskStatus, Workspace
+from holly.adapters.base import RuntimeResult
+from holly.engine import run_task
+from holly.models import Agent, Runtime, RuntimeType, Task, TaskStatus, Workspace
 
 
 def _make_agent(session, runtime_type=RuntimeType.OLLAMA):
@@ -25,7 +25,7 @@ def test_run_task_success_persists_output(session, mocker):
     session.commit()
 
     mocker.patch(
-        "orkestra.adapters.ollama.OllamaRuntime.run",
+        "holly.adapters.ollama.OllamaRuntime.run",
         return_value=RuntimeResult(output="pong"),
     )
 
@@ -45,7 +45,7 @@ def test_run_task_failure_persists_error(session, mocker):
     session.commit()
 
     mocker.patch(
-        "orkestra.adapters.ollama.OllamaRuntime.run",
+        "holly.adapters.ollama.OllamaRuntime.run",
         side_effect=RuntimeError("boom"),
     )
 
@@ -64,7 +64,7 @@ def test_run_task_starts_as_pending_then_moves_through_states(session, mocker):
     assert task.status == TaskStatus.PENDING
 
     mocker.patch(
-        "orkestra.adapters.ollama.OllamaRuntime.run",
+        "holly.adapters.ollama.OllamaRuntime.run",
         return_value=RuntimeResult(output="ok"),
     )
     run_task(session, task)

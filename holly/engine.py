@@ -5,8 +5,8 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from orkestra.adapters import get_runtime_class
-from orkestra.models import Agent, Runtime, Task, TaskStatus
+from holly.adapters import get_runtime_class
+from holly.models import Agent, Runtime, Task, TaskStatus
 
 
 def run_task(session: Session, task: Task) -> Task:

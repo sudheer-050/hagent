@@ -2,7 +2,7 @@
 
 import os
 
-from orkestra.adapters.base import BaseRuntime, RuntimeResult
+from holly.adapters.base import BaseRuntime, RuntimeResult
 
 
 class ClaudeRuntime(BaseRuntime):

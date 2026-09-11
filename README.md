@@ -1,12 +1,12 @@
-# Orkestra
+# Holly
 
 A self-hosted multi-agent orchestration platform: define **agents**, bind each one to a pluggable **runtime** (Claude, OpenAI, local Ollama), and run **tasks** through them from a CLI or a web dashboard.
 
-Orkestra is a from-scratch reimplementation of the core ideas behind commercial multi-agent orchestration tools (Multica and similar): a workspace holding agents, runtimes, and tasks, with a clean adapter boundary so any AI backend can be plugged in without touching the rest of the system.
+Holly is a from-scratch reimplementation of the core ideas behind commercial multi-agent orchestration tools (Multica and similar): a workspace holding agents, runtimes, and tasks, with a clean adapter boundary so any AI backend can be plugged in without touching the rest of the system.
 
 ## Why this exists
 
-Most orchestration platforms are closed SaaS products. Orkestra is built to:
+Most orchestration platforms are closed SaaS products. Holly is built to:
 - Run entirely locally — no dependency on a hosted backend, own your data and workflow.
 - Support any AI runtime interchangeably (cloud APIs or local models) behind one interface.
 - Be simple enough to read end-to-end: the whole execution path (CLI/web → Task → Agent → Runtime → result) is under a thousand lines.
@@ -14,12 +14,12 @@ Most orchestration platforms are closed SaaS products. Orkestra is built to:
 ## Architecture
 
 ```
-orkestra/
+holly/
   models.py       SQLAlchemy models: Workspace, Agent, Runtime, Task
   db.py           Engine/session setup (SQLite by default)
   adapters/       BaseRuntime interface + ClaudeRuntime, OllamaRuntime, OpenAIRuntime
   engine.py       Task execution engine: Task -> Agent -> Runtime -> result
-  cli.py          click CLI (orkestra agent/runtime/task ...)
+  cli.py          click CLI (holly agent/runtime/task ...)
   web.py          FastAPI + Jinja2 dashboard
   templates/      Dashboard HTML templates
 ```
@@ -36,18 +36,18 @@ export ANTHROPIC_API_KEY=...   # only needed for ClaudeRuntime
 ## CLI usage
 
 ```bash
-orkestra runtime list
-orkestra agent create --name "Researcher" --runtime ollama --model qwen3-fast8b
-orkestra agent list
-orkestra task create --agent <agent-id> --prompt "Summarize this repo's README"
-orkestra task run <task-id>
-orkestra task get <task-id>
+holly runtime list
+holly agent create --name "Researcher" --runtime ollama --model qwen3-fast8b
+holly agent list
+holly task create --agent <agent-id> --prompt "Summarize this repo's README"
+holly task run <task-id>
+holly task get <task-id>
 ```
 
 ## Web dashboard
 
 ```bash
-uvicorn orkestra.web:app --reload
+uvicorn holly.web:app --reload
 ```
 
 Then open http://127.0.0.1:8000 to view agents, runtimes, and tasks, and trigger a task run from the browser.

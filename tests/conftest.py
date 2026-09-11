@@ -2,7 +2,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from orkestra.models import Base
+from holly.models import Base
 
 
 @pytest.fixture()

@@ -1,9 +1,9 @@
 import httpx
 import pytest
 
-from orkestra.adapters.claude import ClaudeRuntime
-from orkestra.adapters.ollama import OllamaRuntime
-from orkestra.adapters.openai import OpenAIRuntime
+from holly.adapters.claude import ClaudeRuntime
+from holly.adapters.ollama import OllamaRuntime
+from holly.adapters.openai import OpenAIRuntime
 
 
 class FakeContentBlock:

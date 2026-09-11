@@ -2,7 +2,7 @@
 
 import httpx
 
-from orkestra.adapters.base import BaseRuntime, RuntimeResult
+from holly.adapters.base import BaseRuntime, RuntimeResult
 
 DEFAULT_BASE_URL = "http://localhost:11434"
 

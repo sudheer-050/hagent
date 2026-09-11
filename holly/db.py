@@ -6,9 +6,9 @@ from contextlib import contextmanager
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from orkestra.models import Base, Workspace
+from holly.models import Base, Workspace
 
-DB_PATH = os.environ.get("ORKESTRA_DB_PATH", "orkestra.db")
+DB_PATH = os.environ.get("HOLLY_DB_PATH", "holly.db")
 DEFAULT_WORKSPACE_NAME = "default"
 
 engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})

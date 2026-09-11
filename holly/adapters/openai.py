@@ -8,7 +8,7 @@ import os
 
 import httpx
 
-from orkestra.adapters.base import BaseRuntime, RuntimeResult
+from holly.adapters.base import BaseRuntime, RuntimeResult
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 

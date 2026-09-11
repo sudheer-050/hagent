@@ -1,8 +1,8 @@
-from orkestra.adapters.base import BaseRuntime, RuntimeResult
-from orkestra.adapters.claude import ClaudeRuntime
-from orkestra.adapters.ollama import OllamaRuntime
-from orkestra.adapters.openai import OpenAIRuntime
-from orkestra.models import RuntimeType
+from holly.adapters.base import BaseRuntime, RuntimeResult
+from holly.adapters.claude import ClaudeRuntime
+from holly.adapters.ollama import OllamaRuntime
+from holly.adapters.openai import OpenAIRuntime
+from holly.models import RuntimeType
 
 RUNTIME_CLASSES: dict[RuntimeType, type[BaseRuntime]] = {
     RuntimeType.CLAUDE: ClaudeRuntime,
