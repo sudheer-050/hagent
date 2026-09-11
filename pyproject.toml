@@ -1,0 +1,31 @@
+[project]
+name = "orkestra"
+version = "0.1.0"
+description = "Self-hosted multi-agent orchestration platform (CLI + web dashboard) supporting pluggable AI runtimes."
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "jinja2>=3.1",
+    "sqlalchemy>=2.0",
+    "click>=8.1",
+    "anthropic>=0.40",
+    "httpx>=0.27",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-mock>=3.14",
+]
+
+[project.scripts]
+orkestra = "orkestra.cli:cli"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["orkestra*"]
