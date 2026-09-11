@@ -1,6 +1,6 @@
 from hagent.adapters.base import RuntimeResult
-from hagent.engine import run_task
-from hagent.models import Agent, Runtime, RuntimeType, Task, TaskStatus, Workspace
+from hagent.engine import run_issue
+from hagent.models import Agent, Issue, IssueStatus, Project, Runtime, RunStatus, RuntimeType, Workspace
 
 
 def _make_agent(session, runtime_type=RuntimeType.OLLAMA):
@@ -15,57 +15,64 @@ def _make_agent(session, runtime_type=RuntimeType.OLLAMA):
     agent = Agent(workspace_id=ws.id, runtime_id=rt.id, name="agent", instructions="be terse")
     session.add(agent)
     session.commit()
-    return agent
+    return ws, agent
 
 
-def test_run_task_success_persists_output(session, mocker):
-    agent = _make_agent(session)
-    task = Task(agent_id=agent.id, prompt="hi")
-    session.add(task)
+def _make_issue(session, workspace, status=IssueStatus.BACKLOG):
+    project = Project(workspace_id=workspace.id, name="proj")
+    session.add(project)
     session.commit()
+
+    issue = Issue(project_id=project.id, title="hi", description="hi", status=status)
+    session.add(issue)
+    session.commit()
+    return issue
+
+
+def test_run_issue_success_persists_output_and_advances_status(session, mocker):
+    ws, agent = _make_agent(session)
+    issue = _make_issue(session, ws)
 
     mocker.patch(
         "hagent.adapters.ollama.OllamaRuntime.run",
         return_value=RuntimeResult(output="pong"),
     )
 
-    result = run_task(session, task)
+    run = run_issue(session, issue, agent)
 
-    assert result.status == TaskStatus.COMPLETED
-    assert result.output == "pong"
-    assert result.error is None
-    assert result.started_at is not None
-    assert result.finished_at is not None
+    assert run.status == RunStatus.COMPLETED
+    assert run.output == "pong"
+    assert run.error is None
+    assert run.started_at is not None
+    assert run.finished_at is not None
+    assert issue.status == IssueStatus.IN_REVIEW
 
 
-def test_run_task_failure_persists_error(session, mocker):
-    agent = _make_agent(session)
-    task = Task(agent_id=agent.id, prompt="hi")
-    session.add(task)
-    session.commit()
+def test_run_issue_failure_persists_error_and_leaves_issue_in_progress(session, mocker):
+    ws, agent = _make_agent(session)
+    issue = _make_issue(session, ws)
 
     mocker.patch(
         "hagent.adapters.ollama.OllamaRuntime.run",
         side_effect=RuntimeError("boom"),
     )
 
-    result = run_task(session, task)
+    run = run_issue(session, issue, agent)
 
-    assert result.status == TaskStatus.FAILED
-    assert result.output is None
-    assert result.error == "boom"
+    assert run.status == RunStatus.FAILED
+    assert run.output is None
+    assert run.error == "boom"
+    assert issue.status == IssueStatus.IN_PROGRESS
 
 
-def test_run_task_starts_as_pending_then_moves_through_states(session, mocker):
-    agent = _make_agent(session)
-    task = Task(agent_id=agent.id, prompt="hi")
-    session.add(task)
-    session.commit()
-    assert task.status == TaskStatus.PENDING
+def test_run_issue_starts_pending_then_moves_through_states(session, mocker):
+    ws, agent = _make_agent(session)
+    issue = _make_issue(session, ws)
 
     mocker.patch(
         "hagent.adapters.ollama.OllamaRuntime.run",
         return_value=RuntimeResult(output="ok"),
     )
-    run_task(session, task)
-    assert task.status == TaskStatus.COMPLETED
+    run = run_issue(session, issue, agent)
+    assert run.status == RunStatus.COMPLETED
+    assert issue.runs == [run]

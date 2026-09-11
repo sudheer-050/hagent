@@ -12,6 +12,7 @@ dependencies = [
     "anthropic>=0.40",
     "httpx>=0.27",
     "python-multipart>=0.0.9",
+    "apscheduler>=3.10",
 ]
 
 [project.optional-dependencies]
