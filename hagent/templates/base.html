@@ -2,78 +2,58 @@
 <html>
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Hagent{% endblock %}</title>
-  <style>
-    * { box-sizing: border-box; }
-    body {
-      font-family: -apple-system, Segoe UI, sans-serif; margin: 0; color: #1a1a1a;
-      display: flex; min-height: 100vh; background: #fafafa;
-    }
-    .sidebar {
-      width: 200px; flex-shrink: 0; background: #fff; border-right: 1px solid #e5e5e5;
-      padding: 1.2rem 0.8rem; position: sticky; top: 0; height: 100vh;
-    }
-    .sidebar h1 { font-size: 1.3rem; margin: 0 0 1.2rem 0.4rem; }
-    .sidebar h1 a { color: #1a1a1a; text-decoration: none; }
-    .sidebar nav a {
-      display: block; padding: 0.4rem 0.6rem; margin-bottom: 0.1rem; border-radius: 6px;
-      color: #444; text-decoration: none; font-size: 0.92rem;
-    }
-    .sidebar nav a:hover { background: #f0f0f0; }
-    .sidebar nav a.active { background: #eef2ff; color: #3730a3; font-weight: 600; }
-    .main { flex: 1; padding: 1.5rem 2rem; max-width: 1200px; }
-    .muted { color: #777; }
-    h2 { margin-top: 0; }
-    table { border-collapse: collapse; width: 100%; margin-top: 0.5rem; background: #fff; }
-    th, td { text-align: left; padding: 0.45rem 0.6rem; border-bottom: 1px solid #eee; font-size: 0.88rem; }
-    th { color: #666; font-weight: 600; }
-    code { background: #f5f5f5; padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.82rem; }
-    .status-completed, .status-done { color: #1a7f37; }
-    .status-failed, .status-cancelled { color: #d1242f; }
-    .status-running, .status-pending, .status-in_progress { color: #9a6700; }
-    form.inline { display: inline; }
-    input, select, textarea, button {
-      font-size: 0.88rem; padding: 0.35rem 0.55rem; margin: 0.15rem 0;
-      border: 1px solid #d0d0d0; border-radius: 5px; font-family: inherit;
-    }
-    button { background: #f5f5f5; cursor: pointer; }
-    button:hover { background: #ebebeb; }
-    button.primary { background: #3730a3; color: #fff; border-color: #3730a3; }
-    button.primary:hover { background: #2f2b8a; }
-    .card { border: 1px solid #e5e5e5; border-radius: 8px; padding: 1rem; margin-top: 0.6rem; background: #fff; }
-    a { color: #3730a3; text-decoration: none; }
-    a:hover { text-decoration: underline; }
-    .chip {
-      display: inline-block; font-size: 0.75rem; padding: 0.1rem 0.5rem; border-radius: 10px;
-      background: #eef2ff; color: #3730a3; margin-right: 0.25rem;
-    }
-    .board { display: flex; gap: 0.8rem; overflow-x: auto; margin-top: 0.8rem; align-items: flex-start; }
-    .board-column { flex: 0 0 230px; background: #f2f2f5; border-radius: 8px; padding: 0.6rem; }
-    .board-column h3 { font-size: 0.8rem; text-transform: uppercase; color: #666; margin: 0.2rem 0.3rem 0.6rem; }
-    .issue-card {
-      background: #fff; border: 1px solid #e5e5e5; border-radius: 6px; padding: 0.55rem 0.65rem;
-      margin-bottom: 0.5rem; font-size: 0.85rem;
-    }
-    .issue-card a { color: #1a1a1a; font-weight: 500; }
-    .issue-card .meta { margin-top: 0.35rem; display: flex; gap: 0.3rem; flex-wrap: wrap; align-items: center; }
-    .label-chip { font-size: 0.7rem; padding: 0.05rem 0.4rem; border-radius: 8px; color: #fff; }
-    pre { background: #f5f5f5; padding: 0.7rem; border-radius: 6px; overflow-x: auto; font-size: 0.82rem; white-space: pre-wrap; }
-  </style>
+  <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <div class="sidebar">
-    <h1><a href="/">Hagent</a></h1>
-    <nav>
-      <a href="/projects" class="{{ 'active' if active == 'projects' }}">Projects</a>
-      <a href="/workspaces" class="{{ 'active' if active == 'workspaces' }}">Workspaces</a>
-      <a href="/profile" class="{{ 'active' if active == 'profile' }}">Profile</a>
-      <a href="/chat" class="{{ 'active' if active == 'chat' }}">Chat</a>
-      <a href="/agents" class="{{ 'active' if active == 'agents' }}">Agents &amp; Runtimes</a>
-      <a href="/squads" class="{{ 'active' if active == 'squads' }}">Squads</a>
-      <a href="/skills" class="{{ 'active' if active == 'skills' }}">Skills</a>
-      <a href="/autopilots" class="{{ 'active' if active == 'autopilots' }}">Autopilots</a>
-      <a href="/repos" class="{{ 'active' if active == 'repos' }}">Repos</a>
-    </nav>
+    <div class="brand">
+      <div class="brand-mark">H</div>
+      <a href="/">Hagent</a>
+    </div>
+    <div>
+      <div class="nav-label">Workspace</div>
+      <nav>
+        <a href="/projects" class="{{ 'active' if active == 'projects' }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="7" height="7" rx="1.5"/><rect x="14" y="4" width="7" height="16" rx="1.5"/><rect x="3" y="14" width="7" height="6" rx="1.5"/></svg>
+          Projects
+        </a>
+        <a href="/workspaces" class="{{ 'active' if active == 'workspaces' }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 12l9 5 9-5"/><path d="M3 17l9 5 9-5"/></svg>
+          Workspaces
+        </a>
+        <a href="/chat" class="{{ 'active' if active == 'chat' }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v11H8l-4 4V5z"/></svg>
+          Chat
+        </a>
+        <a href="/agents" class="{{ 'active' if active == 'agents' }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="7" width="16" height="12" rx="2.5"/><path d="M9 7V5a3 3 0 0 1 6 0v2"/><circle cx="9" cy="13" r="1.2" fill="currentColor" stroke="none"/><circle cx="15" cy="13" r="1.2" fill="currentColor" stroke="none"/></svg>
+          Agents &amp; Runtimes
+        </a>
+        <a href="/squads" class="{{ 'active' if active == 'squads' }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="9" r="3"/><circle cx="17" cy="9" r="2.4"/><path d="M2.5 20c0-3 2.5-5 5.5-5s5.5 2 5.5 5"/><path d="M14.5 15.3c2.4.2 4.5 2 4.5 4.7"/></svg>
+          Squads
+        </a>
+        <a href="/skills" class="{{ 'active' if active == 'skills' }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.4 4.9 5.4.8-3.9 3.8.9 5.4L12 15.4 7.2 17.9l.9-5.4-3.9-3.8 5.4-.8z"/></svg>
+          Skills
+        </a>
+        <a href="/autopilots" class="{{ 'active' if active == 'autopilots' }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 8v4l2.6 1.6"/></svg>
+          Autopilots
+        </a>
+        <a href="/repos" class="{{ 'active' if active == 'repos' }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3v18"/><circle cx="7" cy="6" r="2.2"/><circle cx="7" cy="18" r="2.2"/><circle cx="17" cy="9" r="2.2"/><path d="M17 6.5v.5a5 5 0 0 1-5 5H9"/></svg>
+          Repos
+        </a>
+        <a href="/profile" class="{{ 'active' if active == 'profile' }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.5"/><path d="M4.5 20c1.2-4 4-6 7.5-6s6.3 2 7.5 6"/></svg>
+          Profile
+        </a>
+      </nav>
+    </div>
+    <div class="sidebar-footer">Self-hosted &middot; local-first</div>
   </div>
   <div class="main">
     {% block content %}{% endblock %}

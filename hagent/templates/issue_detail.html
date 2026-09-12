@@ -1,38 +1,51 @@
 {% extends "base.html" %}
 {% block content %}
-<p><a href="/projects/{{ issue.project_id }}">&larr; {{ issue.project.name }}</a></p>
-<h2>{{ issue.title }}</h2>
-<p style="color:#666;white-space:pre-wrap">{{ issue.description }}</p>
-
-<div class="card">
-  <strong>Status:</strong>
-  <form class="inline" method="post" action="/issues/{{ issue.id }}/status">
-    <select name="status" onchange="this.form.submit()">
-      {% for s in statuses %}
-      <option value="{{ s.value }}" {{ 'selected' if s == issue.status }}>{{ s.value.replace('_',' ') }}</option>
-      {% endfor %}
-    </select>
-  </form>
-  &nbsp;&nbsp;
-  <strong>Assignee:</strong>
-  <form class="inline" method="post" action="/issues/{{ issue.id }}/assign">
-    <select name="agent_id" onchange="this.form.submit()">
-      <option value="">(unassigned)</option>
-      {% for a in agents %}
-      <option value="{{ a.id }}" {{ 'selected' if issue.assignee_agent_id == a.id }}>{{ a.name }}</option>
-      {% endfor %}
-    </select>
-  </form>
-  &nbsp;&nbsp;
-  <form class="inline" method="post" action="/issues/{{ issue.id }}/run">
-    <button class="primary" type="submit" {{ 'disabled' if not issue.assignee_agent_id }}>Run</button>
-  </form>
+<a class="crumb" href="/projects/{{ issue.project_id }}">&larr; {{ issue.project.name }}</a>
+<div class="page-header">
+  <div>
+    <h2>{{ issue.title }}</h2>
+    {% if issue.description %}<p class="page-sub">{{ issue.description }}</p>{% endif %}
+  </div>
+  <span class="status-badge status-{{ issue.status.value }}">{{ issue.status.value.replace('_',' ') }}</span>
 </div>
 
 <div class="card">
-  <strong>Labels:</strong>
-  {% for l in issue.labels %}<span class="label-chip" style="background:{{ l.color }}">{{ l.name }}</span>{% endfor %}
-  <form class="inline" method="post" action="/issues/{{ issue.id }}/labels">
+  <div class="field-row">
+    <div>
+      <label class="field-label">Status</label>
+      <form class="inline" method="post" action="/issues/{{ issue.id }}/status">
+        <select name="status" onchange="this.form.submit()">
+          {% for s in statuses %}
+          <option value="{{ s.value }}" {{ 'selected' if s == issue.status }}>{{ s.value.replace('_',' ') }}</option>
+          {% endfor %}
+        </select>
+      </form>
+    </div>
+    <div>
+      <label class="field-label">Assignee</label>
+      <form class="inline" method="post" action="/issues/{{ issue.id }}/assign">
+        <select name="agent_id" onchange="this.form.submit()">
+          <option value="">(unassigned)</option>
+          {% for a in agents %}
+          <option value="{{ a.id }}" {{ 'selected' if issue.assignee_agent_id == a.id }}>{{ a.name }}</option>
+          {% endfor %}
+        </select>
+      </form>
+    </div>
+    <div style="margin-left:auto;align-self:flex-end">
+      <form class="inline" method="post" action="/issues/{{ issue.id }}/run">
+        <button class="primary" type="submit" {{ 'disabled' if not issue.assignee_agent_id }}>Run</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <label class="field-label">Labels</label>
+  <div style="margin-bottom:0.5rem">
+    {% for l in issue.labels %}<span class="label-chip" style="background:{{ l.color }}">{{ l.name }}</span>{% else %}<span class="faint">No labels yet</span>{% endfor %}
+  </div>
+  <form class="inline field-row" method="post" action="/issues/{{ issue.id }}/labels">
     <select name="label_id">
       {% for l in all_labels %}<option value="{{ l.id }}">{{ l.name }}</option>{% endfor %}
     </select>
@@ -42,7 +55,13 @@
 
 <h3>Comments</h3>
 {% for c in issue.comments %}
-<div class="card"><strong>{{ c.author }}</strong> <span style="color:#999;font-size:0.8rem">{{ c.created_at }}</span><br>{{ c.body }}</div>
+<div class="card"><strong>{{ c.author }}</strong> <span class="faint">{{ c.created_at }}</span><br>{{ c.body }}</div>
+{% else %}
+<div class="empty-state">
+  <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M21 12a8 8 0 1 1-3.3-6.5"/><path d="M21 4v5h-5"/></svg>
+  <h4>No comments yet</h4>
+  <p>Be the first to leave a note on this issue.</p>
+</div>
 {% endfor %}
 <div class="card">
   <form method="post" action="/issues/{{ issue.id }}/comments">
@@ -54,28 +73,63 @@
 <h3>Runs</h3>
 {% for r in issue.runs|reverse %}
 <div class="card">
-  <span class="status-{{ r.status.value }}">{{ r.status.value }}</span>
-  &nbsp;<span style="color:#999;font-size:0.8rem">{{ r.created_at }}</span>
+  <span class="status-badge status-{{ r.status.value }}">{{ r.status.value }}</span>
+  <span class="faint">{{ r.created_at }}</span>
   {% if r.output %}<pre>{{ r.output }}</pre>{% endif %}
-  {% if r.error %}<pre style="color:#d1242f">{{ r.error }}</pre>{% endif %}
+  {% if r.error %}<pre style="color:var(--danger)">{{ r.error }}</pre>{% endif %}
 </div>
 {% else %}
-<p style="color:#999">No runs yet.</p>
+<div class="empty-state">
+  <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="8.5"/><path d="M12 8v4l2.6 1.6"/></svg>
+  <h4>No runs yet</h4>
+  <p>Assign an agent and hit Run to generate the first result.</p>
+</div>
 {% endfor %}
+
 <h3>Children</h3>
-{% for child in children %}<p><a href="/issues/{{ child.id }}">{{ child.title }}</a></p>{% endfor %}
-<h3>Usage</h3><p>Estimated tokens: {{ issue.runs | sum(attribute='token_estimate') }} across {{ issue.runs | length }} runs</p>
-<form method="post" action="/issues/{{ issue.id }}/cancel"><button>Cancel task</button></form>
-<form method="post" action="/issues/{{ issue.id }}/reorder"><label>Position <input type="number" name="position" value="{{ issue.position }}"></label><button>Reorder</button></form>
+{% for child in children %}<p><a href="/issues/{{ child.id }}">{{ child.title }}</a></p>{% else %}<p class="faint">No sub-issues.</p>{% endfor %}
+
+<h3>Usage</h3>
+<p class="faint">Estimated tokens: {{ issue.runs | sum(attribute='token_estimate') }} across {{ issue.runs | length }} runs</p>
+
+<div class="card">
+  <div class="field-row">
+    <form method="post" action="/issues/{{ issue.id }}/cancel"><button>Cancel task</button></form>
+    <form method="post" action="/issues/{{ issue.id }}/reorder" class="field-row">
+      <label class="field-label" style="margin:0">Position <input type="number" name="position" value="{{ issue.position }}" style="width:5rem"></label>
+      <button type="submit">Reorder</button>
+    </form>
+  </div>
+</div>
+
 <h3>Metadata</h3>
-{% for item in issue.metadata_values %}<p>{{ item.key }}: {{ item.value }}</p>{% endfor %}
-<form method="post" action="/issues/{{ issue.id }}/metadata"><input name="key" placeholder="Key" required><input name="value" placeholder="Value" required><button>Save metadata</button></form>
+{% for item in issue.metadata_values %}<p><strong>{{ item.key }}</strong>: {{ item.value }}</p>{% else %}<p class="faint">No metadata set.</p>{% endfor %}
+<div class="card card-form">
+  <form method="post" action="/issues/{{ issue.id }}/metadata" class="field-row">
+    <input name="key" placeholder="Key" required>
+    <input name="value" placeholder="Value" required>
+    <button type="submit">Save metadata</button>
+  </form>
+</div>
+
 <h3>Subscribers</h3>
-{% for item in issue.subscribers %}<p>{{ item.name }}</p>{% endfor %}
-<form method="post" action="/issues/{{ issue.id }}/subscribers"><input name="name" placeholder="Subscriber name" required><button>Subscribe</button></form>
+{% for item in issue.subscribers %}<p>{{ item.name }}</p>{% else %}<p class="faint">No subscribers.</p>{% endfor %}
+<div class="card card-form">
+  <form method="post" action="/issues/{{ issue.id }}/subscribers" class="field-row">
+    <input name="name" placeholder="Subscriber name" required>
+    <button type="submit">Subscribe</button>
+  </form>
+</div>
+
 <h3>Attachments</h3>
-{% for item in issue.attachments %}<p><a href="/attachments/{{ item.id }}">{{ item.filename }}</a></p>{% endfor %}
-<form method="post" enctype="multipart/form-data" action="/issues/{{ issue.id }}/attachments"><input type="file" name="file" required><button>Upload</button></form>
+{% for item in issue.attachments %}<p><a href="/attachments/{{ item.id }}">{{ item.filename }}</a></p>{% else %}<p class="faint">No attachments.</p>{% endfor %}
+<div class="card card-form">
+  <form method="post" enctype="multipart/form-data" action="/issues/{{ issue.id }}/attachments" class="field-row">
+    <input type="file" name="file" required>
+    <button type="submit">Upload</button>
+  </form>
+</div>
+
 <h3>Timeline</h3>
-{% for event in issue.timeline %}<p>{{ event.created_at }} {{ event.event_type }}: {{ event.detail }}</p>{% endfor %}
+{% for event in issue.timeline %}<p class="faint">{{ event.created_at }} &mdash; <strong>{{ event.event_type }}</strong>: {{ event.detail }}</p>{% else %}<p class="faint">No timeline events yet.</p>{% endfor %}
 {% endblock %}

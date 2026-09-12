@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from fastapi import FastAPI, Form, Request, HTTPException, UploadFile, File
+from fastapi.staticfiles import StaticFiles
 import click
 from hagent.tenancy import ScopeError
 from hagent.db import request_workspace
@@ -45,6 +46,7 @@ get_or_create_default_workspace = get_active_workspace
 
 app = FastAPI(title="Hagent")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
 
 
 def require(session, model, identifier):

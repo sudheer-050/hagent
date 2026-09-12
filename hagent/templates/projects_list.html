@@ -1,24 +1,48 @@
 {% extends "base.html" %}
 {% block content %}
-<form method="get"><input name="q" value="{{ q }}" placeholder="Search issues and comments"><button>Search</button></form>
-{% for issue in matches %}<p><a href="/issues/{{ issue.id }}">{{ issue.title }}</a></p>{% endfor %}
+<div class="page-header">
+  <div><h2>Projects</h2><p class="page-sub">Boards for tracking issues across your codebase.</p></div>
+</div>
 
-<h2>Projects</h2>
+<div class="card card-form">
+  <form method="get" class="field-row">
+    <input name="q" value="{{ q }}" placeholder="Search issues and comments">
+    <button type="submit">Search</button>
+  </form>
+  {% if matches %}
+  <div class="search-results">
+    {% for issue in matches %}<p><a href="/issues/{{ issue.id }}">{{ issue.title }}</a></p>{% endfor %}
+  </div>
+  {% endif %}
+</div>
+
+{% if projects %}
+<div class="table-wrap scroll-x">
 <table>
-  <tr><th>Name</th><th>Status</th><th>Issues</th><th></th></tr>
+  <tr><th>Name</th><th>Status</th><th>Issues</th><th>ID</th></tr>
   {% for p in projects %}
   <tr>
     <td><a href="/projects/{{ p.id }}">{{ p.name }}</a></td>
-    <td class="status-{{ p.status.value }}">{{ p.status.value }}</td>
+    <td><span class="status-badge status-{{ p.status.value }}">{{ p.status.value }}</span></td>
     <td>{{ p.issues|length }}</td>
     <td><code>{{ p.id }}</code></td>
   </tr>
   {% endfor %}
 </table>
-<div class="card">
-  <form method="post" action="/projects">
-    <input name="name" placeholder="project name" required>
-    <input name="description" placeholder="description (optional)" size="40">
+</div>
+{% else %}
+<div class="empty-state">
+  <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="4" width="7" height="7" rx="1.5"/><rect x="14" y="4" width="7" height="16" rx="1.5"/><rect x="3" y="14" width="7" height="6" rx="1.5"/></svg>
+  <h4>No projects yet</h4>
+  <p>Create your first project to start a kanban board.</p>
+</div>
+{% endif %}
+
+<div class="card card-form">
+  <div class="card-title">New project</div>
+  <form method="post" action="/projects" class="field-row">
+    <input name="name" placeholder="Project name" required>
+    <input name="description" placeholder="Description (optional)" size="40">
     <button class="primary" type="submit">Create project</button>
   </form>
 </div>
