@@ -30,6 +30,8 @@ from hagent.models import (
     Label,
     Project,
     Repo,
+    Run,
+    RunStatus,
     Runtime,
     Skill,
     Squad,
@@ -47,6 +49,24 @@ get_or_create_default_workspace = get_active_workspace
 app = FastAPI(title="Hagent")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
+
+
+def quickcreate_data():
+    """Lightweight lists (projects, agents) that the quick-create modals in base.html
+    need regardless of which page they're rendered on. Kept intentionally small --
+    just id/name pairs -- since this runs on every page render."""
+    with get_session() as s:
+        projects = s.scalars(select(Project)).all()
+        agents = s.scalars(select(Agent)).all()
+        runtimes = s.scalars(select(Runtime)).all()
+        return {
+            "projects": [{"id": p.id, "name": p.name} for p in projects],
+            "agents": [{"id": a.id, "name": a.name} for a in agents],
+            "runtimes": [{"id": r.id, "name": r.name, "type": r.type.value} for r in runtimes],
+        }
+
+
+templates.env.globals["quickcreate_data"] = quickcreate_data
 
 
 def require(session, model, identifier):
@@ -193,8 +213,66 @@ def _startup():
 
 
 @app.get("/")
-def root():
-    return RedirectResponse(url="/projects")
+def dashboard(request: Request):
+    with get_session() as s:
+        projects = s.scalars(select(Project)).all()
+        agents = s.scalars(select(Agent)).all()
+        autopilots = s.scalars(select(Autopilot)).all()
+        issues = s.scalars(select(Issue)).all()
+
+        needs_attention = sorted(
+            (
+                i
+                for i in issues
+                if i.status == IssueStatus.IN_PROGRESS
+                or any(r.status == RunStatus.FAILED for r in i.runs)
+            ),
+            key=lambda i: i.updated_at,
+            reverse=True,
+        )[:8]
+
+        recent_issues = sorted(issues, key=lambda i: i.updated_at, reverse=True)[:6]
+
+        recent_runs = sorted(
+            (r for i in issues for r in i.runs),
+            key=lambda r: r.created_at,
+            reverse=True,
+        )[:6]
+
+        return templates.TemplateResponse(
+            request,
+            "dashboard.html",
+            {
+                "project_count": len(projects),
+                "agent_count": len(agents),
+                "autopilot_count": len(autopilots),
+                "issue_count": len(issues),
+                "needs_attention": needs_attention,
+                "recent_issues": recent_issues,
+                "recent_runs": recent_runs,
+                "active": "dashboard",
+            },
+        )
+
+
+@app.get("/api/search")
+def api_search(q: str = ""):
+    needle = q.strip().casefold()
+    if not needle:
+        return {"results": []}
+    results = []
+    with get_session() as s:
+        for p in s.scalars(select(Project)).all():
+            if needle in p.name.casefold():
+                results.append({"type": "project", "title": p.name, "subtitle": "Project", "url": f"/projects/{p.id}"})
+        for a in s.scalars(select(Agent)).all():
+            if needle in a.name.casefold():
+                results.append({"type": "agent", "title": a.name, "subtitle": "Agent", "url": "/agents"})
+        for i in s.scalars(select(Issue)).all():
+            if needle in i.title.casefold():
+                project_name = i.project.name if i.project else ""
+                results.append({"type": "issue", "title": i.title, "subtitle": f"Issue · {project_name}", "url": f"/issues/{i.id}"})
+    return {"results": results[:20]}
 
 
 @app.post("/webhooks/{token}")

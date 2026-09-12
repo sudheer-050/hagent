@@ -13,9 +13,28 @@
       <div class="brand-mark">H</div>
       <a href="/">Hagent</a>
     </div>
+    <div class="sidebar-actions">
+      <button type="button" class="icon-btn" id="qc-toggle" title="Quick create" aria-haspopup="true" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+        <span>New</span>
+      </button>
+      <button type="button" class="icon-btn" id="palette-toggle" title="Search (Ctrl+K)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        <span class="kbd">Ctrl K</span>
+      </button>
+      <div class="qc-menu" id="qc-menu" hidden>
+        <button type="button" data-modal="qc-modal-project">New project</button>
+        <button type="button" data-modal="qc-modal-agent">New agent</button>
+        <button type="button" data-modal="qc-modal-issue">New issue</button>
+      </div>
+    </div>
     <div>
       <div class="nav-label">Workspace</div>
       <nav>
+        <a href="/" class="{{ 'active' if active == 'dashboard' }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+          Dashboard
+        </a>
         <a href="/projects" class="{{ 'active' if active == 'projects' }}">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="7" height="7" rx="1.5"/><rect x="14" y="4" width="7" height="16" rx="1.5"/><rect x="3" y="14" width="7" height="6" rx="1.5"/></svg>
           Projects
@@ -59,6 +78,99 @@
   <div class="main">
     {% block content %}{% endblock %}
   </div>
+
+  {% set qc = quickcreate_data() %}
+  <div class="modal-overlay" id="modal-overlay" hidden>
+    <div class="modal" id="qc-modal-project" hidden>
+      <div class="modal-head">
+        <h3>New project</h3>
+        <button type="button" class="icon-btn modal-close" data-close>&times;</button>
+      </div>
+      <form method="post" action="/projects" class="stack">
+        <div>
+          <label class="field-label">Name</label>
+          <input name="name" placeholder="Project name" required autofocus>
+        </div>
+        <div>
+          <label class="field-label">Description</label>
+          <input name="description" placeholder="Description (optional)">
+        </div>
+        <button class="primary" type="submit">Create project</button>
+      </form>
+    </div>
+
+    <div class="modal" id="qc-modal-agent" hidden>
+      <div class="modal-head">
+        <h3>New agent</h3>
+        <button type="button" class="icon-btn modal-close" data-close>&times;</button>
+      </div>
+      {% if qc.runtimes %}
+      <form method="post" action="/agents" class="stack">
+        <div>
+          <label class="field-label">Name</label>
+          <input name="name" placeholder="Agent name" required autofocus>
+        </div>
+        <div>
+          <label class="field-label">Runtime</label>
+          <select name="runtime_id">
+            {% for r in qc.runtimes %}<option value="{{ r.id }}">{{ r.name }} ({{ r.type }})</option>{% endfor %}
+          </select>
+        </div>
+        <div>
+          <label class="field-label">Instructions</label>
+          <input name="instructions" placeholder="Instructions (optional)">
+        </div>
+        <button class="primary" type="submit">Add agent</button>
+      </form>
+      {% else %}
+      <p class="faint">No runtime yet? <a href="/agents">Add one on the Agents page</a> first.</p>
+      {% endif %}
+    </div>
+
+    <div class="modal" id="qc-modal-issue" hidden>
+      <div class="modal-head">
+        <h3>New issue</h3>
+        <button type="button" class="icon-btn modal-close" data-close>&times;</button>
+      </div>
+      {% if qc.projects %}
+      <form method="post" action="/issues" class="stack">
+        <div>
+          <label class="field-label">Project</label>
+          <select name="project_id" required>
+            {% for p in qc.projects %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}
+          </select>
+        </div>
+        <div>
+          <label class="field-label">Title</label>
+          <input name="title" placeholder="Issue title" required autofocus>
+        </div>
+        <div>
+          <label class="field-label">Description</label>
+          <input name="description" placeholder="Description (optional)">
+        </div>
+        <div>
+          <label class="field-label">Assignee</label>
+          <select name="assignee_agent_id">
+            <option value="">Unassigned</option>
+            {% for a in qc.agents %}<option value="{{ a.id }}">{{ a.name }}</option>{% endfor %}
+          </select>
+        </div>
+        <button class="primary" type="submit">Create issue</button>
+      </form>
+      {% else %}
+      <p class="faint">Create a project first, then you can add issues to it.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="palette-overlay" id="palette-overlay" hidden>
+    <div class="palette">
+      <input type="text" id="palette-input" placeholder="Search projects, agents, issues..." autocomplete="off">
+      <div class="palette-results" id="palette-results"></div>
+    </div>
+  </div>
+
   <script src="/static/starfield.js"></script>
+  <script src="/static/app.js"></script>
 </body>
 </html>
