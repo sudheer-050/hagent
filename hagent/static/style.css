@@ -10,27 +10,27 @@
 :root {
   color-scheme: dark;
 
-  /* --- surfaces --- */
-  --bg: #0a0d13;
-  --bg-raised: #10141d;
-  --bg-panel: #141926;
-  --bg-panel-hover: #182035;
-  --bg-input: #0d1119;
-  --border: #232a3b;
-  --border-soft: #1a2030;
-  --border-strong: #303a52;
+  /* --- surfaces (matches Holly's voice-app palette: near-black + warm amber) --- */
+  --bg: #050508;
+  --bg-raised: #0b0b10;
+  --bg-panel: #101014;
+  --bg-panel-hover: #17171d;
+  --bg-input: #0a0a0d;
+  --border: #232329;
+  --border-soft: #19191f;
+  --border-strong: #2f2f38;
 
   /* --- text --- */
-  --text: #e7eaf2;
-  --text-muted: #9aa3b8;
-  --text-faint: #626d85;
+  --text: #fafafa;
+  --text-muted: #9a9aa5;
+  --text-faint: #6b6b74;
 
-  /* --- accent: warm amber signal color, distinct from typical indigo/blue tool chrome --- */
-  --accent: #ef9f5c;
-  --accent-strong: #ffb877;
+  /* --- accent: Holly's exact amber-gold --- */
+  --accent: #e8a857;
+  --accent-strong: #f0bd7a;
   --accent-text: #2a1607;
-  --accent-tint: rgba(239, 159, 92, 0.14);
-  --accent-tint-strong: rgba(239, 159, 92, 0.24);
+  --accent-tint: rgba(232, 168, 87, 0.14);
+  --accent-tint-strong: rgba(232, 168, 87, 0.24);
 
   /* --- semantic status colors --- */
   --success: #4bd1a0;
@@ -67,29 +67,8 @@
   --font-mono: ui-monospace, "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
 
-/* Light fallback: only kicks in when the OS/browser prefers light and no
-   explicit dark scheme is forced. Keeps the same structure & accent. */
-@media (prefers-color-scheme: light) {
-  :root {
-    color-scheme: light;
-    --bg: #f5f6f8;
-    --bg-raised: #ffffff;
-    --bg-panel: #ffffff;
-    --bg-panel-hover: #f1f2f6;
-    --bg-input: #ffffff;
-    --border: #e2e4ea;
-    --border-soft: #ececef;
-    --border-strong: #c9cdd8;
-    --text: #1b1e27;
-    --text-muted: #5b6273;
-    --text-faint: #8b90a0;
-    --accent-text: #2a1607;
-    --accent-tint: rgba(197, 111, 32, 0.12);
-    --accent-tint-strong: rgba(197, 111, 32, 0.2);
-    --accent: #c56f20;
-    --accent-strong: #a85c16;
-  }
-}
+/* No light-mode fallback, by design -- matches the Holly voice app's theme
+   exactly, which is unconditionally dark regardless of OS setting. */
 
 * { box-sizing: border-box; }
 
@@ -107,6 +86,12 @@ body {
   font-size: 14px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  /* Same warm amber glow as the Holly voice app, toned down and anchored to
+     the top-left so it reads as ambient brand texture behind the sidebar
+     rather than competing with tables/forms in the main content area. */
+  background-image: radial-gradient(circle at 0% 0%, rgba(232, 168, 87, 0.10) 0%, rgba(232, 168, 87, 0.04) 30%, transparent 60%);
+  background-repeat: no-repeat;
+  background-attachment: fixed;
 }
 
 /* ---------------------------------------------------------------------- */
