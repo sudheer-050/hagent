@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+  <div><h2>Dashboard</h2><p class="page-sub">What's going on across every project, at a glance.</p></div>
+</div>
+
+<div class="quick-actions">
+  <button class="primary" type="button" data-modal="qc-modal-project">+ New project</button>
+  <button type="button" data-modal="qc-modal-agent">+ New agent</button>
+  <button type="button" data-modal="qc-modal-issue">+ New issue</button>
+</div>
+
+<div class="stat-grid">
+  <div class="stat-tile">
+    <div class="stat-value">{{ project_count }}</div>
+    <div class="stat-label">Projects</div>
+  </div>
+  <div class="stat-tile">
+    <div class="stat-value">{{ agent_count }}</div>
+    <div class="stat-label">Agents</div>
+  </div>
+  <div class="stat-tile">
+    <div class="stat-value">{{ autopilot_count }}</div>
+    <div class="stat-label">Autopilots</div>
+  </div>
+  <div class="stat-tile">
+    <div class="stat-value">{{ issue_count }}</div>
+    <div class="stat-label">Issues</div>
+  </div>
+</div>
+
+<div class="dash-columns">
+  <div>
+    <h3>Needs attention</h3>
+    {% if needs_attention %}
+    <div class="dash-list">
+      {% for i in needs_attention %}
+      <div class="dash-row">
+        <div>
+          <a href="/issues/{{ i.id }}">{{ i.title }}</a>
+          <span class="faint muted">{{ i.project.name if i.project else '' }}</span>
+        </div>
+        <span class="status-badge status-{{ i.status.value }}">{{ i.status.value }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+      <h4>Nothing needs attention</h4>
+      <p>No issues are in progress or have failed runs right now.</p>
+    </div>
+    {% endif %}
+  </div>
+
+  <div>
+    <h3>Recently active issues</h3>
+    {% if recent_issues %}
+    <div class="dash-list">
+      {% for i in recent_issues %}
+      <div class="dash-row">
+        <div>
+          <a href="/issues/{{ i.id }}">{{ i.title }}</a>
+          <span class="faint muted">{{ i.project.name if i.project else '' }}</span>
+        </div>
+        <span class="status-badge status-{{ i.status.value }}">{{ i.status.value }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+      <h4>No issues yet</h4>
+      <p>Create a project and add an issue to get started.</p>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<h3>Recent runs</h3>
+{% if recent_runs %}
+<div class="table-wrap scroll-x">
+<table>
+  <tr><th>Issue</th><th>Agent</th><th>Status</th><th>Started</th></tr>
+  {% for r in recent_runs %}
+  <tr>
+    <td><a href="/issues/{{ r.issue_id }}">{{ r.issue.title if r.issue else r.issue_id }}</a></td>
+    <td>{{ r.agent.name if r.agent else '' }}</td>
+    <td><span class="status-badge status-{{ r.status.value }}">{{ r.status.value }}</span></td>
+    <td class="faint">{{ r.created_at.strftime('%Y-%m-%d %H:%M') if r.created_at else '' }}</td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+{% else %}
+<div class="empty-state">
+  <h4>No runs yet</h4>
+  <p>Runs will show up here once an agent works an issue.</p>
+</div>
+{% endif %}
+{% endblock %}
