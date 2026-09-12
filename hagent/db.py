@@ -4,6 +4,9 @@ import os
 import json
 from pathlib import Path
 from contextlib import contextmanager
+from contextvars import ContextVar
+
+request_workspace = ContextVar("request_workspace", default=None)
 
 from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.orm import Session, sessionmaker
@@ -59,6 +62,22 @@ def _ensure_schema() -> None:
             for name, definition in columns.items():
                 if name not in existing:
                     connection.execute(text(f'ALTER TABLE "{table}" ADD COLUMN "{name}" {definition}'))
+        # Phase 2 required cron_expression. SQLite needs a table rebuild to
+        # relax that constraint; retain every trigger ID and timestamp.
+        cron = next(c for c in inspector.get_columns("autopilot_triggers") if c["name"] == "cron_expression")
+        if not cron["nullable"]:
+            connection.execute(text("""CREATE TABLE autopilot_triggers_new (
+                id VARCHAR PRIMARY KEY, autopilot_id VARCHAR NOT NULL REFERENCES autopilots(id),
+                cron_expression VARCHAR, type VARCHAR NOT NULL DEFAULT 'CRON',
+                webhook_token VARCHAR UNIQUE, last_run_at DATETIME,
+                enabled BOOLEAN NOT NULL DEFAULT 1)"""))
+            connection.execute(text("""INSERT INTO autopilot_triggers_new
+                SELECT id, autopilot_id, cron_expression, type, webhook_token, last_run_at, enabled
+                FROM autopilot_triggers"""))
+            connection.execute(text("DROP TABLE autopilot_triggers"))
+            connection.execute(text("ALTER TABLE autopilot_triggers_new RENAME TO autopilot_triggers"))
+        connection.execute(text("UPDATE attachments SET issue_id=(SELECT issue_id FROM comments WHERE comments.id=attachments.comment_id) WHERE issue_id IS NULL AND comment_id IS NOT NULL"))
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_trigger_webhook ON autopilot_triggers(webhook_token)"))
 
 def get_or_create_default_workspace(session: Session) -> Workspace:
     workspace = session.scalar(select(Workspace).where(Workspace.name == DEFAULT_WORKSPACE_NAME))
@@ -94,7 +113,7 @@ def get_session(*, scoped=True, workspace_id=None):
     session = SessionLocal()
     try:
         if scoped:
-            session.info["workspace_id"] = workspace_id or get_active_workspace(session).id
+            session.info["workspace_id"] = workspace_id or request_workspace.get() or get_active_workspace(session).id
         yield session
     except Exception:
         session.rollback()

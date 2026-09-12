@@ -6,4 +6,5 @@
 {% else %}
 <div class="card"><p class="muted">No profile configured.</p></div>
 {% endif %}
+<form method="post" action="/profile"><label>Name <input name="name" value="{{ profile.name if profile else '' }}"></label><label>Email <input name="email" type="email" value="{{ profile.email if profile else '' }}"></label><label>Bio <textarea name="bio">{{ profile.bio if profile else '' }}</textarea></label><button>Save profile</button></form>
 {% endblock %}

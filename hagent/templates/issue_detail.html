@@ -62,4 +62,20 @@
 {% else %}
 <p style="color:#999">No runs yet.</p>
 {% endfor %}
+<h3>Children</h3>
+{% for child in children %}<p><a href="/issues/{{ child.id }}">{{ child.title }}</a></p>{% endfor %}
+<h3>Usage</h3><p>Estimated tokens: {{ issue.runs | sum(attribute='token_estimate') }} across {{ issue.runs | length }} runs</p>
+<form method="post" action="/issues/{{ issue.id }}/cancel"><button>Cancel task</button></form>
+<form method="post" action="/issues/{{ issue.id }}/reorder"><label>Position <input type="number" name="position" value="{{ issue.position }}"></label><button>Reorder</button></form>
+<h3>Metadata</h3>
+{% for item in issue.metadata_values %}<p>{{ item.key }}: {{ item.value }}</p>{% endfor %}
+<form method="post" action="/issues/{{ issue.id }}/metadata"><input name="key" placeholder="Key" required><input name="value" placeholder="Value" required><button>Save metadata</button></form>
+<h3>Subscribers</h3>
+{% for item in issue.subscribers %}<p>{{ item.name }}</p>{% endfor %}
+<form method="post" action="/issues/{{ issue.id }}/subscribers"><input name="name" placeholder="Subscriber name" required><button>Subscribe</button></form>
+<h3>Attachments</h3>
+{% for item in issue.attachments %}<p><a href="/attachments/{{ item.id }}">{{ item.filename }}</a></p>{% endfor %}
+<form method="post" enctype="multipart/form-data" action="/issues/{{ issue.id }}/attachments"><input type="file" name="file" required><button>Upload</button></form>
+<h3>Timeline</h3>
+{% for event in issue.timeline %}<p>{{ event.created_at }} {{ event.event_type }}: {{ event.detail }}</p>{% endfor %}
 {% endblock %}

@@ -1,5 +1,8 @@
 {% extends "base.html" %}
 {% block content %}
+<form method="get"><input name="q" value="{{ q }}" placeholder="Search issues and comments"><button>Search</button></form>
+{% for issue in matches %}<p><a href="/issues/{{ issue.id }}">{{ issue.title }}</a></p>{% endfor %}
+
 <h2>Projects</h2>
 <table>
   <tr><th>Name</th><th>Status</th><th>Issues</th><th></th></tr>

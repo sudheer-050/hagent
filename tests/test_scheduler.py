@@ -59,7 +59,7 @@ def test_run_autopilot_once_runs_matching_issues_and_records_run(session, mocker
         return_value=RuntimeResult(output="done"),
     )
 
-    monkeypatch.setattr("hagent.scheduler.get_session", lambda: _SessionCtx(session))
+    monkeypatch.setattr("hagent.scheduler.get_session", lambda **kwargs: _SessionCtx(session))
 
     result = run_autopilot_once(autopilot.id)
 
@@ -75,7 +75,7 @@ def test_run_autopilot_once_returns_none_for_disabled_autopilot(session, monkeyp
     session.add(autopilot)
     session.commit()
 
-    monkeypatch.setattr("hagent.scheduler.get_session", lambda: _SessionCtx(session))
+    monkeypatch.setattr("hagent.scheduler.get_session", lambda **kwargs: _SessionCtx(session))
 
     assert run_autopilot_once(autopilot.id) is None
 

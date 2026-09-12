@@ -2,8 +2,9 @@
 {% block content %}
 <h2>Workspaces</h2>
 <p class="muted">Local workspaces keep projects, agents, and automations separated.</p>
+<form method="post" action="/workspaces"><input name="name" placeholder="Workspace name" required><button>Create workspace</button></form>
 {% for workspace in workspaces %}
-<div class="card"><strong>{{ workspace.name }}</strong><br><code>{{ workspace.id }}</code></div>
+<div class="card"><strong>{{ workspace.name }}</strong><br><code>{{ workspace.id }}</code><form method="post" action="/workspaces/{{ workspace.id }}/switch"><button>Switch workspace</button></form></div>
 {% else %}
 <p class="muted">No workspaces yet.</p>
 {% endfor %}

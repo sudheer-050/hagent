@@ -2,10 +2,11 @@
 {% block content %}
 <h2>Chat</h2>
 <p class="muted">Conversation history for this local Hagent workspace.</p>
+<form method="post" action="/chat"><input name="title" placeholder="Conversation title" required><textarea name="body" placeholder="First message"></textarea><button>Create chat</button></form>
 {% for thread in threads %}
 <section class="card"><h3>{{ thread.title }}</h3>
 {% for message in thread.messages %}<p><strong>{{ message.author }}</strong> <span class="muted">{{ message.created_at }}</span><br>{{ message.body }}</p>{% endfor %}
-</section>
+<form method="post" action="/chat/{{ thread.id }}/messages"><textarea name="body" aria-label="Message" required></textarea><select name="agent_id"><option value="">Save message</option>{% for agent in agents %}<option value="{{ agent.id }}">{{ agent.name }}</option>{% endfor %}</select><button>Send</button></form></section>
 {% else %}
 <div class="card"><p class="muted">No conversations yet.</p></div>
 {% endfor %}

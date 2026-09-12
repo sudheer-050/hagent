@@ -7,7 +7,6 @@ import secrets
 import shutil
 import subprocess
 import tempfile
-import urllib.request
 import zipfile
 from pathlib import Path
 from datetime import datetime, timezone
@@ -17,6 +16,7 @@ from sqlalchemy import select
 
 from hagent.db import get_active_workspace, get_or_create_default_workspace, get_session, init_db, set_active_workspace
 from hagent.engine import run_issue as engine_run_issue
+from hagent.triggers import configure as configure_trigger
 from hagent.models import (
     Agent,
     Autopilot,
@@ -577,6 +577,7 @@ def autopilot_trigger_add(autopilot_id, cron, webhook):
             type=TriggerType.WEBHOOK if webhook else TriggerType.CRON,
             webhook_token=secrets.token_urlsafe(32) if webhook else None,
         )
+        configure_trigger(t, cron=cron, webhook=webhook)
         s.add(t)
         s.commit()
         click.echo(f"Added trigger {t.id} ({t.webhook_token or cron}) to autopilot {ap.name}")
@@ -588,6 +589,8 @@ def autopilot_trigger_now(autopilot_id):
     """Manually trigger an autopilot to run once."""
     from hagent.scheduler import run_autopilot_once
 
+    with get_session() as s:
+        if not s.get(Autopilot, autopilot_id): raise click.ClickException("Autopilot not found")
     result = run_autopilot_once(autopilot_id)
     if result is None:
         raise click.ClickException("Autopilot not found or disabled")
@@ -805,11 +808,11 @@ def issue_usage(issue_id):
 @click.argument("issue_id")
 def issue_cancel_task(issue_id):
     with get_session() as s:
-        runs = s.scalars(select(Run).where(Run.issue_id == issue_id, Run.status == RunStatus.RUNNING)).all()
-        for run in runs:
-            run.status, run.error, run.finished_at = RunStatus.FAILED, "cancelled by user", datetime.now(timezone.utc)
-        s.commit()
-        click.echo(f"Cancelled {len(runs)} running task(s)")
+        item = s.get(Issue, issue_id)
+        if not item: raise click.ClickException("Issue not found")
+        from hagent.engine import cancel_issue
+        count = cancel_issue(s, item)
+        click.echo(f"Cancelled {count} running task(s)")
 
 
 @issue.command("timeline")
@@ -877,25 +880,7 @@ def issue_reorder(issue_id, position):
         item.position = position; s.commit(); click.echo(f"{item.id}: position={position}")
 
 
-def _read_skill_source(source):
-    cleanup = None
-    if source.startswith("http://") or source.startswith("https://"):
-        fd, archive = tempfile.mkstemp(suffix=".zip")
-        os.close(fd)
-        Path(archive).unlink(missing_ok=True)
-        urllib.request.urlretrieve(source, archive)
-        root = Path(tempfile.mkdtemp())
-        with zipfile.ZipFile(archive) as zf: zf.extractall(root)
-        Path(archive).unlink(missing_ok=True); cleanup = root
-    else:
-        root = Path(source)
-        if root.is_file() and root.suffix.lower() == ".zip":
-            target = Path(tempfile.mkdtemp())
-            with zipfile.ZipFile(root) as zf: zf.extractall(target)
-            root, cleanup = target, target
-    if not root.exists(): raise click.ClickException(f"Skill source not found: {source}")
-    files = [(str(p.relative_to(root)), p.read_text(encoding="utf-8")) for p in root.rglob("*") if p.is_file()]
-    return files, cleanup
+from hagent.skills import read_source as _read_skill_source
 
 
 @skill.command("import")
@@ -907,7 +892,7 @@ def skill_import(source, name, description):
     try:
         with get_session() as s:
             ws = get_active_workspace(s)
-            sk = Skill(workspace_id=ws.id, name=name or Path(source).stem, description=description, source_url=source)
+            sk = Skill(workspace_id=ws.id, name=name or Path(source).stem, description=description, source_url=str(Path(source).resolve()), content="\n".join(content for filename, content in files if filename.lower().endswith("skill.md")))
             s.add(sk); s.flush()
             for filename, content in files: s.add(SkillFile(skill_id=sk.id, filename=filename, content=content))
             s.commit(); click.echo(sk.id)
@@ -923,6 +908,7 @@ def skill_refresh(skill_id):
         if not sk or not sk.source_url: raise click.ClickException("Skill has no import source")
         files, cleanup = _read_skill_source(sk.source_url)
         try:
+            sk.content = "\n".join(content for filename, content in files if filename.lower().endswith("skill.md"))
             sk.files.clear()
             for filename, content in files: sk.files.append(SkillFile(filename=filename, content=content))
             s.commit(); click.echo(f"Refreshed {sk.id}")
@@ -936,7 +922,7 @@ def skill_search(query):
     with get_session() as s:
         q = query.lower()
         for sk in s.scalars(select(Skill)).all():
-            if q in f"{sk.name} {sk.description}".lower(): click.echo(f"{sk.id}  {sk.name}")
+            if q in (f"{sk.name} {sk.description} {sk.content} " + " ".join(f.content for f in sk.files)).lower(): click.echo(f"{sk.id}  {sk.name}")
 
 
 @squad.group("activity")
@@ -984,11 +970,12 @@ def autopilot_trigger_delete(trigger_id):
 @click.argument("trigger_id")
 @click.option("--cron", default=None)
 @click.option("--enabled", type=bool, default=None)
-def autopilot_trigger_update(trigger_id, cron, enabled):
+@click.option("--webhook", is_flag=True)
+def autopilot_trigger_update(trigger_id, cron, enabled, webhook):
     with get_session() as s:
         t = s.get(AutopilotTrigger, trigger_id)
         if not t: raise click.ClickException("Trigger not found")
-        if cron is not None: t.cron_expression = cron; t.type = TriggerType.CRON
+        configure_trigger(t, cron=cron, webhook=webhook, enabled=enabled)
         s.commit(); click.echo(t.id)
 
 
@@ -998,7 +985,8 @@ def autopilot_trigger_rotate_url(trigger_id):
     with get_session() as s:
         t = s.get(AutopilotTrigger, trigger_id)
         if not t: raise click.ClickException("Trigger not found")
-        t.webhook_token = secrets.token_urlsafe(32); t.type = TriggerType.WEBHOOK
+        if t.type != TriggerType.WEBHOOK: raise click.ClickException("Only webhook triggers have URLs")
+        configure_trigger(t, webhook=True)
         s.commit(); click.echo(f"/webhooks/{t.webhook_token}")
 
 
@@ -1011,10 +999,13 @@ def repo_checkout(repo_id, path):
         if not r: raise click.ClickException("Repo not found")
         target = Path(path).resolve()
         if target.exists() and any(target.iterdir()):
+            origin = subprocess.run(["git", "-C", str(target), "remote", "get-url", "origin"], capture_output=True, text=True)
+            if origin.returncode or origin.stdout.strip() != r.url:
+                raise click.ClickException("Target is not a checkout of this repository")
             command = ["git", "-C", str(target), "pull", "--ff-only"]
         else:
             target.parent.mkdir(parents=True, exist_ok=True)
-            command = ["git", "clone", r.url, str(target)]
+            command = ["git", "clone", "--", r.url, str(target)]
         completed = subprocess.run(command, capture_output=True, text=True)
         if completed.returncode: raise click.ClickException(completed.stderr.strip())
         r.local_path = str(target); s.commit(); click.echo(str(target))
@@ -1026,7 +1017,6 @@ def repo_remove(repo_id):
     with get_session() as s:
         r = s.get(Repo, repo_id)
         if not r: raise click.ClickException("Repo not found")
-        if r.local_path and Path(r.local_path).exists(): shutil.rmtree(r.local_path)
         s.delete(r); s.commit(); click.echo("removed")
 
 
@@ -1042,11 +1032,18 @@ def attachment():
 def attachment_upload(file, issue_id, comment_id):
     source = Path(file).resolve()
     if not issue_id and not comment_id: raise click.UsageError("Pass --issue or --comment")
-    target_dir = Path("attachments"); target_dir.mkdir(exist_ok=True)
-    stored = target_dir / f"{secrets.token_hex(8)}-{source.name}"
-    shutil.copy2(source, stored)
     with get_session() as s:
-        item = Attachment(comment_id=comment_id, issue_id=issue_id, filename=source.name, path=str(stored))
+        if comment_id:
+            comment = s.get(Comment, comment_id)
+            if not comment: raise click.ClickException("Comment not found")
+            if issue_id and comment.issue_id != issue_id: raise click.ClickException("Comment belongs to another issue")
+            issue_id = comment.issue_id
+        if not s.get(Issue, issue_id): raise click.ClickException("Issue not found")
+        target_dir = Path("attachments") / get_active_workspace(s).id
+        target_dir.mkdir(parents=True, exist_ok=True)
+        stored = target_dir / f"{secrets.token_hex(8)}-{source.name}"
+        shutil.copy2(source, stored)
+        item = Attachment(comment_id=comment_id, issue_id=issue_id, filename=source.name, path=str(stored.resolve()))
         s.add(item); s.commit(); click.echo(item.id)
 
 
