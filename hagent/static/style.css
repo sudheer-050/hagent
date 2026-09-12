@@ -20,6 +20,17 @@
   --border-soft: #19191f;
   --border-strong: #2f2f38;
 
+  /* --- glass: translucent panel surfaces + blur, so the starfield shows
+     through every card/sidebar/modal instead of sitting behind opaque
+     blocks. Blur keeps text legible over moving stars; the border/highlight
+     pair gives the frosted "edge catching light" look. --- */
+  --glass-panel: rgba(16, 16, 22, 0.55);
+  --glass-panel-hover: rgba(23, 23, 31, 0.62);
+  --glass-raised: rgba(11, 11, 18, 0.5);
+  --glass-border: rgba(255, 255, 255, 0.09);
+  --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --glass-blur: blur(20px);
+
   /* --- text --- */
   --text: #fafafa;
   --text-muted: #9a9aa5;
@@ -114,7 +125,10 @@ body {
 .sidebar {
   width: 232px;
   flex-shrink: 0;
-  background: var(--bg-raised);
+  background: var(--glass-raised);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-highlight);
   border-right: 1px solid var(--border);
   padding: var(--space-5) var(--space-3);
   position: sticky;
@@ -266,8 +280,10 @@ body {
   left: var(--space-2);
   right: var(--space-2);
   z-index: 30;
-  background: var(--bg-panel);
-  border: 1px solid var(--border-strong);
+  background: var(--glass-panel);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-md);
   padding: var(--space-1);
@@ -296,7 +312,9 @@ body {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(2, 2, 5, 0.65);
+  background: rgba(2, 2, 5, 0.55);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -308,10 +326,12 @@ body {
 .modal {
   width: 420px;
   max-width: calc(100vw - var(--space-5));
-  background: var(--bg-panel);
-  border: 1px solid var(--border-strong);
+  background: var(--glass-panel);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-md), var(--glass-highlight);
   padding: var(--space-5);
 }
 
@@ -346,7 +366,9 @@ body {
 .palette-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(2, 2, 5, 0.65);
+  background: rgba(2, 2, 5, 0.55);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
   display: flex;
   align-items: flex-start;
   justify-content: center;
@@ -359,10 +381,12 @@ body {
 .palette {
   width: 560px;
   max-width: calc(100vw - var(--space-5));
-  background: var(--bg-panel);
-  border: 1px solid var(--border-strong);
+  background: var(--glass-panel);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-md), var(--glass-highlight);
   overflow: hidden;
 }
 
@@ -420,10 +444,13 @@ body {
 }
 
 .stat-tile {
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
+  background: var(--glass-panel);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
   padding: var(--space-4);
+  box-shadow: var(--glass-highlight);
 }
 
 .stat-tile .stat-value {
@@ -467,9 +494,11 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
-  border: 1px solid var(--border);
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
-  background: var(--bg-panel);
+  background: var(--glass-panel);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
   padding: 0.6rem var(--space-3);
 }
 
@@ -533,8 +562,10 @@ section + section, .stack > * + * { margin-top: var(--space-4); }
 /* ---------------------------------------------------------------------- */
 
 .table-wrap {
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
+  background: var(--glass-panel);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
   overflow: hidden;
 }
@@ -685,11 +716,14 @@ button.ghost:hover { background: var(--bg-panel-hover); color: var(--text); }
 /* ---------------------------------------------------------------------- */
 
 .card {
-  border: 1px solid var(--border);
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
   padding: var(--space-4);
   margin-top: var(--space-3);
-  background: var(--bg-panel);
+  background: var(--glass-panel);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-highlight);
 }
 
 .card:first-of-type { margin-top: 0; }
@@ -704,7 +738,9 @@ button.ghost:hover { background: var(--bg-panel-hover); color: var(--text); }
 
 .card-form {
   border: 1px dashed var(--border-strong);
-  background: var(--bg-raised);
+  background: var(--glass-raised);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
 }
 
 .card-form .card-title { color: var(--text-muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 700; }
@@ -765,8 +801,10 @@ pre {
 
 .board-column {
   flex: 0 0 260px;
-  background: var(--bg-raised);
-  border: 1px solid var(--border-soft);
+  background: var(--glass-raised);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius-lg);
   padding: var(--space-3);
   max-height: calc(100vh - 260px);
@@ -795,13 +833,15 @@ pre {
 }
 
 .issue-card {
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
+  background: var(--glass-panel);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
   padding: 0.7rem 0.8rem;
   margin-bottom: var(--space-2);
   font-size: 0.85rem;
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-sm), var(--glass-highlight);
   transition: border-color 0.12s ease, transform 0.08s ease;
 }
 
@@ -844,7 +884,9 @@ pre {
   padding: var(--space-7) var(--space-5);
   text-align: center;
   color: var(--text-muted);
-  background: var(--bg-raised);
+  background: var(--glass-raised);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
 }
 
 .empty-state .empty-icon {
