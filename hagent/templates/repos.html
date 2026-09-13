@@ -1,32 +1,4 @@
 {% extends "base.html" %}
-{% block content %}
-<div class="page-header">
-  <div><h2>Repos</h2><p class="page-sub">Git repositories agents can be pointed at.</p></div>
-</div>
-
-{% if repos %}
-<div class="table-wrap scroll-x">
-<table>
-  <tr><th>Name</th><th>URL</th><th>ID</th></tr>
-  {% for r in repos %}
-  <tr><td>{{ r.name }}</td><td>{{ r.url }}</td><td><code>{{ r.id }}</code></td></tr>
-  {% endfor %}
-</table>
-</div>
-{% else %}
-<div class="empty-state">
-  <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M7 3v18"/><circle cx="7" cy="6" r="2.2"/><circle cx="7" cy="18" r="2.2"/><circle cx="17" cy="9" r="2.2"/><path d="M17 6.5v.5a5 5 0 0 1-5 5H9"/></svg>
-  <h4>No repos yet</h4>
-  <p>Register a git repository for agents to work against.</p>
-</div>
-{% endif %}
-
-<div class="card card-form">
-  <div class="card-title">New repo</div>
-  <form method="post" action="/repos" class="field-row">
-    <input name="name" placeholder="Name" required>
-    <input name="url" placeholder="Git URL" size="40" required>
-    <button class="primary" type="submit">Add repo</button>
-  </form>
-</div>
-{% endblock %}
+{% block content %}<div class="page-header"><div><h2>Repos</h2><p class="page-sub">Git repositories agents can be pointed at.</p></div><button type="button" class="icon-btn collection-add" data-modal="page-modal-repo" title="Add repository" aria-label="Add repository"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button></div>
+{% if repos %}<div class="table-wrap scroll-x"><table><tr><th>Name</th><th>URL</th><th>ID</th></tr>{% for r in repos %}<tr><td>{{ r.name }}</td><td>{{ r.url }}</td><td><code>{{ r.id }}</code></td></tr>{% endfor %}</table></div>{% else %}<div class="empty-state"><h4>No repos yet</h4><p>Register a git repository with the + button above.</p></div>{% endif %}{% endblock %}
+{% block modals %}<div class="modal" id="page-modal-repo" hidden role="dialog" aria-modal="true" aria-labelledby="repo-modal-title"><div class="modal-head"><div><div class="eyebrow">Workspace source</div><h3 id="repo-modal-title">Add repository</h3></div><button type="button" class="icon-btn modal-close" data-close aria-label="Close">&times;</button></div><form method="post" action="/repos" class="stack"><div><label class="field-label" for="repo-name">Name</label><input id="repo-name" name="name" placeholder="e.g. Hagent" required autofocus></div><div><label class="field-label" for="repo-url">Git URL</label><input id="repo-url" name="url" placeholder="https://github.com/org/repo.git" required></div><button class="primary" type="submit">Add repository</button></form></div>{% endblock %}

@@ -21,12 +21,14 @@
     document.querySelectorAll(".modal").forEach(function (m) { m.hidden = true; });
     target.hidden = false;
     modalOverlay.hidden = false;
+    document.body.classList.add("modal-open");
     var firstInput = target.querySelector("input, select");
     if (firstInput) window.setTimeout(function () { firstInput.focus(); }, 30);
   }
 
   function closeModal() {
     if (modalOverlay) modalOverlay.hidden = true;
+    document.body.classList.remove("modal-open");
     document.querySelectorAll(".modal").forEach(function (m) { m.hidden = true; });
   }
 
@@ -59,6 +61,9 @@
     });
   }
 
+  var requestedModal = new URLSearchParams(window.location.search).get("add");
+  if (requestedModal === "runtime") openModal("page-modal-runtime");
+  if (requestedModal === "agent") openModal("page-modal-agent");
   // ---- Command palette (Ctrl/Cmd+K quick-switch) ---------------------
 
   var paletteOverlay = document.getElementById("palette-overlay");
@@ -182,5 +187,240 @@
       if (paletteOverlay && !paletteOverlay.hidden) closePalette();
       if (modalOverlay && !modalOverlay.hidden) closeModal();
     }
+  });
+})();
+
+// Focused collection filtering for the Agents page.
+(function () {
+  "use strict";
+  var input = document.getElementById("agent-filter");
+  if (!input) return;
+  var cards = Array.prototype.slice.call(document.querySelectorAll("[data-agent-card]"));
+  var count = document.getElementById("agent-visible-count");
+  var empty = document.getElementById("agent-filter-empty");
+
+  input.addEventListener("input", function () {
+    var query = input.value.trim().toLowerCase();
+    var visible = 0;
+    cards.forEach(function (card) {
+      var matches = !query || (card.dataset.search || "").toLowerCase().indexOf(query) !== -1;
+      card.hidden = !matches;
+      if (matches) visible += 1;
+    });
+    if (count) count.textContent = String(visible);
+    if (empty) empty.hidden = visible !== 0;
+  });
+})();
+// Provider model catalog, task guidance, and local hardware fit.
+(function () {
+  "use strict";
+  var provider = document.getElementById("runtime-type");
+  var model = document.getElementById("runtime-model");
+  if (!provider || !model) return;
+
+  var requestedProvider = new URLSearchParams(window.location.search).get("provider");
+  if (requestedProvider && provider.querySelector('[value="' + requestedProvider + '"]')) provider.value = requestedProvider;
+  var form = provider.closest("form");
+  var initialProvider = form ? form.dataset.currentProvider : "";
+  var initialModel = form ? form.dataset.currentModel : "";
+  var customGroup = document.getElementById("runtime-custom-model-group");
+  var customModel = document.getElementById("runtime-custom-model");
+  var keyGroup = document.getElementById("runtime-key-group");
+  var keyInput = document.getElementById("runtime-api-key");
+  var keyEnv = document.getElementById("runtime-key-env");
+  var baseUrlGroup = document.getElementById("runtime-base-url-group");
+  var baseUrl = document.getElementById("runtime-base-url");
+  var baseRequirement = document.getElementById("runtime-base-url-requirement");
+  var commandGroup = document.getElementById("runtime-command-group");
+  var command = document.getElementById("runtime-command");
+  var source = document.getElementById("runtime-model-source");
+  var providerName = document.getElementById("runtime-provider-name");
+  var providerKind = document.getElementById("runtime-provider-kind");
+  var providerBest = document.getElementById("runtime-provider-best");
+  var providerNote = document.getElementById("runtime-provider-note");
+  var providerLink = document.getElementById("runtime-provider-link");
+  var modelInfo = document.getElementById("runtime-model-info");
+  var modelName = document.getElementById("runtime-model-name");
+  var modelBest = document.getElementById("runtime-model-best");
+  var modelNote = document.getElementById("runtime-model-note");
+  var modelFit = document.getElementById("runtime-model-fit");
+  var hardwareBox = document.getElementById("runtime-hardware");
+  var hardwareSummary = document.getElementById("runtime-hardware-summary");
+  var modelDetails = {};
+  var requestNumber = 0;
+
+  function updateModelInfo() {
+    var isCustom = model.value === "__custom__";
+    if (customGroup) customGroup.hidden = !isCustom;
+    if (customModel) {
+      customModel.disabled = !isCustom;
+      customModel.required = isCustom;
+    }
+    var detail = modelDetails[model.value];
+    if (modelInfo) modelInfo.hidden = !detail;
+    if (!detail) return;
+    modelName.textContent = detail.label || detail.id;
+    modelBest.textContent = detail.best_for || "General use";
+    modelNote.textContent = detail.note || "";
+    if (detail.fit) {
+      modelFit.hidden = false;
+      modelFit.className = "fit-badge fit-" + detail.fit.level;
+      modelFit.textContent = detail.fit.label;
+      if (detail.fit.note) modelNote.textContent += " " + detail.fit.note;
+    } else {
+      modelFit.hidden = true;
+    }
+  }
+
+  function renderProvider(info, hardware) {
+    var kindLabels = {
+      api: "Cloud API",
+      local: "Local",
+      local_openai: "Local server",
+      cli: "Installed CLI",
+      custom: "Custom endpoint"
+    };
+    providerName.textContent = info.name;
+    providerKind.textContent = kindLabels[info.kind] || info.kind;
+    providerBest.textContent = "Good for: " + info.best_for;
+    providerNote.textContent = info.note;
+    providerLink.hidden = !info.access_url;
+    if (info.access_url) {
+      providerLink.href = info.access_url;
+      providerLink.textContent = info.access_label || "Provider setup";
+    }
+
+    var needsKey = info.kind === "api" || info.kind === "custom";
+    keyGroup.hidden = !needsKey;
+    keyInput.disabled = !needsKey;
+    keyEnv.textContent = info.env ? "or use " + info.env : "if required by this endpoint";
+
+    var showBase = info.kind === "custom" || info.kind === "local_openai";
+    baseUrlGroup.hidden = !showBase;
+    baseUrl.disabled = !showBase;
+    baseUrl.required = info.kind === "custom";
+    baseRequirement.textContent = info.kind === "custom" ? "Required" : "Optional";
+    if (showBase) {
+      var savedBase = provider.value === initialProvider ? baseUrl.dataset.savedValue : "";
+      baseUrl.value = savedBase || info.base_url || "";
+    }
+
+    var isCli = info.kind === "cli";
+    commandGroup.hidden = !isCli;
+    command.disabled = !isCli;
+    if (isCli) {
+      var savedCommand = provider.value === initialProvider ? command.dataset.savedValue : "";
+      command.value = savedCommand || info.command || "";
+    }
+
+    hardwareBox.hidden = !hardware;
+    if (hardware) {
+      var gpu = hardware.gpu + (hardware.vram_gb ? " · " + hardware.vram_gb + " GB VRAM" : "");
+      hardwareSummary.textContent =
+        gpu + " · " + (hardware.ram_gb || "?") +
+        " GB RAM. Recommended: quantized 7B–9B models; 14B may be slow; 30B+ is not recommended.";
+    }
+  }
+
+  function loadModels() {
+    var selected = provider.value;
+    var currentRequest = ++requestNumber;
+    model.disabled = true;
+    model.innerHTML = '<option value="">Loading recommendations...</option>';
+    source.textContent = "Loading provider details...";
+    fetch("/api/runtime-models?provider=" + encodeURIComponent(selected))
+      .then(function (response) {
+        if (!response.ok) throw new Error("Provider catalog unavailable");
+        return response.json();
+      })
+      .then(function (data) {
+        if (currentRequest !== requestNumber) return;
+        renderProvider(data.provider_info, data.hardware);
+        model.innerHTML = "";
+        modelDetails = {};
+        (data.model_details || []).forEach(function (detail) {
+          modelDetails[detail.id] = detail;
+          var option = document.createElement("option");
+          option.value = detail.id;
+          option.textContent = (detail.label || detail.id) + " — " + (detail.best_for || "General use");
+          model.appendChild(option);
+        });
+        var custom = document.createElement("option");
+        custom.value = "__custom__";
+        custom.textContent = "Enter a custom model ID...";
+        model.appendChild(custom);
+        if (selected === initialProvider && initialModel) {
+          if (modelDetails[initialModel]) {
+            model.value = initialModel;
+          } else {
+            model.value = "__custom__";
+            customModel.value = initialModel;
+          }
+        } else if (!(data.model_details || []).length) {
+          model.value = "__custom__";
+        }
+        model.disabled = false;
+        source.textContent = data.source === "installed"
+          ? "Models currently installed on this computer."
+          : "Recommended current models. Custom and newly released IDs are supported.";
+        updateModelInfo();
+      })
+      .catch(function () {
+        modelDetails = {};
+        model.innerHTML = '<option value="__custom__">Enter a custom model ID...</option>';
+        model.disabled = false;
+        source.textContent = "Catalog unavailable; enter the provider's exact model ID.";
+        updateModelInfo();
+      });
+  }
+
+  provider.addEventListener("change", loadModels);
+  model.addEventListener("change", updateModelInfo);
+  loadModels();
+})();
+/* Agent creation: guided instruction draft, with explicit user-triggered runtime calls. */
+(function () {
+  "use strict";
+  var panel = document.getElementById("agent-builder-panel");
+  var radios = document.querySelectorAll('input[name="agent-start-mode"]');
+  var draftButton = document.getElementById("agent-draft-button");
+  var purpose = document.getElementById("agent-purpose");
+  var runtime = document.getElementById("agent-runtime");
+  var instructions = document.getElementById("agent-instructions");
+  var status = document.getElementById("agent-draft-status");
+  function updateMode() {
+    if (!panel) return;
+    var guided = document.querySelector('input[name="agent-start-mode"]:checked');
+    panel.hidden = !guided || guided.value !== "guided";
+  }
+  radios.forEach(function (radio) { radio.addEventListener("change", updateMode); });
+  updateMode();
+  if (!draftButton) return;
+  draftButton.addEventListener("click", function () {
+    if (!purpose.value.trim()) {
+      status.textContent = "Describe the agent's goal first.";
+      purpose.focus();
+      return;
+    }
+    draftButton.disabled = true;
+    status.textContent = "Generating a draft with the selected runtime…";
+    fetch("/api/agents/draft", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ runtime_id: runtime.value, purpose: purpose.value.trim() })
+    }).then(function (response) {
+      return response.json().then(function (data) {
+        if (!response.ok) throw new Error(data.detail || "The draft could not be generated.");
+        return data;
+      });
+    }).then(function (data) {
+      instructions.value = data.instructions || "";
+      status.textContent = "Draft ready. Review and edit the instructions before creating the agent.";
+      instructions.focus();
+    }).catch(function (error) {
+      status.textContent = error.message || "The draft could not be generated.";
+    }).finally(function () {
+      draftButton.disabled = false;
+    });
   });
 })();

@@ -24,6 +24,11 @@ class RuntimeType(str, enum.Enum):
     CLAUDE = "claude"
     OPENAI = "openai"
     OLLAMA = "ollama"
+    GEMINI = "gemini"
+    GEMINI_CLI = "gemini_cli"
+    CODEX_CLI = "codex_cli"
+    CLAUDE_CODE = "claude_code"
+    OPENAI_COMPATIBLE = "openai_compatible"
 
 
 class ProjectStatus(str, enum.Enum):
@@ -127,6 +132,13 @@ agent_mcp_servers = Table(
     Column("server_id", ForeignKey("mcp_servers.id"), primary_key=True),
 )
 
+agent_knowledge_bases = Table(
+    "agent_knowledge_bases",
+    Base.metadata,
+    Column("agent_id", ForeignKey("agents.id"), primary_key=True),
+    Column("knowledge_base_id", ForeignKey("knowledge_bases.id"), primary_key=True),
+)
+
 issue_labels = Table(
     "issue_labels",
     Base.metadata,
@@ -141,17 +153,22 @@ class Agent(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
     runtime_id: Mapped[str] = mapped_column(ForeignKey("runtimes.id"), nullable=False)
+    backup_runtime_id: Mapped[str | None] = mapped_column(String, nullable=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="")
     instructions: Mapped[str] = mapped_column(Text, default="")
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
     avatar_path: Mapped[str | None] = mapped_column(String, nullable=True)
     env_json: Mapped[str] = mapped_column(Text, default="{}")
+    terminal_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    terminal_working_directory: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     runtime: Mapped["Runtime"] = relationship(back_populates="agents")
     runs: Mapped[list["Run"]] = relationship(back_populates="agent")
     skills: Mapped[list["Skill"]] = relationship(secondary=agent_skills, back_populates="agents")
     mcp_servers: Mapped[list["McpServer"]] = relationship(secondary=agent_mcp_servers, back_populates="agents")
+    knowledge_bases: Mapped[list["KnowledgeBase"]] = relationship(secondary=agent_knowledge_bases, back_populates="agents")
 
 
 class Project(Base):
@@ -348,6 +365,60 @@ class SkillFile(Base):
     skill: Mapped["Skill"] = relationship(back_populates="files")
 
 
+class KnowledgeBase(Base):
+    __tablename__ = "knowledge_bases"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="")
+    embedding_provider: Mapped[str] = mapped_column(String, default="ollama")
+    embedding_model: Mapped[str] = mapped_column(String, default="embeddinggemma")
+    embedding_base_url: Mapped[str] = mapped_column(String, default="http://localhost:11434")
+    embedding_api_key: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    documents: Mapped[list["KnowledgeDocument"]] = relationship(back_populates="knowledge_base", cascade="all, delete-orphan")
+    local_folders: Mapped[list["KnowledgeFolder"]] = relationship(back_populates="knowledge_base", cascade="all, delete-orphan")
+    agents: Mapped[list["Agent"]] = relationship(secondary=agent_knowledge_bases, back_populates="knowledge_bases")
+
+
+class KnowledgeFolder(Base):
+    __tablename__ = "knowledge_folders"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    knowledge_base_id: Mapped[str] = mapped_column(ForeignKey("knowledge_bases.id"), nullable=False)
+    path: Mapped[str] = mapped_column(Text, nullable=False)
+    snapshot_json: Mapped[str] = mapped_column(Text, default="{}")
+    last_scanned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    knowledge_base: Mapped["KnowledgeBase"] = relationship(back_populates="local_folders")
+
+
+class KnowledgeDocument(Base):
+    __tablename__ = "knowledge_documents"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    knowledge_base_id: Mapped[str] = mapped_column(ForeignKey("knowledge_bases.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    source_type: Mapped[str] = mapped_column(String, default="upload")
+    source_uri: Mapped[str] = mapped_column(Text, default="")
+    content_hash: Mapped[str] = mapped_column(String, default="")
+    status: Mapped[str] = mapped_column(String, default="ready")
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    knowledge_base: Mapped["KnowledgeBase"] = relationship(back_populates="documents")
+    chunks: Mapped[list["KnowledgeChunk"]] = relationship(back_populates="document", cascade="all, delete-orphan", order_by="KnowledgeChunk.ordinal")
+
+
+class KnowledgeChunk(Base):
+    __tablename__ = "knowledge_chunks"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    document_id: Mapped[str] = mapped_column(ForeignKey("knowledge_documents.id"), nullable=False)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding_json: Mapped[str] = mapped_column(Text, default="[]")
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    document: Mapped["KnowledgeDocument"] = relationship(back_populates="chunks")
+
+
 class Autopilot(Base):
     __tablename__ = "autopilots"
 
@@ -415,6 +486,7 @@ class ChatThread(Base):
     __tablename__ = "chat_threads"
 
     workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
+    agent_id: Mapped[str | None] = mapped_column(ForeignKey("agents.id"), nullable=True)
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     title: Mapped[str] = mapped_column(String, nullable=False)

@@ -1,11 +1,5 @@
 {% extends "base.html" %}
 {% block content %}
-<h2>Workspaces</h2>
-<p class="muted">Local workspaces keep projects, agents, and automations separated.</p>
-<form method="post" action="/workspaces"><input name="name" placeholder="Workspace name" required><button>Create workspace</button></form>
-{% for workspace in workspaces %}
-<div class="card"><strong>{{ workspace.name }}</strong><br><code>{{ workspace.id }}</code><form method="post" action="/workspaces/{{ workspace.id }}/switch"><button>Switch workspace</button></form></div>
-{% else %}
-<p class="muted">No workspaces yet.</p>
-{% endfor %}
+<div class="page-header"><div><h2>Workspaces</h2><p class="page-sub">Choose which workspace's agents, projects, and settings you are using.</p></div></div>
+{% if workspaces %}<div class="collection-list">{% for workspace in workspaces %}<div class="collection-row workspace-row"><div class="collection-row-main"><strong>{{ workspace.name }}</strong><small><code>{{ workspace.id }}</code></small></div><form method="post" action="/workspaces/{{ workspace.id }}/switch"><button type="submit">Switch workspace</button></form></div>{% endfor %}</div>{% else %}<div class="empty-state"><h4>No workspaces available</h4></div>{% endif %}
 {% endblock %}

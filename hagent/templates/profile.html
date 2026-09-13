@@ -1,10 +1,11 @@
-{% extends "base.html" %}
+{% extends 'base.html' %}
 {% block content %}
-<h2>Profile</h2>
-{% if profile %}
-<div class="card"><h3>{{ profile.name or "Your profile" }}</h3><p>{{ profile.email }}</p><p>{{ profile.bio }}</p></div>
-{% else %}
-<div class="card"><p class="muted">No profile configured.</p></div>
-{% endif %}
-<form method="post" action="/profile"><label>Name <input name="name" value="{{ profile.name if profile else '' }}"></label><label>Email <input name="email" type="email" value="{{ profile.email if profile else '' }}"></label><label>Bio <textarea name="bio">{{ profile.bio if profile else '' }}</textarea></label><button>Save profile</button></form>
+<header class='page-heading'><div><h1>Profile</h1><p class='muted'>Your workspace details.</p></div></header>
+<section class='profile-panel'>
+<form method='post' action='/profile' class='profile-form'>
+<label>Name<input name='name' value='{{ profile.name if profile else '' }}' placeholder='Your name'></label>
+<label>Email<input name='email' type='email' value='{{ profile.email if profile else '' }}' placeholder='you@example.com'></label>
+<label>About you<textarea name='bio' rows='5' placeholder='A little about you...'>{{ profile.bio if profile else '' }}</textarea></label>
+<button class='primary' type='submit'>Save profile</button>
+</form></section>
 {% endblock %}

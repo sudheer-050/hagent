@@ -37,8 +37,12 @@ def _ensure_schema() -> None:
         "runtimes": {"archived": "BOOLEAN NOT NULL DEFAULT 0"},
         "agents": {
             "archived": "BOOLEAN NOT NULL DEFAULT 0",
+            "description": "TEXT NOT NULL DEFAULT ''",
             "avatar_path": "VARCHAR",
             "env_json": "TEXT NOT NULL DEFAULT '{}'",
+            "backup_runtime_id": "VARCHAR",
+            "terminal_enabled": "BOOLEAN NOT NULL DEFAULT 0",
+            "terminal_working_directory": "VARCHAR",
         },
         "runs": {
             "token_estimate": "INTEGER NOT NULL DEFAULT 0",
@@ -51,7 +55,10 @@ def _ensure_schema() -> None:
             "webhook_token": "VARCHAR",
             "last_run_at": "DATETIME",
         },
-        "chat_threads": {"workspace_id": "VARCHAR REFERENCES workspaces(id)"},
+        "chat_threads": {
+            "workspace_id": "VARCHAR REFERENCES workspaces(id)",
+            "agent_id": "VARCHAR REFERENCES agents(id)",
+        },
         "repos": {"local_path": "VARCHAR"},
         "squads": {"archived": "BOOLEAN NOT NULL DEFAULT 0"},
     }

@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}{{ agent.name }} &middot; Hagent{% endblock %}
+{% block content %}
+<a class="crumb" href="/agents">&larr; Agents</a>
+<div class="agent-profile-header">
+  <div class="agent-avatar agent-avatar-large">{{ agent.name[0]|upper }}</div>
+  <div><div class="eyebrow">Agent</div><h2>{{ agent.name }}</h2><div class="agent-runtime"><span class="ready-dot"></span>Ready &middot; {{ agent.runtime.name }} / {{ agent.runtime.model }}</div></div>
+  <a class="button-link" href="/chat">Open chat</a>
+</div>
+<div class="agent-detail-layout">
+  <main class="agent-detail-main">
+    <section class="detail-section">
+      <div class="section-heading"><div><h3>Configuration</h3><p>Define who this agent is and how it should work.</p></div></div>
+      <form method="post" action="/agents/{{ agent.id }}" class="stack agent-config-form">
+        <div class="form-grid">
+          <div><label class="field-label">Name</label><input name="name" value="{{ agent.name }}" required></div><div><label class="field-label">Description</label><input name="description" value="{{ agent.description }}" placeholder="Short agent summary"></div>
+          <div><label class="field-label">Runtime</label><select name="runtime_id" required>{% for runtime in runtimes %}<option value="{{ runtime.id }}" {{ 'selected' if runtime.id == agent.runtime_id else '' }}>{{ runtime.name }} &middot; {{ runtime.model }}</option>{% endfor %}</select></div><div><label class="field-label">Backup runtime <span>Optional</span></label><select name="backup_runtime_id"><option value="">No automatic backup</option>{% for runtime in runtimes %}<option value="{{ runtime.id }}" {{ 'selected' if runtime.id == agent.backup_runtime_id else '' }}>{{ runtime.name }} &middot; {{ runtime.model }}</option>{% endfor %}</select><div class="field-help">Used immediately if the primary provider fails, rejects the request, or runs out of quota.</div></div>
+        </div>
+        <div><label class="field-label">Instructions</label><textarea name="instructions" rows="8">{{ agent.instructions }}</textarea><div class="field-help">Include the role, boundaries, priorities, and expected output.</div></div>
+        <div><div class="field-label">Skills</div>{% if skills %}<div class="check-grid">{% for skill in skills %}<label class="check-card"><input type="checkbox" name="skill_ids" value="{{ skill.id }}" {{ 'checked' if skill in agent.skills else '' }}><span><strong>{{ skill.name }}</strong><small>{{ skill.description or "Reusable instruction bundle" }}</small></span></label>{% endfor %}</div>{% else %}<div class="inline-empty">No skills available. <a href="/skills">Create a skill</a>.</div>{% endif %}</div>
+        <div><div class="field-label">MCP tool servers</div>{% if mcp_servers %}<div class="check-grid">{% for server in mcp_servers %}<label class="check-card"><input type="checkbox" name="mcp_server_ids" value="{{ server.id }}" {{ 'checked' if server in agent.mcp_servers else '' }}><span><strong>{{ server.name }}</strong><small>{{ server.transport }}{% if server.url %} &middot; {{ server.url }}{% endif %}</small></span></label>{% endfor %}</div>{% else %}<div class="inline-empty">No MCP servers are registered yet. Add one with the Hagent CLI.</div>{% endif %}</div>
+        <div class="terminal-permission"><label class="check-card terminal-access-card"><input type="checkbox" name="terminal_enabled" value="1" {{ 'checked' if agent.terminal_enabled else '' }}><span><strong>Allow terminal commands</strong><small>Gives this agent the terminal_execute tool. Commands run with your Windows account and are recorded in the issue timeline. CLI assistants also run without approval prompts when this is enabled.</small></span></label><label class="field-label">Terminal starting directory</label><input name="terminal_working_directory" value="{{ agent.terminal_working_directory or '' }}" placeholder="e.g. C:/Projects/my-app"><div class="field-help">Required when terminal access is enabled. The agent can run arbitrary commands from this directory.</div></div>
+        <div><label class="field-label">Environment variables (JSON)</label><textarea class="code-input" name="environment_json" rows="5" spellcheck="false">{{ agent_environment }}</textarea><div class="field-help">Agent-specific values only. Keep secrets in the runtime provider key or your operating-system environment when possible.</div></div>
+        <div class="form-actions"><button class="primary" type="submit">Save changes</button></div>
+      </form>
+    </section>
+    <section class="detail-section">
+      <div class="section-heading"><div><h3>Assigned work</h3><p>Issues currently owned by this agent.</p></div><span class="section-count">{{ assigned_issues|length }}</span></div>
+      {% if assigned_issues %}<div class="activity-list">{% for issue in assigned_issues %}<a href="/issues/{{ issue.id }}" class="activity-row"><span class="activity-main"><strong>{{ issue.title }}</strong><small>{{ issue.project.name }}</small></span><span class="status-badge status-{{ issue.status.value }}">{{ issue.status.value.replace('_', ' ') }}</span></a>{% endfor %}</div>{% else %}<div class="inline-empty">Nothing assigned right now.</div>{% endif %}
+    </section>
+    <section class="detail-section">
+      <div class="section-heading"><div><h3>Recent runs</h3><p>Latest execution history.</p></div><span class="section-count">{{ runs|length }}</span></div>
+      {% if runs %}<div class="activity-list">{% for run in runs %}<a href="/issues/{{ run.issue_id }}" class="activity-row"><span class="activity-main"><strong>{{ run.issue.title }}</strong><small>{{ run.created_at.strftime('%b %d, %Y') }} &middot; {{ run.token_estimate }} tokens</small></span><span class="status-badge status-{{ run.status.value }}">{{ run.status.value }}</span></a>{% endfor %}</div>{% else %}<div class="inline-empty">No runs yet.</div>{% endif %}
+    </section>
+  </main>
+  <aside class="agent-detail-aside">
+    <section class="detail-section"><h3>Overview</h3><div class="metric-stack"><div><strong>{{ runs|length }}</strong><span>Recent runs</span></div><div><strong>{{ completed_runs }}</strong><span>Completed</span></div><div><strong>{{ assigned_issues|length }}</strong><span>Assigned issues</span></div></div></section>
+    <section class="detail-section"><h3>Runtime</h3><div class="definition-list"><div><span>Provider</span><strong>{{ agent.runtime.type.value|title }}</strong></div><div><span>Model</span><strong>{{ agent.runtime.model }}</strong></div><div><span>Backup</span><strong>{{ backup_runtime.name if backup_runtime else "Off" }}</strong></div></div><a class="text-link" href="/runtimes">Manage runtimes &rarr;</a></section>
+    <section class="detail-section"><h3>Squads</h3>{% if memberships %}{% for membership in memberships %}<span class="chip">{{ membership.squad.name }}</span>{% endfor %}{% else %}<p class="faint">Not part of a squad yet.</p>{% endif %}</section>
+  </aside>
+</div>
+{% endblock %}

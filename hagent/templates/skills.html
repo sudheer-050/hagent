@@ -1,31 +1,4 @@
 {% extends "base.html" %}
-{% block content %}
-<div class="page-header">
-  <div><h2>Skills</h2><p class="page-sub">Reusable instruction snippets attached to agents.</p></div>
-</div>
-
-{% for sk in skills %}
-<div class="card">
-  <div class="card-title">{{ sk.name }} <code>{{ sk.id }}</code></div>
-  {% if sk.description %}<p class="muted">{{ sk.description }}</p>{% endif %}
-  {% if sk.content %}<pre>{{ sk.content }}</pre>{% endif %}
-  <p>Used by: {% for a in sk.agents %}<span class="chip">{{ a.name }}</span>{% else %}<span class="faint">no agents yet</span>{% endfor %}</p>
-</div>
-{% else %}
-<div class="empty-state">
-  <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3l2.4 4.9 5.4.8-3.9 3.8.9 5.4L12 15.4 7.2 17.9l.9-5.4-3.9-3.8 5.4-.8z"/></svg>
-  <h4>No skills yet</h4>
-  <p>Write a reusable instruction snippet and attach it to agents.</p>
-</div>
-{% endfor %}
-
-<div class="card card-form">
-  <div class="card-title">New skill</div>
-  <form method="post" action="/skills" class="stack">
-    <div><input name="name" placeholder="Skill name" required style="width:100%"></div>
-    <div><input name="description" placeholder="Description" style="width:100%"></div>
-    <div><textarea name="content" placeholder="Skill content / instructions" rows="4" style="width:100%"></textarea></div>
-    <button class="primary" type="submit">Create skill</button>
-  </form>
-</div>
-{% endblock %}
+{% block content %}<div class="page-header"><div><h2>Skills library</h2><p class="page-sub">Reusable capabilities shared by agents in this workspace.</p></div><button type="button" class="icon-btn collection-add" data-modal="page-modal-skill" title="Create skill" aria-label="Create skill"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button></div>{% if agents %}<p class="muted">Expand a skill to manage agent access and inspect its instructions.</p>{% endif %}
+{% if skills %}<div class="collection-list skills-list">{% for sk in skills %}<details class="collection-row skill-row"><summary class="collection-row-main"><strong>{{ sk.name }}</strong><small>{{ sk.description or "Reusable agent capability" }}</small></summary><span class="collection-row-meta">{{ sk.agents|length }} agent{{ '' if sk.agents|length == 1 else 's' }}</span><div class="skill-row-content"><details class="skill-instructions"><summary>View skill instructions</summary><pre>{{ sk.content or "No instructions added yet." }}</pre></details><form method="post" action="/skills/{{ sk.id }}/agents" class="stack skill-access-form"><div class="field-label">Available to agents</div>{% if agents %}<div class="check-grid">{% for agent in agents %}<label class="check-card"><input type="checkbox" name="agent_ids" value="{{ agent.id }}" {{ 'checked' if agent in sk.agents else '' }}><span><strong>{{ agent.name }}</strong><small>{{ agent.runtime.name }} &middot; {{ agent.runtime.model }}</small></span></label>{% endfor %}</div><div class="form-actions"><button class="primary" type="submit">Save skill access</button></div>{% else %}<div class="inline-empty">Create an agent first, then assign this skill to it.</div>{% endif %}</form></div></details>{% endfor %}</div>{% else %}<div class="empty-state"><h4>No skills yet</h4><p>Create reusable instructions with the + button above.</p></div>{% endif %}{% endblock %}
+{% block modals %}<div class="modal" id="page-modal-skill" hidden role="dialog" aria-modal="true" aria-labelledby="skill-modal-title"><div class="modal-head"><div><div class="eyebrow">Reusable capability</div><h3 id="skill-modal-title">Create skill</h3></div><button type="button" class="icon-btn modal-close" data-close aria-label="Close">&times;</button></div><form method="post" action="/skills" class="stack"><div><label class="field-label" for="skill-name">Name</label><input id="skill-name" name="name" placeholder="e.g. Web research" required autofocus></div><div><label class="field-label" for="skill-description">Description <span>Optional</span></label><input id="skill-description" name="description" placeholder="What can agents do with this skill?"></div><div><label class="field-label" for="skill-content">Instructions</label><textarea id="skill-content" name="content" placeholder="Skill content / instructions" rows="6"></textarea></div><button class="primary" type="submit">Create skill</button></form></div>{% endblock %}

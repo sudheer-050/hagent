@@ -16,9 +16,11 @@ DEFAULT_BASE_URL = "https://api.openai.com/v1"
 
 class OpenAIRuntime(BaseRuntime):
     def run(self, prompt: str, context: str = "", tools=None, tool_executor=None) -> RuntimeResult:
-        api_key = self.config.get("api_key") or os.environ.get("OPENAI_API_KEY")
-        if not api_key:
-            raise RuntimeError("No OpenAI API key configured (set OPENAI_API_KEY)")
+        env_name = self.config.get("api_key_env", "OPENAI_API_KEY")
+        api_key = self.config.get("api_key") or os.environ.get(env_name)
+        if not api_key and not self.config.get("allow_no_key"):
+            label = "OpenAI API key" if env_name == "OPENAI_API_KEY" else "API key"
+            raise RuntimeError(f"No {label} configured (set {env_name})")
 
         base_url = self.config.get("base_url", DEFAULT_BASE_URL)
         messages = []
@@ -34,13 +36,13 @@ class OpenAIRuntime(BaseRuntime):
             try:
                 response = httpx.post(
                     f"{base_url}/chat/completions",
-                    headers={"Authorization": f"Bearer {api_key}"},
+                    headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
                     json=payload,
                     timeout=self.config.get("timeout", 60),
                 )
                 response.raise_for_status()
             except httpx.HTTPError as exc:
-                raise RuntimeError(f"OpenAI API call failed: {exc}") from exc
+                raise RuntimeError(f"Model provider API call failed: {exc}") from exc
             data = response.json()
             transcript.append(data)
             message = data["choices"][0]["message"]

@@ -1,6 +1,6 @@
 from hagent.adapters.base import RuntimeResult
 from hagent.engine import run_issue
-from hagent.models import Agent, Issue, IssueStatus, Project, Runtime, RunStatus, RuntimeType, Workspace
+from hagent.models import Agent, Issue, IssueStatus, Project, Runtime, RunStatus, RuntimeType, TimelineEvent, Workspace
 
 
 def _make_agent(session, runtime_type=RuntimeType.OLLAMA):
@@ -76,3 +76,76 @@ def test_run_issue_starts_pending_then_moves_through_states(session, mocker):
     run = run_issue(session, issue, agent)
     assert run.status == RunStatus.COMPLETED
     assert issue.runs == [run]
+
+
+def test_primary_failure_immediately_hands_run_to_optional_backup(session, mocker):
+    ws, agent = _make_agent(session)
+    backup = Runtime(
+        workspace_id=ws.id,
+        name="backup",
+        type=RuntimeType.OLLAMA,
+        model="backup-model",
+        config_json="{}",
+    )
+    session.add(backup)
+    session.commit()
+    agent.backup_runtime_id = backup.id
+    session.commit()
+    issue = _make_issue(session, ws)
+    run_adapter = mocker.patch(
+        "hagent.adapters.ollama.OllamaRuntime.run",
+        side_effect=[RuntimeError("quota exhausted"), RuntimeResult(output="backup completed")],
+    )
+
+    run = run_issue(session, issue, agent)
+
+    assert run.status == RunStatus.COMPLETED
+    assert run.output == "backup completed"
+    assert run_adapter.call_count == 2
+    events = session.query(TimelineEvent).filter_by(issue_id=issue.id, event_type="runtime_failover").all()
+    assert len(events) == 1
+    assert "quota exhausted" in events[0].detail
+    assert "backup" in events[0].detail
+
+
+def test_cancellation_does_not_launch_backup(session, mocker):
+    ws, agent = _make_agent(session)
+    backup = Runtime(workspace_id=ws.id, name="backup", type=RuntimeType.OLLAMA, model="backup-model")
+    session.add(backup)
+    session.commit()
+    agent.backup_runtime_id = backup.id
+    session.commit()
+    issue = _make_issue(session, ws)
+    run_adapter = mocker.patch(
+        "hagent.adapters.ollama.OllamaRuntime.run",
+        side_effect=RuntimeError("Run cancelled"),
+    )
+
+    run = run_issue(session, issue, agent)
+
+    assert run.status == RunStatus.FAILED
+    assert run_adapter.call_count == 1
+
+def test_terminal_enabled_agent_is_given_audited_command_tool(session, mocker, tmp_path):
+    ws, agent = _make_agent(session)
+    agent.terminal_enabled = True
+    agent.terminal_working_directory = str(tmp_path)
+    session.commit()
+    issue = _make_issue(session, ws)
+
+    def use_terminal(_runtime, *, tools, tool_executor, **_kwargs):
+        names = [item["function"]["name"] for item in tools]
+        assert "terminal_execute" in names
+        result = tool_executor("terminal_execute", {"command": "Write-Output AGENT_TERMINAL_OK"})
+        assert result["exit_code"] == 0
+        assert "AGENT_TERMINAL_OK" in result["stdout"]
+        return RuntimeResult(output="command completed")
+
+    mocker.patch("hagent.adapters.ollama.OllamaRuntime.run", autospec=True, side_effect=use_terminal)
+
+    run = run_issue(session, issue, agent)
+
+    assert run.status == RunStatus.COMPLETED
+    assert run.output == "command completed"
+    tool_events = session.query(TimelineEvent).filter_by(issue_id=issue.id, event_type="tool_call").all()
+    assert any("terminal_execute" in event.detail for event in tool_events)

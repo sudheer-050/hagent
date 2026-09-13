@@ -1,0 +1,51 @@
+<form method="post" action="{{ form_action }}" class="stack runtime-form" data-current-provider="{{ selected_provider }}" data-current-model="{{ selected_model }}">
+  <div class="form-grid">
+    <div><label class="field-label" for="runtime-name">Name</label><input id="runtime-name" name="name" value="{{ runtime_name }}" placeholder="e.g. Fast coding assistant" required autofocus></div>
+    <div>
+      <label class="field-label" for="runtime-type">Provider or assistant</label>
+      <select id="runtime-type" name="type" required>
+        {% for provider in providers %}<option value="{{ provider.id }}" {{ "selected" if provider.id == selected_provider }}>{{ provider.name }} — {{ provider.group }}</option>{% endfor %}
+      </select>
+    </div>
+  </div>
+
+  <div class="provider-guidance" id="runtime-provider-info">
+    <div class="provider-info-heading"><strong id="runtime-provider-name">Choose a provider</strong><span class="provider-kind" id="runtime-provider-kind"></span></div>
+    <p id="runtime-provider-best"></p><span id="runtime-provider-note"></span>
+    <a id="runtime-provider-link" href="#" target="_blank" rel="noreferrer" hidden></a>
+  </div>
+
+  <div id="runtime-key-group" hidden>
+    <label class="field-label" for="runtime-api-key">API key <span id="runtime-key-env">Optional if set in environment</span></label>
+    <input id="runtime-api-key" name="api_key" type="password" placeholder="{{ 'Leave blank to keep the saved key' if editing else 'Paste API key' }}" autocomplete="new-password">
+    <div class="field-help">Saved locally in Hagent's SQLite database and never displayed again. An environment variable is safer.</div>
+  </div>
+
+  <div><label class="field-label" for="runtime-model">Model</label><select id="runtime-model" name="model" required></select><div class="field-help" id="runtime-model-source">Recommended models are loaded for the selected provider.</div></div>
+  <div class="model-guidance" id="runtime-model-info" hidden>
+    <div><strong id="runtime-model-name"></strong><span class="fit-badge" id="runtime-model-fit" hidden></span></div>
+    <p><span class="model-info-label">Good for</span> <span id="runtime-model-best"></span></p><p id="runtime-model-note"></p>
+  </div>
+  <div id="runtime-hardware" class="hardware-guidance" hidden><div class="hardware-icon">PC</div><div><strong>Your local-model fit</strong><p id="runtime-hardware-summary"></p></div></div>
+
+  <div id="runtime-custom-model-group" hidden>
+    <label class="field-label" for="runtime-custom-model">Custom model ID</label><input id="runtime-custom-model" name="custom_model" placeholder="Enter the exact provider model ID">
+    <div class="field-help">Use this for a newly released, private, fine-tuned, or unlisted model.</div>
+  </div>
+
+  <div id="runtime-base-url-group" hidden>
+    <label class="field-label" for="runtime-base-url">API base URL <span id="runtime-base-url-requirement">Optional</span></label>
+    <input id="runtime-base-url" name="base_url" type="url" value="{{ runtime_config.get('base_url', '') }}" data-saved-value="{{ runtime_config.get('base_url', '') }}" placeholder="https://provider.example/v1">
+    <div class="field-help">The provider default is filled automatically. Change it for a proxy or self-hosted endpoint.</div>
+  </div>
+
+  <div id="runtime-command-group" hidden>
+    <div class="form-grid">
+      <div><label class="field-label" for="runtime-command">CLI command</label><input id="runtime-command" name="command" value="{{ runtime_config.get('command', '') }}" data-saved-value="{{ runtime_config.get('command', '') }}"></div>
+      <div><label class="field-label" for="runtime-working-directory">Working directory <span>Optional</span></label><input id="runtime-working-directory" name="working_directory" value="{{ runtime_config.get('working_directory', '') }}" placeholder="e.g. C:/Projects/my-app"></div>
+    </div>
+    <div class="field-help">The CLI uses its existing local login. Hagent does not copy its authentication tokens.</div>
+  </div>
+
+  <div class="{{ 'form-actions' if editing else 'modal-actions' }}"><button class="primary" type="submit">{{ submit_label }}</button></div>
+</form>

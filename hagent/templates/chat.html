@@ -1,13 +1,28 @@
-{% extends "base.html" %}
+{% extends 'base.html' %}
+{% block title %}Chat | Hagent{% endblock %}
 {% block content %}
-<h2>Chat</h2>
-<p class="muted">Conversation history for this local Hagent workspace.</p>
-<form method="post" action="/chat"><input name="title" placeholder="Conversation title" required><textarea name="body" placeholder="First message"></textarea><button>Create chat</button></form>
-{% for thread in threads %}
-<section class="card"><h3>{{ thread.title }}</h3>
-{% for message in thread.messages %}<p><strong>{{ message.author }}</strong> <span class="muted">{{ message.created_at }}</span><br>{{ message.body }}</p>{% endfor %}
-<form method="post" action="/chat/{{ thread.id }}/messages"><textarea name="body" aria-label="Message" required></textarea><select name="agent_id"><option value="">Save message</option>{% for agent in agents %}<option value="{{ agent.id }}">{{ agent.name }}</option>{% endfor %}</select><button>Send</button></form></section>
-{% else %}
-<div class="card"><p class="muted">No conversations yet.</p></div>
+<header class=page-heading><div><h1>Chat</h1><p class=muted>Talk directly with an agent.</p></div><button class=primary data-modal=page-modal-chat type=button>New chat</button></header>
+<div class=chat-workspace>
+<aside class=chat-sidebar><h2>Conversations</h2>
+{% for t in threads %}<a class='chat-thread-link' href='/chat?thread_id={{ t.id }}'>{{ t.title }}<small>{{ agent_names.get(t.agent_id, 'Choose agent') if t.agent_id else 'Choose agent' }}</small></a>{% endfor %}
+</aside><section class='chat-conversation'>
+{% if active_thread %}
+<h2>{{ active_thread.title }}</h2>
+<p>{{ agent_names.get(active_thread.agent_id, 'Choose an agent') if active_thread.agent_id else 'Choose an agent' }}</p>
+<div class='chat-message-list'>
+{% for message in active_thread.messages %}
+<article class='chat-message {{ "from-user" if message.author == "you" else "from-agent" }}'><strong>{{ message.author }}</strong><div class='chat-message-bubble'>{{ message.body }}</div></article>
 {% endfor %}
+</div>
+<form method='post' action='/chat/{{ active_thread.id }}/messages' class='chat-composer'>
+<select name='agent_id' aria-label='Choose an agent' required><option value=''>Choose agent...</option>{% for agent in agents %}<option value='{{ agent.id }}' {{ 'selected' if active_thread.agent_id == agent.id else '' }}>{{ agent.name }}</option>{% endfor %}</select>
+<textarea name='body' rows='3' placeholder='Message your agent...' required></textarea><button class='primary' type='submit'>Send</button>
+</form>
+{% else %}<div class='chat-empty-state'><h2>Talk with an agent</h2><p>Start a chat and work through a question together.</p><button class='primary' type='button' data-modal='page-modal-chat'>Start a chat</button></div>{% endif %}
+</section></div>
+{% endblock %}
+{% block modals %}
+<div id='page-modal-chat' class='modal modal-wide' hidden><div class='modal-head'><h3>Start a conversation</h3><button type='button' class='icon-btn modal-close' data-close>Close</button></div>
+<form method='post' action='/chat' class='stack'><label class='field-label'>Agent<select name='agent_id' required><option value=''>Choose agent</option>{% for agent in agents %}<option value='{{ agent.id }}'>{{ agent.name }}</option>{% endfor %}</select></label>
+<label class='field-label'>Conversation name<input name='title' placeholder='Optional'></label><label class='field-label'>First message<textarea name='body' rows='4' placeholder='What would you like to work on?'></textarea></label><button class='primary' type='submit'>Create chat</button></form></div>
 {% endblock %}

@@ -1,0 +1,14 @@
+{% extends 'base.html' %}
+{% block title %}Knowledge | Hagent{% endblock %}
+{% block content %}
+<header class='page-heading'><div><p class='eyebrow'>RETRIEVAL-AUGMENTED GENERATION</p><h1>Knowledge</h1><p class='muted'>Give your agents reliable, searchable source material.</p></div><button class='primary' type='button' data-modal='page-modal-kb'>+ New knowledge base</button></header>
+{% if bases %}
+<div class='collection-list'>{% for base in bases %}<a class='collection-row' href='/knowledge/{{ base.id }}'><span class='collection-row-main'><strong>{{ base.name }}</strong><small>{{ base.description or base.embedding_provider ~ ' / ' ~ base.embedding_model }}</small></span><span class='collection-row-meta'>{{ base.documents|length }} documents</span><span class='collection-row-meta'>{{ base.agents|length }} agents</span></a>{% endfor %}</div>
+{% else %}<section class='empty-state'><h3>No knowledge bases yet</h3><p>Add a collection, upload source documents, then assign it to agents.</p><button class='primary' type='button' data-modal='page-modal-kb'>Create knowledge base</button></section>{% endif %}
+{% endblock %}
+{% block modals %}
+<div id='page-modal-kb' class='modal' hidden><div class='modal-head'><h3>New knowledge base</h3><button type='button' class='icon-btn modal-close' data-close>Close</button></div>
+<form method='post' action='/knowledge' class='stack'><label class='field-label'>Name<input name='name' placeholder='Product docs' required></label><label class='field-label'>Description<input name='description' placeholder='Optional purpose'></label>
+<label class='field-label'>Embedding provider<select name='embedding_provider'><option value='ollama'>Ollama (local)</option><option value='openai'>OpenAI</option><option value='gemini'>Google Gemini</option><option value='openai_compatible'>OpenAI-compatible endpoint</option></select></label>
+<label class='field-label'>Embedding model<input name='embedding_model' placeholder='Leave blank for provider default'></label><button class='primary' type='submit'>Create knowledge base</button></form></div>
+{% endblock %}

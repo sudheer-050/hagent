@@ -4,7 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Hagent{% endblock %}</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=rag-1">
+  {% block head %}{% endblock %}
 </head>
 <body>
   <canvas id="starsCanvas" class="starfield-canvas"></canvas>
@@ -47,9 +48,16 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v11H8l-4 4V5z"/></svg>
           Chat
         </a>
-        <a href="/agents" class="{{ 'active' if active == 'agents' }}">
+        <a href="/terminal" class="{{ 'active' if active == 'terminal' }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M12 15h5"/></svg>
+          Terminal
+        </a>        <a href="/agents" class="{{ 'active' if active == 'agents' }}">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="7" width="16" height="12" rx="2.5"/><path d="M9 7V5a3 3 0 0 1 6 0v2"/><circle cx="9" cy="13" r="1.2" fill="currentColor" stroke="none"/><circle cx="15" cy="13" r="1.2" fill="currentColor" stroke="none"/></svg>
-          Agents &amp; Runtimes
+          Agents
+        </a>
+        <a href="/runtimes" class="{{ 'active' if active == 'runtimes' }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 1v4M15 1v4M9 19v4M15 19v4M1 9h4M1 15h4M19 9h4M19 15h4"/><circle cx="12" cy="12" r="3"/></svg>
+          Runtimes
         </a>
         <a href="/squads" class="{{ 'active' if active == 'squads' }}">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="9" r="3"/><circle cx="17" cy="9" r="2.4"/><path d="M2.5 20c0-3 2.5-5 5.5-5s5.5 2 5.5 5"/><path d="M14.5 15.3c2.4.2 4.5 2 4.5 4.7"/></svg>
@@ -71,6 +79,7 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.5"/><path d="M4.5 20c1.2-4 4-6 7.5-6s6.3 2 7.5 6"/></svg>
           Profile
         </a>
+        <a href='/knowledge' class='{{ "active" if active == "knowledge" }}'>Knowledge</a>
       </nav>
     </div>
     <div class="sidebar-footer">Self-hosted &middot; local-first</div>
@@ -110,6 +119,7 @@
           <label class="field-label">Name</label>
           <input name="name" placeholder="Agent name" required autofocus>
         </div>
+        <div><label class="field-label">Description <span>Optional</span></label><input name="description" placeholder="Short summary for this agent"></div>
         <div>
           <label class="field-label">Runtime</label>
           <select name="runtime_id">
@@ -117,13 +127,23 @@
           </select>
         </div>
         <div>
+          <label class="field-label">Backup runtime <span>Optional</span></label>
+          <select name="backup_runtime_id">
+            <option value="">No automatic backup</option>
+            {% for r in qc.runtimes %}<option value="{{ r.id }}">{{ r.name }} ({{ r.model }})</option>{% endfor %}
+          </select>
+        </div>
+        {% if qc.skills %}<div><div class="field-label">Skills <span>Optional</span></div><div class="check-grid">{% for skill in qc.skills %}<label class="check-card"><input type="checkbox" name="skill_ids" value="{{ skill.id }}"><span><strong>{{ skill.name }}</strong><small>{{ skill.description or "Reusable skill" }}</small></span></label>{% endfor %}</div></div>{% endif %}
+        <label class="check-card terminal-access-card"><input type="checkbox" name="terminal_enabled" value="1"><span><strong>Allow terminal commands</strong><small>Optional agent PowerShell access.</small></span></label>
+        <div><label class="field-label">Terminal directory</label><input name="terminal_working_directory" placeholder="e.g. C:/Projects/my-app"></div>
+        <div>
           <label class="field-label">Instructions</label>
           <input name="instructions" placeholder="Instructions (optional)">
         </div>
         <button class="primary" type="submit">Add agent</button>
       </form>
       {% else %}
-      <p class="faint">No runtime yet? <a href="/agents">Add one on the Agents page</a> first.</p>
+      <p class="faint">No runtime yet? <a href="/runtimes">Create a runtime</a> first.</p>
       {% endif %}
     </div>
 
@@ -161,6 +181,7 @@
       <p class="faint">Create a project first, then you can add issues to it.</p>
       {% endif %}
     </div>
+    {% block modals %}{% endblock %}
   </div>
 
   <div class="palette-overlay" id="palette-overlay" hidden>
@@ -170,7 +191,8 @@
     </div>
   </div>
 
-  <script src="/static/starfield.js"></script>
-  <script src="/static/app.js"></script>
+  <script src="/static/starfield.js?v=stable-starfield-1"></script>
+  <script src="/static/app.js?v=agent-builder-1"></script>
+  {% block scripts %}{% endblock %}
 </body>
 </html>

@@ -1,71 +1,33 @@
 {% extends "base.html" %}
+{% block title %}Agents &middot; Hagent{% endblock %}
 {% block content %}
-<div class="page-header">
-  <div><h2>Agents &amp; Runtimes</h2><p class="page-sub">Runtimes are AI backends; agents are named personas bound to one.</p></div>
-</div>
-
-<h3>Runtimes</h3>
-{% if runtimes %}
-<div class="table-wrap scroll-x">
-<table>
-  <tr><th>Name</th><th>Type</th><th>Model</th><th>ID</th></tr>
-  {% for r in runtimes %}
-  <tr><td>{{ r.name }}</td><td><span class="chip">{{ r.type.value }}</span></td><td>{{ r.model }}</td><td><code>{{ r.id }}</code></td></tr>
-  {% endfor %}
-</table>
-</div>
-{% else %}
-<div class="empty-state">
-  <h4>No runtimes yet</h4>
-  <p>Add a Claude, OpenAI, or local Ollama runtime to bind agents to.</p>
-</div>
-{% endif %}
-<div class="card card-form">
-  <div class="card-title">New runtime</div>
-  <form method="post" action="/runtimes" class="field-row">
-    <input name="name" placeholder="Name" required>
-    <select name="type">
-      <option value="ollama">ollama</option>
-      <option value="claude">claude</option>
-      <option value="openai">openai</option>
-    </select>
-    <input name="model" placeholder="Model" required>
-    <button class="primary" type="submit">Add runtime</button>
-  </form>
-</div>
-
-<h3>Agents</h3>
-{% if agents %}
-<div class="table-wrap scroll-x">
-<table>
-  <tr><th>Name</th><th>Runtime</th><th>Skills</th><th>ID</th></tr>
-  {% for a in agents %}
-  <tr>
-    <td>{{ a.name }}</td>
-    <td>{{ a.runtime.name }}</td>
-    <td>{% for sk in a.skills %}<span class="chip">{{ sk.name }}</span>{% else %}<span class="faint">none</span>{% endfor %}</td>
-    <td><code>{{ a.id }}</code></td>
-  </tr>
-  {% endfor %}
-</table>
-</div>
-{% else %}
-<div class="empty-state">
-  <h4>No agents yet</h4>
-  <p>Agents run issues through a runtime — create one once you have a runtime above.</p>
-</div>
-{% endif %}
-<div class="card card-form">
-  <div class="card-title">New agent</div>
-  <form method="post" action="/agents" class="field-row">
-    <input name="name" placeholder="Name" required>
-    <select name="runtime_id">
-      {% for r in runtimes %}
-      <option value="{{ r.id }}">{{ r.name }} ({{ r.type.value }})</option>
-      {% endfor %}
-    </select>
-    <input name="instructions" placeholder="Instructions (optional)" size="40">
-    <button class="primary" type="submit">Add agent</button>
-  </form>
-</div>
-{% endblock %}
+<div class="page-header"><div><div class="eyebrow">Build</div><h2>Agents</h2><p class="page-sub">Your AI teammates. Open one to review its setup, skills, and recent work.</p></div>{% if runtimes %}<button type="button" class="icon-btn collection-add" data-modal="page-modal-agent" title="Create agent" aria-label="Create agent"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>{% else %}<a class="icon-btn collection-add" href="/runtimes" title="Add a runtime first" aria-label="Add a runtime first"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></a>{% endif %}</div>
+{% if agents %}<div class="collection-toolbar"><div class="collection-search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg><input id="agent-filter" type="search" placeholder="Filter agents..." autocomplete="off"></div><span class="collection-count"><span id="agent-visible-count">{{ agents|length }}</span> agent{{ '' if agents|length == 1 else 's' }}</span></div>
+<div class="collection-list" id="agent-grid">{% for a in agents %}{% set stats = agent_stats[a.id] %}<a class="collection-row agent-row" href="/agents/{{ a.id }}" data-agent-card data-search="{{ a.name }} {{ a.runtime.name }} {{ a.runtime.model }} {{ a.description }} {{ a.instructions }}"><span class="agent-avatar">{{ a.name[0]|upper }}</span><span class="collection-row-main"><strong>{{ a.name }}</strong><small>{{ a.description or (a.runtime.name ~ " · " ~ a.runtime.model) }}</small></span><span class="collection-row-meta">{{ a.skills|length }} skills &middot; {{ stats.run_count }} runs</span><span class="collection-row-meta">{% if stats.last_run %}Last run {{ stats.last_run.created_at.strftime('%b %d') }}{% else %}Never run{% endif %}</span><svg class="card-arrow" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg></a>{% endfor %}</div><div class="empty-state compact-empty" id="agent-filter-empty" hidden><h4>No matching agents</h4><p>Try a different name, runtime, or model.</p></div>
+{% else %}<div class="empty-state"><h4>No agents yet</h4><p>Create your first AI teammate with the + button above.</p></div>{% endif %}{% endblock %}
+{% block modals %}<div class="modal modal-wide" id="page-modal-agent" hidden role="dialog" aria-modal="true" aria-labelledby="agent-create-title"><div class="modal-head"><div><div class="eyebrow">New teammate</div><h3 id="agent-create-title">Create agent</h3></div><button type="button" class="icon-btn modal-close" data-close aria-label="Close">&times;</button></div>
+<form method="post" action="/agents" class="stack agent-create-form">
+  <fieldset class="agent-start-picker"><legend class="field-label">Start with</legend>
+    <label class="agent-start-option"><input type="radio" name="agent-start-mode" value="blank" checked><span><strong>Start blank</strong><small>Configure your agent yourself.</small></span></label>
+    <label class="agent-start-option"><input type="radio" name="agent-start-mode" value="guided"><span><strong>Build with AI</strong><small>Draft instructions from a goal, then review and edit.</small></span></label>
+  </fieldset>
+  <div class="agent-builder-panel" id="agent-builder-panel" hidden>
+    <label class="field-label" for="agent-purpose">What should this agent do?</label>
+    <textarea id="agent-purpose" rows="3" placeholder="e.g. Research competitors and summarize findings with sources."></textarea>
+    <button type="button" class="secondary" id="agent-draft-button">Draft instructions with selected runtime</button>
+    <p class="field-help" id="agent-draft-status" role="status">Uses the selected runtime only when you request a draft; hosted providers may consume tokens. You can edit the result before creating the agent.</p>
+  </div>
+  <div class="form-grid">
+    <div><label class="field-label" for="agent-name">Name</label><input id="agent-name" name="name" placeholder="e.g. Research analyst" required></div>
+    <div><label class="field-label" for="agent-runtime">Runtime and model</label><select id="agent-runtime" name="runtime_id" required>{% for r in runtimes %}<option value="{{ r.id }}">{{ r.name }} &middot; {{ r.type.value|title }} / {{ r.model }}</option>{% endfor %}</select><div class="field-help">Choose a configured runtime; its selected model runs this agent.</div></div>
+  </div>
+  <div><label class="field-label" for="agent-description">Description <span>Optional</span></label><input id="agent-description" name="description" placeholder="A short introduction shown in the agent list"></div>
+  <div><label class="field-label" for="agent-backup-runtime">Backup runtime <span>Optional</span></label><select id="agent-backup-runtime" name="backup_runtime_id"><option value="">No automatic backup</option>{% for runtime in runtimes %}<option value="{{ runtime.id }}">{{ runtime.name }} &middot; {{ runtime.model }}</option>{% endfor %}</select><div class="field-help">Takes over if the primary runtime cannot complete a run.</div></div>
+  <div><label class="field-label" for="agent-instructions">Instructions <span>Optional</span></label><textarea id="agent-instructions" name="instructions" rows="6" placeholder="Role, responsibilities, boundaries, and expected output."></textarea></div>
+  {% if skills %}<div><div class="field-label">Skills <span>Optional</span></div><div class="check-grid agent-skill-picker">{% for skill in skills %}<label class="check-card"><input type="checkbox" name="skill_ids" value="{{ skill.id }}"><span><strong>{{ skill.name }}</strong><small>{{ skill.description or "Reusable skill" }}</small></span></label>{% endfor %}</div><div class="field-help">Skills add reusable instructions and can be changed later.</div></div>{% endif %}
+  <details class="agent-advanced"><summary>Advanced settings</summary>
+    <label class="check-card terminal-access-card"><input type="checkbox" name="terminal_enabled" value="1"><span><strong>Allow terminal commands</strong><small>Gives this agent PowerShell access to its configured working directory.</small></span></label>
+    <div><label class="field-label" for="agent-terminal-cwd">Terminal starting directory</label><input id="agent-terminal-cwd" name="terminal_working_directory" placeholder="e.g. C:/Projects/my-app"><div class="field-help">Only used when terminal access is enabled.</div></div>
+  </details>
+  <div class="modal-actions"><button class="primary" type="submit">Create agent</button></div>
+</form></div>{% endblock %}

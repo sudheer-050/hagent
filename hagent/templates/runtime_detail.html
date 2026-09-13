@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}{{ runtime.name }} &middot; Runtimes &middot; Hagent{% endblock %}
+{% block content %}
+<a class="crumb" href="/runtimes">&larr; Runtimes</a>
+<div class="agent-profile-header">
+  <div class="runtime-icon">{{ provider.name[0]|upper }}</div>
+  <div><div class="eyebrow">{{ provider.group }}</div><h2>{{ runtime.name }}</h2><p class="page-sub">{{ provider.name }} &middot; {{ runtime.model }}</p></div>
+</div>
+<section class="detail-section runtime-editor">
+  <div class="section-heading"><div><h3>Runtime configuration</h3><p>Change the provider, model, endpoint, CLI, or working directory used by assigned agents.</p></div></div>
+  {% set form_action = "/runtimes/" ~ runtime.id %}{% set runtime_name = runtime.name %}{% set selected_provider = provider_id %}{% set selected_model = runtime.model %}{% set editing = true %}{% set submit_label = "Save runtime" %}
+  {% include "_runtime_form.html" %}
+</section>
+<section class="detail-section danger-section">
+  <div class="section-heading"><div><h3>Archive runtime</h3><p>Archived runtimes disappear from selection. Reassign agents using it as a primary or backup first.</p></div><span class="section-count">{{ runtime.agents|length + backup_agents|length }}</span></div>
+  <form method="post" action="/runtimes/{{ runtime.id }}/archive"><button type="submit" class="danger-button" {{ "disabled" if runtime.agents or backup_agents }}>Archive runtime</button></form>
+</section>
+{% endblock %}

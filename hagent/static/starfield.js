@@ -1,33 +1,61 @@
-// Interstellar background: sparse, slow-drifting stars with rare comets.
-// Same tuning as the Holly voice app's starfield (holly_voice.html) -- kept
-// as a shared visual motif between the two projects. Runs as a fixed
-// full-viewport canvas behind all page content (see .starfield-canvas in
-// style.css for positioning/z-index).
+// Interstellar background: sparse stars that drift slowly and keep a stable layout across reloads.
 (function starfield() {
     const canvas = document.getElementById('starsCanvas');
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
+    const storageKey = 'hagent-starfield-v1';
+
+    function loadContinuity() {
+        try {
+            const saved = JSON.parse(localStorage.getItem(storageKey) || 'null');
+            if (saved && Number.isInteger(saved.seed) && Number.isFinite(saved.epoch)) return saved;
+            const created = { seed: Math.floor(Math.random() * 0xffffffff), epoch: Date.now() };
+            localStorage.setItem(storageKey, JSON.stringify(created));
+            return created;
+        } catch (_) {
+            return { seed: 0x48414745, epoch: Date.UTC(2025, 0, 1) };
+        }
+    }
+
+    const continuity = loadContinuity();
+    const reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     let stars = [];
 
+    function randomGenerator(seed) {
+        let state = seed | 0;
+        return function () {
+            state = (state + 0x6D2B79F5) | 0;
+            let value = state;
+            value = Math.imul(value ^ (value >>> 15), value | 1);
+            value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+            return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+        };
+    }
+
+    function wrap(value, size) {
+        return ((value % size) + size) % size;
+    }
+
     function layout() {
-        canvas.width = window.innerWidth;
-        canvas.height = window.innerHeight;
+        canvas.width = Math.max(1, window.innerWidth);
+        canvas.height = Math.max(1, window.innerHeight);
         const count = Math.floor((canvas.width * canvas.height) / 3500);
-        const angle = Math.random() * Math.PI * 2;
+        const random = randomGenerator(continuity.seed);
+        const direction = random() * Math.PI * 2;
         stars = Array.from({ length: count }, () => {
-            const depth = Math.random();
+            const depth = random();
             const r = 0.5 + depth * 1.6;
-            const drift = 0.015 + depth * 0.05;
+            const speed = reducedMotion ? 0 : 0.003 + depth * 0.009;
             return {
-                x: Math.random() * canvas.width,
-                y: Math.random() * canvas.height,
+                u: random(),
+                v: random(),
                 r,
                 glow: r > 1.3,
                 baseAlpha: 0.2 + depth * 0.35,
-                vx: Math.cos(angle) * drift,
-                vy: Math.sin(angle) * drift,
-                nextShine: 4 + Math.random() * 14,
-                shineT: -1,
+                vx: Math.cos(direction) * speed,
+                vy: Math.sin(direction) * speed,
+                twinkleOffset: random() * 20,
+                twinklePeriod: 9 + random() * 15,
             };
         });
     }
@@ -56,42 +84,21 @@
 
     let last = null;
     function frame(now) {
-        const t = now / 1000;
-        const dt = last === null ? 0 : (now - last) / 1000;
+        const dt = last === null ? 0 : Math.min((now - last) / 1000, 0.1);
         last = now;
+        const elapsed = Math.max(0, (Date.now() - continuity.epoch) / 1000);
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         for (const s of stars) {
-            s.x += s.vx * dt;
-            s.y += s.vy * dt;
-            if (s.x < 0) s.x += canvas.width;
-            else if (s.x > canvas.width) s.x -= canvas.width;
-            if (s.y < 0) s.y += canvas.height;
-            else if (s.y > canvas.height) s.y -= canvas.height;
-
-            let shine = 0;
-            if (s.shineT >= 0) {
-                s.shineT += dt;
-                const dur = 1.4;
-                if (s.shineT >= dur) {
-                    s.shineT = -1;
-                    s.nextShine = 4 + Math.random() * 14;
-                } else {
-                    shine = Math.sin((s.shineT / dur) * Math.PI);
-                }
-            } else {
-                s.nextShine -= dt;
-                if (s.nextShine <= 0) s.shineT = 0;
-            }
+            const x = wrap(s.u * canvas.width + s.vx * elapsed, canvas.width);
+            const y = wrap(s.v * canvas.height + s.vy * elapsed, canvas.height);
+            const phase = reducedMotion ? 0 : (elapsed + s.twinkleOffset) % s.twinklePeriod;
+            const shine = phase < 1.4 ? Math.sin((phase / 1.4) * Math.PI) : 0;
             ctx.globalAlpha = s.baseAlpha + shine * (1 - s.baseAlpha);
             ctx.fillStyle = '#ffffff';
-            if (s.glow) {
-                ctx.shadowColor = '#ffffff';
-                ctx.shadowBlur = s.r * 3;
-            } else {
-                ctx.shadowBlur = 0;
-            }
+            ctx.shadowBlur = s.glow ? s.r * 3 : 0;
+            if (s.glow) ctx.shadowColor = '#ffffff';
             ctx.beginPath();
-            ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+            ctx.arc(x, y, s.r, 0, Math.PI * 2);
             ctx.fill();
         }
         ctx.shadowBlur = 0;

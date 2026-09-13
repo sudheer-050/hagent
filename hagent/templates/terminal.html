@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Terminal &middot; Hagent{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/vendor/xterm.css">{% endblock %}
+{% block content %}
+<div class="terminal-page" data-default-cwd="{{ default_cwd }}" data-user-home="{{ user_home }}" data-project-cwd="{{ project_cwd }}">
+  <div class="terminal-titlebar">
+    <div><div class="eyebrow">Workspace</div><h2>Terminal</h2></div>
+    <div class="terminal-security"><span class="ready-dot"></span>Runs locally with your Windows account</div>
+  </div>
+  <section class="terminal-workbench" aria-label="Terminal workspace">
+    <div class="terminal-tabbar">
+      <div class="terminal-tabs" id="terminal-tabs" role="tablist">
+        <div class="terminal-new-wrap" id="terminal-new-wrap">
+          <button class="terminal-new" id="terminal-new" type="button" title="New terminal" aria-label="New terminal" aria-expanded="false">+</button>
+        </div>
+      </div>
+      <div class="terminal-dropdown" id="terminal-dropdown" hidden>
+        <div class="terminal-dropdown-head"><div><div class="eyebrow">New session</div><strong>Create terminal</strong></div><button type="button" class="terminal-dropdown-close" id="terminal-menu-close" aria-label="Close">×</button></div>
+        <form id="terminal-create-form" class="stack">
+          <div><label class="field-label" for="terminal-name">Tab name</label><input id="terminal-name" value="PowerShell" required></div>
+          <div><label class="field-label" for="terminal-path-preset">Open terminal in</label><select id="terminal-path-preset"><option value="home">My user folder — {{ user_home }}</option><option value="project">Current Hagent project — {{ project_cwd }}</option><option value="custom">Choose a different folder</option></select></div>
+          <div id="terminal-custom-path-row" hidden><label class="field-label" for="terminal-cwd">Starting directory</label><input id="terminal-cwd" value="{{ default_cwd }}" required></div>
+          <div class="terminal-dropdown-actions"><button type="button" id="terminal-cancel">Cancel</button><button class="primary" type="submit">Create terminal</button></div>
+        </form>
+      </div>
+    </div>
+    <div class="terminal-views" id="terminal-views"></div>
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}<script src="/static/vendor/xterm.js"></script><script src="/static/vendor/addon-fit.js"></script><script src="/static/terminal.js?v=terminal-fit-2"></script>{% endblock %}

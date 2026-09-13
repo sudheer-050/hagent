@@ -1,34 +1,4 @@
 {% extends "base.html" %}
-{% block content %}
-<div class="page-header">
-  <div><h2>Squads</h2><p class="page-sub">Group agents together for coordinated work.</p></div>
-</div>
-
-{% for sq in squads %}
-<div class="card">
-  <div class="card-title">{{ sq.name }} <code>{{ sq.id }}</code></div>
-  {% if sq.description %}<p class="muted">{{ sq.description }}</p>{% endif %}
-  <p>Members: {% for m in sq.members %}<span class="chip">{{ m.agent.name }} ({{ m.role }})</span>{% else %}<span class="faint">none yet</span>{% endfor %}</p>
-  <form method="post" action="/squads/{{ sq.id }}/members" class="field-row">
-    <select name="agent_id">{% for a in agents %}<option value="{{ a.id }}">{{ a.name }}</option>{% endfor %}</select>
-    <input name="role" placeholder="Role" value="member">
-    <button type="submit">Add member</button>
-  </form>
-</div>
-{% else %}
-<div class="empty-state">
-  <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="9" r="3"/><circle cx="17" cy="9" r="2.4"/><path d="M2.5 20c0-3 2.5-5 5.5-5s5.5 2 5.5 5"/><path d="M14.5 15.3c2.4.2 4.5 2 4.5 4.7"/></svg>
-  <h4>No squads yet</h4>
-  <p>Create a squad to organize agents that work together.</p>
-</div>
-{% endfor %}
-
-<div class="card card-form">
-  <div class="card-title">New squad</div>
-  <form method="post" action="/squads" class="field-row">
-    <input name="name" placeholder="Squad name" required>
-    <input name="description" placeholder="Description" size="30">
-    <button class="primary" type="submit">Create squad</button>
-  </form>
-</div>
-{% endblock %}
+{% block content %}<div class="page-header"><div><h2>Squads</h2><p class="page-sub">Group agents together for coordinated work.</p></div><button type="button" class="icon-btn collection-add" data-modal="page-modal-squad" title="Create squad" aria-label="Create squad"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button></div>
+{% if squads %}<div class="collection-list">{% for sq in squads %}<div class="collection-row squad-row"><div class="collection-row-main"><strong>{{ sq.name }}</strong><small>{{ sq.description or "Agent group" }} &middot; {{ sq.members|length }} member{{ '' if sq.members|length == 1 else 's' }}</small></div><div class="squad-members">{% for m in sq.members %}<span class="chip">{{ m.agent.name }} ({{ m.role }})</span>{% else %}<span class="faint">No members yet</span>{% endfor %}</div>{% if agents %}<details class="squad-add-member"><summary>Add member</summary><form method="post" action="/squads/{{ sq.id }}/members" class="field-row"><select name="agent_id" aria-label="Agent">{% for a in agents %}<option value="{{ a.id }}">{{ a.name }}</option>{% endfor %}</select><input name="role" placeholder="Role" value="member" aria-label="Role"><button type="submit">Add</button></form></details>{% endif %}</div>{% endfor %}</div>{% else %}<div class="empty-state"><h4>No squads yet</h4><p>Create a squad to organize agents with the + button above.</p></div>{% endif %}{% endblock %}
+{% block modals %}<div class="modal" id="page-modal-squad" hidden role="dialog" aria-modal="true" aria-labelledby="squad-modal-title"><div class="modal-head"><div><div class="eyebrow">Agent group</div><h3 id="squad-modal-title">Create squad</h3></div><button type="button" class="icon-btn modal-close" data-close aria-label="Close">&times;</button></div><form method="post" action="/squads" class="stack"><div><label class="field-label" for="squad-name">Name</label><input id="squad-name" name="name" placeholder="e.g. Launch team" required autofocus></div><div><label class="field-label" for="squad-description">Description <span>Optional</span></label><input id="squad-description" name="description" placeholder="What does this squad work on?"></div><button class="primary" type="submit">Create squad</button></form></div>{% endblock %}
