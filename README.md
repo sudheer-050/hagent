@@ -10,7 +10,7 @@ Hagent is a from-scratch reimplementation of the core ideas behind commercial mu
 
 |                                              |                                        |                                          |
 | -------------------------------------------- | -------------------------------------- | ---------------------------------------- |
-| ![Dashboard](docs/screenshots/dashboard.jpg) | ![Board](docs/screenshots/board.jpg)   | ![Agents](docs/screenshots/agents.jpg)   |
+| ![Dashboard](docs/screenshots/dashboard.png) | ![Board](docs/screenshots/board.png)   | ![Agents](docs/screenshots/agents.png)   |
 | Dashboard                                    | Kanban board                           | Agent roster                             |
 
 ## Why this exists

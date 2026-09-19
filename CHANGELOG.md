@@ -8,6 +8,7 @@
 - Agents sharing a skill can retrieve its recent lessons on demand through `recall_lessons` without adding the full history to every prompt.
 - Skill lesson history is visible in the Skills UI and exportable to workspace-scoped Markdown snapshots.
 - The public download site now includes real screenshots, OS-specific setup instructions, a first-project walkthrough, practical use cases, a detailed FAQ, and an honest release-readiness assessment.
+- Restored the complete HAI application portal, added Hagent as a fifth app with its own detail page, linked every app to its GitHub source or source repository, and replaced the full screenshot set with fresh captures from the current interface.
 
 ### Safety and reliability
 
