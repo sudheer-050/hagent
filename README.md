@@ -2,6 +2,8 @@
 
 A self-hosted multi-agent orchestration platform: projects with **issues** (a kanban tracker), **agents** bound to pluggable **runtimes** (major cloud APIs, local Ollama/LM Studio, and installed AI CLIs), **squads** and **skills**, and **autopilots** that run agents against matching issues on a schedule — from a CLI or a web dashboard.
 
+> Current release: **0.2.0**. Hagent is under active development and is best suited to local use and trusted small-team deployments. Read the security notes before enabling terminal access or exposing the server beyond localhost.
+
 Hagent is a from-scratch reimplementation of the core ideas behind commercial multi-agent orchestration tools (Multica and similar): a workspace holding projects, issues, agents, and runtimes, with a clean adapter boundary so any AI backend can be plugged in without touching the rest of the system.
 
 |                                              |                                        |                                          |
@@ -11,10 +13,11 @@ Hagent is a from-scratch reimplementation of the core ideas behind commercial mu
 
 ## Why this exists
 
-Most orchestration platforms are closed SaaS products. Hagent is built to:
+Hagent is built to:
 - Run entirely locally — no dependency on a hosted backend, own your data and workflow.
 - Support any AI runtime interchangeably (cloud APIs or local models) behind one interface.
 - Model work the way real orchestration tools do — issues with status/labels/properties/sub-issues/comments, not just a flat task queue.
+- Preserve provider-neutral memory and make model-routing decisions auditable.
 
 ## Architecture
 
@@ -41,10 +44,30 @@ auditable adaptive model router. See
 ## Setup
 
 ```bash
+git clone https://github.com/sudheer-050/hagent.git
+cd hagent
+python -m venv .venv
+# Windows: .venv\Scripts\activate
+# macOS/Linux: source .venv/bin/activate
+python -m pip install --upgrade pip
 pip install -r requirements.txt
-pip install -e .                    # installs the hagent command
-export ANTHROPIC_API_KEY=...   # only needed for ClaudeRuntime
+pip install -e .
+hagent serve
 ```
+
+The dashboard is available at `http://127.0.0.1:8000`. API runtimes need the corresponding provider key; CLI runtimes reuse the CLI's existing local login. Ollama must already be running when an Ollama runtime is used.
+
+Windows is the primary tested host. The web application is portable, but some terminal execution and local CLI discovery paths are Windows-oriented and need broader macOS/Linux verification.
+
+Local state is stored in `hagent.db` and is intentionally ignored by Git. Cloning the repository installs the application but does not copy another installation's users, agents, credentials, issues, memory, or run history.
+
+### Security before first use
+
+- Keep the default `127.0.0.1` binding unless accounts are configured and traffic is protected with HTTPS or a private network.
+- Terminal-enabled agents run with the permissions of the operating-system account running Hagent.
+- An agent's terminal starting directory is a working directory, **not a filesystem sandbox**; absolute paths and directory changes can reach other files allowed to that OS account.
+- Run approval pauses an agent before a run starts. It is not per-command approval after the run begins.
+- For autonomous terminal work, prefer a dedicated OS account, container, virtual machine, or isolated worker device.
 
 ## CLI usage
 
@@ -163,6 +186,8 @@ python -m hagent serve                 # dashboard and API on http://127.0.0.1:8
 python -m hagent daemon start          # or: only the dispatcher and scheduler, with no web server
 ```
 
+On Windows, `launch_hagent.vbs` starts the local server without keeping a console window open. It does not install a system service or scheduled task.
+
 **Closing it does not lose work.** Everything (issues, runs, agent memory, worktrees) is stored on disk. When Hagent
 starts again it finds any run that was in progress when it closed, marks that attempt as interrupted, and queues a
 continuation for the same agent, telling it to check the work already done and carry on rather than start over. An issue
@@ -220,18 +245,21 @@ CLI and autopilot runs remain synchronous.
 pytest
 ```
 
-## Status
+## Release status and known limitations
 
-Phase 3 adds local workspace/profile management, issue extras and timeline events,
-multi-file skill bundles, squad activity, cron and webhook triggers, real git checkout,
-attachments, and MCP protocol tool invocation in runtime loops.
+Version 0.2.0 includes authenticated remote access, worker devices, provider failover and recovery, provider-neutral memory, adaptive model routing, worktree isolation, approvals, usage tracking, multi-file skills, squad delegation, and scheduled or webhook-driven Autopilots. Existing databases are upgraded additively on startup.
 
-Existing Phase 1/2 SQLite databases are upgraded additively on first start; no data reset is required.
+Current limitations:
 
-Marketplace-specific skill discovery and public webhook exposure remain intentionally
-out of scope: local archives/direct URLs are supported, and a user must expose a local
-webhook endpoint through their own tunnel or reverse proxy when needed.
+- Hagent is a single-node SQLite application, not a horizontally scaled control plane.
+- The terminal starting directory is not a hard containment boundary; use OS- or container-level isolation for untrusted autonomous work.
+- Webhook endpoints are not publicly exposed automatically; use a trusted tunnel or reverse proxy when required.
+- Marketplace-wide skill discovery is out of scope; local archives and supported direct URLs can be imported.
+- The current test snapshot passes 282 tests, with 6 remaining failures in agent/skill presentation markup. Core orchestration, authentication, memory, routing, recovery, worker, and provider tests pass.
+- Automated CI and packaged container deployment are not yet included.
+
+See [CHANGELOG.md](CHANGELOG.md) for release details and [HANDOFF.md](HANDOFF.md) for contributor notes.
 
 ## Agent terminal access
 
-Terminal access for AI agents is optional and disabled by default. Enable **Allow terminal commands** on an agent and choose its starting directory. API and local tool-calling models receive an audited `terminal_execute` tool. Codex CLI, Gemini CLI, and Claude Code use their native unrestricted automation mode only when that checkbox is enabled. Commands and results are recorded as issue timeline tool calls. This permission allows arbitrary command execution with your Windows account, so enable it only for agents and projects you trust.
+Terminal access for AI agents is optional and disabled by default. Enable **Allow terminal commands** on an agent and choose its starting directory. API and local tool-calling models receive an audited `terminal_execute` tool. Codex CLI, Gemini CLI, and Claude Code use their native automation mode only when that checkbox is enabled. Commands and results are recorded as issue timeline tool calls. This permission can execute arbitrary commands with the Hagent process user's OS permissions; the configured starting directory does not prevent access to other permitted paths. Enable it only for trusted agents and prefer OS-level isolation.

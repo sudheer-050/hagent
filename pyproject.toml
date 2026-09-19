@@ -1,7 +1,9 @@
 [project]
 name = "hagent"
-version = "0.1.0"
+version = "0.2.0"
 description = "Self-hosted multi-agent orchestration platform (CLI + web dashboard) supporting pluggable AI runtimes."
+readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.115",
@@ -25,6 +27,11 @@ dev = [
 
 [project.scripts]
 hagent = "hagent.warm:main"
+
+[project.urls]
+Homepage = "https://github.com/sudheer-050/hagent"
+Repository = "https://github.com/sudheer-050/hagent"
+Issues = "https://github.com/sudheer-050/hagent/issues"
 
 [build-system]
 requires = ["setuptools>=68"]
