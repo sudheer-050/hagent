@@ -1,4 +1,5 @@
 import json
+import re
 
 import pytest
 from fastapi.testclient import TestClient
@@ -6,7 +7,11 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from hagent import db
-from hagent.models import Agent, ChatThread, Runtime, RuntimeType, Skill
+from hagent.adapters.base import RuntimeResult
+from hagent.models import Agent, Runtime, RuntimeType, Skill
+from hagent.models import Autopilot, AutopilotRun
+from hagent.models import Issue, Project, Run, RunStatus, Squad, SquadMember, TimelineEvent
+from hagent.skill_icons import SKILL_EMOJI_GROUPS, PERSON_EMOJIS
 from hagent.tenancy import WorkspaceSession
 from hagent.web import app
 
@@ -62,6 +67,43 @@ def test_agents_page_is_focused_inventory(local_db):
     assert "New runtime" not in response.text
 
 
+def test_settings_page_persists_branding_and_feature_toggles(local_db, tmp_path):
+    client = TestClient(app)
+    page = client.get("/settings")
+    assert page.status_code == 200
+    assert "Identity and appearance" in page.text
+    assert "New-agent defaults" in page.text
+    assert "Manage Hagent" in page.text
+
+    response = client.post(
+        "/settings",
+        data={
+            "app_name": "My Agent Desk",
+            "tagline": "Private AI workspace",
+            "accent_color": "#33aabb",
+            "density": "compact",
+            "default_agent_delegation_limit": "3",
+            "default_agent_terminal_directory": str(tmp_path),
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/settings?saved=1"
+
+    dashboard = client.get("/")
+    assert dashboard.status_code == 200
+    assert "My Agent Desk" in dashboard.text
+    assert "Private AI workspace" in dashboard.text
+    assert "--accent:#33aabb" in dashboard.text
+    assert '<html class="density-compact"' in dashboard.text
+    assert 'id="starsCanvas"' not in dashboard.text
+    assert 'id="holly-fab"' not in dashboard.text
+
+    saved = client.get("/settings")
+    assert 'value="3"' in saved.text
+    assert "settings-delegation" in saved.text
+
+
 def test_agent_detail_updates_profile_and_skills(local_db, tmp_path):
     agent_id, runtime_id, skill_id = seed_agent()
     client = TestClient(app)
@@ -81,6 +123,8 @@ def test_agent_detail_updates_profile_and_skills(local_db, tmp_path):
             "environment_json": '{"PROJECT_MODE": "review"}',
             "terminal_enabled": "1",
             "terminal_working_directory": str(tmp_path),
+            "require_run_approval": "1",
+            "delegation_limit": "3",
         },
         follow_redirects=False,
     )
@@ -91,6 +135,8 @@ def test_agent_detail_updates_profile_and_skills(local_db, tmp_path):
         assert [skill.id for skill in agent.skills] == [skill_id]
         assert json.loads(agent.env_json) == {"PROJECT_MODE": "review"}
         assert agent.terminal_enabled is True
+        assert agent.require_run_approval is True
+        assert agent.delegation_limit == 3
         assert agent.terminal_working_directory == str(tmp_path.resolve())
 
 
@@ -101,7 +147,13 @@ def test_skills_library_assigns_reusable_skill_to_any_agent(local_db):
     library = client.get("/skills")
     assert library.status_code == 200
     assert "Skills library" in library.text
-    assert "Available to agents" in library.text
+    assert 'class="skill-car"' in library.text
+    assert f'data-modal="skill-modal-{skill_id}"' in library.text
+    assert 'Last used' in library.text
+    assert 'Never used' in library.text
+    assert 'Save skill details' in library.text
+    assert 'skill-person-icon' not in library.text
+    assert "Agents permitted to use this skill" in library.text
     assert 'name="agent_ids"' in library.text
 
     response = client.post(f"/skills/{skill_id}/agents", data={"agent_ids": agent_id}, follow_redirects=False)
@@ -115,6 +167,347 @@ def test_skills_library_assigns_reusable_skill_to_any_agent(local_db):
     with db.get_session(scoped=False) as session:
         agent = session.get(Agent, agent_id)
         assert agent.skills == []
+
+
+def test_new_skill_icons_match_type_are_unique_and_persist(local_db):
+    seed_agent()
+    client = TestClient(app)
+    for name in ('Code review', 'Python debugging', 'Science research'):
+        created = client.post('/skills', data={'name': name}, follow_redirects=False)
+        assert created.status_code == 303
+
+    with db.get_session(scoped=False) as session:
+        skills = {skill.name: skill for skill in session.scalars(select(Skill)).all()}
+        icons = {name: skill.emoji for name, skill in skills.items()}
+
+    assert icons['Code review'] in SKILL_EMOJI_GROUPS['coding']
+    assert icons['Python debugging'] in SKILL_EMOJI_GROUPS['coding']
+    assert icons['Science research'] in SKILL_EMOJI_GROUPS['research']
+    assert icons['Research'] in SKILL_EMOJI_GROUPS['research']
+    assert len(set(icons.values())) == len(icons)
+    assert set(icons.values()) <= set(PERSON_EMOJIS)
+    for _ in range(2):
+        page = client.get('/skills')
+        assert page.status_code == 200
+        cars = re.findall(r'<img class="skill-car" src="([^"]+)" style="--car-hue:(\d+)deg"', page.text)
+        assert len(cars) == len(skills)
+        assert all(car.startswith('/static/cars/') for car, _ in cars)
+        assert len({hue for _, hue in cars}) == len(cars)
+        assert all(icon not in page.text for icon in icons.values())
+
+
+def test_missing_and_duplicate_skill_icons_are_repaired(local_db):
+    seed_agent()
+    with db.get_session(scoped=False) as session:
+        first = session.scalar(select(Skill))
+        duplicate = Skill(
+            workspace_id=first.workspace_id,
+            name='Research evidence',
+            emoji=first.emoji,
+        )
+        first.emoji = ''
+        session.add(duplicate)
+        session.commit()
+
+    db.init_db()
+
+    with db.get_session(scoped=False) as session:
+        icons = [skill.emoji for skill in session.scalars(select(Skill)).all()]
+    assert len(icons) == 2
+    assert all(icons)
+    assert len(set(icons)) == 2
+    assert set(icons) <= set(SKILL_EMOJI_GROUPS['research'])
+
+
+def test_skill_rows_show_power_tiers_and_details_save_all_fields(local_db):
+    agent_id, _, skill_id = seed_agent()
+    client = TestClient(app)
+    for name, content in (
+        ('Simple notes', ''),
+        ('Moderate instructions', 'x' * 200),
+        ('Deep analysis', 'x' * 800),
+        ('Expert orchestration', 'x' * 1700),
+    ):
+        assert client.post('/skills', data={'name': name, 'content': content}, follow_redirects=False).status_code == 303
+
+    page = client.get('/skills')
+    rows = re.findall(r'<button type="button" class="collection-row skill-row skill-open".*?</button>', page.text, re.S)
+    for name, tier in (
+        ('Simple notes', 'compact'),
+        ('Moderate instructions', 'sport'),
+        ('Deep analysis', 'gt'),
+        ('Expert orchestration', 'hyper'),
+    ):
+        assert any(f'Open details for {name}' in row and f'/static/cars/{tier}.png' in row for row in rows)
+    research_row = next(row for row in rows if 'Open details for Research' in row)
+    assert 'Find facts' not in research_row
+    assert 'Never used' in research_row
+
+    saved = client.post(
+        f'/skills/{skill_id}',
+        data={
+            'name': 'Research Plus',
+            'description': 'Find updated facts',
+            'content': 'Verify every claim.',
+            'last_used_at': '2026-09-01T14:30',
+            'agent_ids': agent_id,
+        },
+        follow_redirects=False,
+    )
+    assert saved.status_code == 303
+    with db.get_session(scoped=False) as session:
+        skill = session.get(Skill, skill_id)
+        assert skill.name == 'Research Plus'
+        assert skill.description == 'Find updated facts'
+        assert skill.content == 'Verify every claim.'
+        assert skill.last_used_at.strftime('%Y-%m-%dT%H:%M') == '2026-09-01T14:30'
+        assert [agent.id for agent in skill.agents] == [agent_id]
+    assert 'Research Plus' in client.get('/skills').text
+    assert client.post(f'/skills/{skill_id}', data={'name': 'Research Plus', 'last_used_at': 'not-a-date'}).status_code == 400
+
+
+def test_agent_list_uses_distinct_generated_character_stickers(local_db):
+    agent_id, runtime_id, _ = seed_agent()
+    with db.get_session(scoped=False) as session:
+        original = session.get(Agent, agent_id)
+        second = Agent(workspace_id=original.workspace_id, runtime_id=runtime_id, name='Second agent')
+        session.add(second)
+        session.commit()
+        second_id = second.id
+    client = TestClient(app)
+    page = client.get('/agents')
+    icons = re.findall(r'data-character="([^"]+)" style="--avatar-hue:(\d+)deg"', page.text)
+    assert len(icons) == 2
+    assert len(set(icons)) == 2
+    assert {character for character, _ in icons} == {'fox', 'robot'}
+    assert 'data-character="fox"' in client.get(f'/agents/{agent_id}').text
+    assert 'data-character="robot"' in client.get(f'/agents/{second_id}').text
+    with db.get_session(scoped=False) as session:
+        second = session.get(Agent, second_id)
+        second.name = 'A renamed agent'
+        session.commit()
+    reordered = client.get('/agents')
+    agent_rows = re.findall(r'href="/agents/([^"]+)".*?data-character="([^"]+)"', reordered.text, re.S)
+    assert dict(agent_rows)[agent_id] == 'fox'
+    assert dict(agent_rows)[second_id] == 'robot'
+
+
+def test_agent_character_stickers_stay_unique_after_catalog_exhaustion(local_db):
+    agent_id, runtime_id, _ = seed_agent()
+    with db.get_session(scoped=False) as session:
+        original = session.get(Agent, agent_id)
+        session.add_all(
+            Agent(workspace_id=original.workspace_id, runtime_id=runtime_id, name=f'Agent {index:02d}')
+            for index in range(25)
+        )
+        session.commit()
+    page = TestClient(app).get('/agents')
+    icons = re.findall(r'data-character="([^"]+)" style="--avatar-hue:(\d+)deg"', page.text)
+    assert len(icons) == 26
+    assert len(set(icons)) == len(icons)
+
+
+def test_autopilot_page_shows_recent_execution_outcomes(local_db):
+    agent_id, _, _ = seed_agent()
+    with db.get_session(scoped=False) as session:
+        agent = session.get(Agent, agent_id)
+        autopilot = Autopilot(workspace_id=agent.workspace_id, name='Daily review', agent_id=agent.id)
+        session.add(autopilot)
+        session.flush()
+        session.add(AutopilotRun(autopilot_id=autopilot.id, status='partial', summary='2 succeeded, 1 failed'))
+        session.commit()
+
+    response = TestClient(app).get('/autopilots')
+
+    assert response.status_code == 200
+    assert 'Recent executions' in response.text
+    assert 'Daily review' in response.text
+    assert '2 succeeded, 1 failed' in response.text
+    assert 'partial' in response.text
+
+
+def test_issue_run_executes_from_persisted_background_queue(local_db, mocker):
+    agent_id, _, _ = seed_agent()
+    with db.get_session(scoped=False) as session:
+        agent = session.get(Agent, agent_id)
+        project = Project(workspace_id=agent.workspace_id, name='Background project')
+        session.add(project)
+        session.flush()
+        issue = Issue(
+            project_id=project.id,
+            title='Background task',
+            description='Do work',
+            assignee_agent_id=agent.id,
+        )
+        session.add(issue)
+        session.commit()
+        issue_id = issue.id
+    mocker.patch(
+        'hagent.adapters.ollama.OllamaRuntime.run',
+        return_value=RuntimeResult(output='background completed'),
+    )
+
+    response = TestClient(app).post(f'/issues/{issue_id}/run', follow_redirects=False)
+
+    assert response.status_code == 303
+    with db.get_session() as session:
+        run = session.scalar(select(Run).where(Run.issue_id == issue_id))
+        assert run.status == RunStatus.COMPLETED
+        assert run.output == 'background completed'
+
+
+def test_failed_issue_run_can_be_retried_with_same_agent_and_prompt(local_db, mocker):
+    agent_id, _, _ = seed_agent()
+    with db.get_session(scoped=False) as session:
+        agent = session.get(Agent, agent_id)
+        project = Project(workspace_id=agent.workspace_id, name="Retry project")
+        session.add(project)
+        session.flush()
+        issue = Issue(project_id=project.id, title="Retry me", assignee_agent_id=agent.id)
+        session.add(issue)
+        session.flush()
+        failed = Run(issue_id=issue.id, agent_id=agent.id, prompt="Original task", status=RunStatus.FAILED, error="temporary provider error")
+        session.add(failed)
+        session.commit()
+        issue_id, failed_id = issue.id, failed.id
+    mocker.patch(
+        "hagent.adapters.ollama.OllamaRuntime.run",
+        return_value=RuntimeResult(output="retry completed"),
+    )
+
+    response = TestClient(app).post(
+        f"/issues/{issue_id}/runs/{failed_id}/retry",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    with db.get_session() as session:
+        runs = session.scalars(select(Run).where(Run.issue_id == issue_id).order_by(Run.created_at)).all()
+        assert len(runs) == 2
+        assert runs[0].status == RunStatus.FAILED
+        assert runs[1].status == RunStatus.COMPLETED
+        assert runs[1].agent_id == agent_id
+        assert runs[1].prompt == "Original task"
+        assert runs[1].output == "retry completed"
+
+
+def test_retry_endpoint_rejects_active_runs_and_cross_issue_ids(local_db):
+    agent_id, _, _ = seed_agent()
+    with db.get_session(scoped=False) as session:
+        agent = session.get(Agent, agent_id)
+        project = Project(workspace_id=agent.workspace_id, name="Retry guards")
+        session.add(project)
+        session.flush()
+        issue_a = Issue(project_id=project.id, title="Issue A")
+        issue_b = Issue(project_id=project.id, title="Issue B")
+        session.add_all([issue_a, issue_b])
+        session.flush()
+        active = Run(issue_id=issue_a.id, agent_id=agent.id, prompt="Active", status=RunStatus.RUNNING)
+        failed = Run(issue_id=issue_b.id, agent_id=agent.id, prompt="Failed elsewhere", status=RunStatus.FAILED)
+        session.add_all([active, failed])
+        session.commit()
+        issue_a_id, issue_b_id, active_id, failed_id = issue_a.id, issue_b.id, active.id, failed.id
+
+    client = TestClient(app)
+    assert client.post(f"/issues/{issue_a_id}/runs/{active_id}/retry").status_code == 409
+    assert client.post(f"/issues/{issue_a_id}/runs/{failed_id}/retry").status_code == 404
+
+
+def test_agent_run_waits_for_approval_then_runs_after_approval(local_db, mocker):
+    agent_id, _, _ = seed_agent()
+    with db.get_session(scoped=False) as session:
+        agent = session.get(Agent, agent_id)
+        agent.require_run_approval = True
+        project = Project(workspace_id=agent.workspace_id, name="Approval project")
+        session.add(project)
+        session.flush()
+        issue = Issue(project_id=project.id, title="Review before run", assignee_agent_id=agent.id)
+        session.add(issue)
+        session.commit()
+        issue_id = issue.id
+    runtime_call = mocker.patch(
+        "hagent.adapters.ollama.OllamaRuntime.run",
+        return_value=RuntimeResult(output="approved execution completed"),
+    )
+    client = TestClient(app)
+
+    queued = client.post(f"/issues/{issue_id}/run", follow_redirects=False)
+
+    assert queued.status_code == 303
+    runtime_call.assert_not_called()
+    with db.get_session() as session:
+        run = session.scalar(select(Run).where(Run.issue_id == issue_id))
+        assert run.status == RunStatus.WAITING_APPROVAL
+        run_id = run.id
+    page = client.get(f"/issues/{issue_id}")
+    assert "Awaiting your approval" in page.text
+    assert "Approve and run" in page.text
+
+    approved = client.post(f"/issues/{issue_id}/runs/{run_id}/approve", follow_redirects=False)
+
+    assert approved.status_code == 303
+    runtime_call.assert_called_once()
+    with db.get_session() as session:
+        run = session.get(Run, run_id)
+        assert run.status == RunStatus.COMPLETED
+        assert run.output == "approved execution completed"
+        events = session.scalars(select(TimelineEvent).where(TimelineEvent.issue_id == issue_id)).all()
+        assert {event.event_type for event in events} >= {"run_approval_requested", "run_approved", "run_started"}
+
+
+def test_rejected_approval_never_executes_and_is_audited(local_db, mocker):
+    agent_id, _, _ = seed_agent()
+    with db.get_session(scoped=False) as session:
+        agent = session.get(Agent, agent_id)
+        agent.require_run_approval = True
+        project = Project(workspace_id=agent.workspace_id, name="Reject project")
+        session.add(project)
+        session.flush()
+        issue = Issue(project_id=project.id, title="Reject this run", assignee_agent_id=agent.id)
+        session.add(issue)
+        session.commit()
+        issue_id = issue.id
+    runtime_call = mocker.patch("hagent.adapters.ollama.OllamaRuntime.run")
+    client = TestClient(app)
+    client.post(f"/issues/{issue_id}/run", follow_redirects=False)
+    with db.get_session() as session:
+        run = session.scalar(select(Run).where(Run.issue_id == issue_id))
+        run_id = run.id
+
+    rejected = client.post(f"/issues/{issue_id}/runs/{run_id}/reject", follow_redirects=False)
+
+    assert rejected.status_code == 303
+    runtime_call.assert_not_called()
+    with db.get_session() as session:
+        run = session.get(Run, run_id)
+        assert run.status == RunStatus.REJECTED
+        assert run.error == "rejected by user"
+        assert session.scalar(select(TimelineEvent).where(TimelineEvent.issue_id == issue_id, TimelineEvent.event_type == "run_rejected"))
+    assert client.post(f"/issues/{issue_id}/runs/{run_id}/approve").status_code == 409
+
+
+def test_approvals_inbox_lists_pending_run_and_review_controls(local_db):
+    agent_id, _, _ = seed_agent()
+    with db.get_session(scoped=False) as session:
+        agent = session.get(Agent, agent_id)
+        project = Project(workspace_id=agent.workspace_id, name="Inbox project")
+        session.add(project)
+        session.flush()
+        issue = Issue(project_id=project.id, title="Need approval")
+        session.add(issue)
+        session.flush()
+        run = Run(issue_id=issue.id, agent_id=agent.id, prompt="Review this plan", status=RunStatus.WAITING_APPROVAL)
+        session.add(run)
+        session.commit()
+
+    response = TestClient(app).get("/approvals")
+
+    assert response.status_code == 200
+    assert "Approvals" in response.text
+    assert "Need approval" in response.text
+    assert "Review this plan" in response.text
+    assert "Approve and run" in response.text
+    assert "Reject" in response.text
 
 
 def test_runtimes_have_their_own_page(local_db):
@@ -266,162 +659,3 @@ def test_agent_builder_drafts_instructions_with_selected_runtime(local_db, mocke
     assert response.json()["instructions"] == "You are a careful research assistant."
     assert "Research market trends" in run.call_args.args[0]
 
-
-def test_chat_page_renders_conversation_and_agent_picker(local_db):
-    agent_id, _, _ = seed_agent()
-    with db.get_session(scoped=False) as session:
-        agent = session.get(Agent, agent_id)
-        thread = ChatThread(workspace_id=agent.workspace_id, agent_id=agent.id, title="Release planning")
-        session.add(thread)
-        session.commit()
-        thread_id = thread.id
-    response = TestClient(app).get(f"/chat?thread_id={thread_id}")
-    assert response.status_code == 200
-    assert "Release planning" in response.text
-    assert "Scout" in response.text
-    assert "Message your agent" in response.text
-
-
-def test_knowledge_upload_retrieval_and_agent_context(local_db, mocker):
-    from hagent.adapters.base import RuntimeResult
-    from hagent.engine import execute_agent
-
-    agent_id, _, _ = seed_agent()
-    mocker.patch("hagent.rag.embed_texts", side_effect=lambda base, texts, **kw: [[1.0, 0.0] for _ in texts])
-    client = TestClient(app)
-    created = client.post("/knowledge", data={"name": "Support guide", "embedding_provider": "ollama"}, follow_redirects=False)
-    assert created.status_code == 303
-    base_id = created.headers["location"].rsplit("/", 1)[-1]
-    detail = client.get(f"/knowledge/{base_id}")
-    assert detail.status_code == 200
-    assert "Agent access" in detail.text
-    assert "Test retrieval" in detail.text
-    uploaded = client.post(
-        f"/knowledge/{base_id}/documents",
-        files={"file": ("passwords.txt", b"Password reset: open Settings, choose Security, then choose Reset password.", "text/plain")},
-        follow_redirects=False,
-    )
-    assert uploaded.status_code == 303
-    client.post(f"/knowledge/{base_id}/agents", data={"agent_ids": [agent_id]}, follow_redirects=False)
-    results = client.get(f"/api/knowledge/{base_id}/search", params={"q": "How do I reset my password?"})
-    assert results.status_code == 200
-    assert results.json()["results"][0]["name"] == "passwords.txt"
-
-    run = mocker.patch("hagent.adapters.ollama.OllamaRuntime.run", return_value=RuntimeResult(output="Use Settings > Security."))
-    with db.get_session(scoped=False) as session:
-        agent = session.get(Agent, agent_id)
-        execute_agent(agent, "How do I reset my password?")
-    prompt = run.call_args.kwargs["prompt"]
-    assert "Retrieved knowledge" in prompt
-    assert "[S1] passwords.txt" in prompt
-
-
-def test_rag_chunking_and_keyword_fallback(local_db, mocker):
-    from hagent.rag import chunk_text, ingest_document, search_knowledge
-    from hagent.models import KnowledgeBase
-
-    assert chunk_text(" ") == []
-    pieces = chunk_text("Sentence. " * 500, size=160, overlap=30)
-    assert len(pieces) > 1
-    assert all(len(piece) <= 161 for piece in pieces)
-
-    mocker.patch("hagent.rag.embed_texts", side_effect=RuntimeError("offline"))
-    with db.get_session(scoped=False) as session:
-        from hagent.models import Workspace
-        workspace = session.scalar(select(Workspace))
-        base = KnowledgeBase(workspace_id=workspace.id, name="Fallback", embedding_provider="ollama", embedding_model="embeddinggemma")
-        session.add(base)
-        session.flush()
-        document = ingest_document(session, base, "guide.txt", b"Rotate credentials every quarter using the security console.")
-        assert document.status == "keyword_only"
-        session.flush()
-        results = search_knowledge(session, [base.id], "How should credentials rotate?", top_k=3)
-        assert results
-        assert results[0]["name"] == "guide.txt"
-
-
-def test_local_folder_is_indexed_and_rescanned(local_db, mocker, tmp_path):
-    from hagent.models import KnowledgeDocument, KnowledgeFolder
-    from hagent.local_watch import sync_local_folder_once
-
-    mocker.patch("hagent.rag.embed_texts", side_effect=lambda base, texts, **kw: [[1.0, 0.0] for _ in texts])
-    folder = tmp_path / "work-notes"
-    folder.mkdir()
-    (folder / "plan.md").write_text("Launch checklist: prepare customer onboarding materials.", encoding="utf-8")
-    hidden = folder / ".git"
-    hidden.mkdir()
-    (hidden / "private.txt").write_text("This should not be indexed.", encoding="utf-8")
-
-    client = TestClient(app)
-    created = client.post("/knowledge", data={"name": "Local files", "embedding_provider": "ollama"}, follow_redirects=False)
-    assert created.status_code == 303
-    base_id = created.headers["location"].rsplit("/", 1)[-1]
-    first = client.post(f"/knowledge/{base_id}/folder", data={"folder": str(folder)}, follow_redirects=False)
-    assert first.status_code == 303
-    assert "folder_indexed=1" in first.headers["location"]
-    detail = client.get(f"/knowledge/{base_id}")
-    assert "Automatic folder watches" in detail.text
-    assert "Watch and index folder" in detail.text
-    results = client.get(f"/api/knowledge/{base_id}/search", params={"q": "customer onboarding"})
-    assert results.json()["results"][0]["name"] == "plan.md"
-
-    with db.get_session(scoped=False) as session:
-        watch = session.scalar(select(KnowledgeFolder).where(KnowledgeFolder.knowledge_base_id == base_id))
-        watch_id = watch.id
-    (folder / "plan.md").rename(folder / "renamed.md")
-    renamed = sync_local_folder_once(watch_id)
-    assert renamed["indexed"] == 1 and renamed["removed"] == 1
-    (folder / "renamed.md").write_text("Launch checklist: publish the updated security guide.", encoding="utf-8")
-    changed = sync_local_folder_once(watch_id)
-    assert changed["updated"] == 1
-    (folder / "followup.txt").write_text("Follow-up: schedule a security review.", encoding="utf-8")
-    added = sync_local_folder_once(watch_id)
-    assert added["indexed"] == 1
-    (folder / "renamed.md").unlink()
-    deleted = sync_local_folder_once(watch_id)
-    assert deleted["removed"] == 1
-    with db.get_session(scoped=False) as session:
-        docs = session.scalars(select(KnowledgeDocument).where(KnowledgeDocument.knowledge_base_id == base_id)).all()
-        assert len(docs) == 1
-        assert docs[0].source_type == "local_file"
-        assert docs[0].source_uri.endswith("followup.txt")
-        watch = session.scalar(select(KnowledgeFolder).where(KnowledgeFolder.knowledge_base_id == base_id))
-        watch_id = watch.id
-    stopped = client.post(f"/knowledge/{base_id}/folders/{watch_id}/stop", follow_redirects=False)
-    assert stopped.status_code == 303
-    with db.get_session(scoped=False) as session:
-        assert session.get(KnowledgeFolder, watch_id) is None
-
-
-def test_background_folder_watcher_indexes_new_files(local_db, mocker, tmp_path):
-    import time
-    from hagent.local_watch import start_local_folder_watcher, stop_local_folder_watcher
-    from hagent.models import KnowledgeDocument
-
-    mocker.patch("hagent.rag.embed_texts", side_effect=lambda base, texts, **kw: [[1.0, 0.0] for _ in texts])
-    folder = tmp_path / "watched"
-    folder.mkdir()
-    (folder / "existing.txt").write_text("Original note.", encoding="utf-8")
-    client = TestClient(app)
-    created = client.post("/knowledge", data={"name": "Watched files", "embedding_provider": "ollama"}, follow_redirects=False)
-    base_id = created.headers["location"].rsplit("/", 1)[-1]
-    client.post(f"/knowledge/{base_id}/folder", data={"folder": str(folder)}, follow_redirects=False)
-
-    start_local_folder_watcher()
-    try:
-        (folder / "new.txt").write_text("A new file with the unique phrase watcher catches.", encoding="utf-8")
-        deadline = time.monotonic() + 7
-        indexed = False
-        while time.monotonic() < deadline:
-            with db.get_session(scoped=False) as session:
-                found = session.scalar(select(KnowledgeDocument).where(
-                    KnowledgeDocument.knowledge_base_id == base_id,
-                    KnowledgeDocument.name == "new.txt",
-                ))
-                indexed = found is not None
-            if indexed:
-                break
-            time.sleep(0.1)
-        assert indexed, "background watcher did not index the new file"
-    finally:
-        stop_local_folder_watcher()

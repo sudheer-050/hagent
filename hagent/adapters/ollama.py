@@ -13,11 +13,14 @@ class OllamaRuntime(BaseRuntime):
         base_url = self.config.get("base_url", DEFAULT_BASE_URL)
         full_prompt = f"{context}\n\n{prompt}" if context else prompt
 
+        think = self.config.get("think", False)
+        options = {"num_ctx": self.config["num_ctx"]} if self.config.get("num_ctx") else {}
+
         if not tools:
             try:
                 response = httpx.post(
                     f"{base_url}/api/generate",
-                    json={"model": self.model, "prompt": full_prompt, "stream": False},
+                    json={"model": self.model, "prompt": full_prompt, "think": think, "options": options, "stream": False},
                     timeout=self.config.get("timeout", 120),
                 )
                 response.raise_for_status()
@@ -35,7 +38,7 @@ class OllamaRuntime(BaseRuntime):
             try:
                 response = httpx.post(
                     f"{base_url}/api/chat",
-                    json={"model": self.model, "messages": messages, "tools": tools, "stream": False},
+                    json={"model": self.model, "messages": messages, "tools": tools, "think": think, "options": options, "stream": False},
                     timeout=self.config.get("timeout", 120),
                 )
                 response.raise_for_status()

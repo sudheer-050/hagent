@@ -1,4 +1,39 @@
 {% extends "base.html" %}
-{% block content %}<div class="page-header"><div><h2>Autopilots</h2><p class="page-sub">Run an agent against matching issues on a cron schedule.</p></div><button type="button" class="icon-btn collection-add" data-modal="page-modal-autopilot" title="Create autopilot" aria-label="Create autopilot"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button></div>
-{% if autopilots %}<div class="collection-list autopilot-list">{% for ap in autopilots %}<div class="collection-row autopilot-row"><div class="collection-row-main"><strong>{{ ap.name }} {% if not ap.enabled %}<span class="chip disabled">disabled</span>{% endif %}</strong><small>{{ ap.agent.name }}{% if ap.project %} &middot; {{ ap.project.name }}{% endif %}{% if ap.filter_status %} &middot; {{ ap.filter_status.value }}{% endif %}</small></div><span class="collection-row-meta">{% for t in ap.triggers %}<span class="chip"><code>{{ t.cron_expression }}</code></span>{% else %}<span class="faint">No schedule</span>{% endfor %}</span><div class="autopilot-controls"><details><summary>Add schedule</summary><form class="inline field-row" method="post" action="/autopilots/{{ ap.id }}/triggers"><input name="cron" placeholder="*/5 * * * *" aria-label="Cron schedule" required><button type="submit">Add</button></form></details><form class="inline" method="post" action="/autopilots/{{ ap.id }}/trigger-now"><button type="submit">Run now</button></form></div></div>{% endfor %}</div>{% else %}<div class="empty-state"><h4>No autopilots yet</h4><p>Set one up to run an agent on a schedule with the + button above.</p></div>{% endif %}{% endblock %}
-{% block modals %}<div class="modal" id="page-modal-autopilot" hidden role="dialog" aria-modal="true" aria-labelledby="autopilot-modal-title"><div class="modal-head"><div><div class="eyebrow">Scheduled work</div><h3 id="autopilot-modal-title">Create autopilot</h3></div><button type="button" class="icon-btn modal-close" data-close aria-label="Close">&times;</button></div><form method="post" action="/autopilots" class="stack"><div><label class="field-label" for="autopilot-name">Name</label><input id="autopilot-name" name="name" placeholder="e.g. Triage new issues" required autofocus></div><div><label class="field-label" for="autopilot-agent">Agent</label><select id="autopilot-agent" name="agent_id" required>{% for a in agents %}<option value="{{ a.id }}">{{ a.name }}</option>{% endfor %}</select></div><div><label class="field-label" for="autopilot-project">Project</label><select id="autopilot-project" name="project_id"><option value="">Any project</option>{% for p in projects %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}</select></div><div><label class="field-label" for="autopilot-status">Issue status</label><select id="autopilot-status" name="filter_status"><option value="">Any status</option>{% for s in statuses %}<option value="{{ s.value }}">{{ s.value.replace('_',' ') }}</option>{% endfor %}</select></div><button class="primary" type="submit">Create autopilot</button></form></div>{% endblock %}
+{% block content %}<div class="page-header"><div><h2>Autopilots</h2><p class="page-sub">Run an agent against matching issues on a cron schedule.</p></div><div style="display:flex; align-items:center; gap:0.75rem;"><a class="text-link" href="/autopilots/graph">Flow view</a><button type="button" class="icon-btn collection-add" data-modal="page-modal-autopilot" title="Create autopilot" aria-label="Create autopilot"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button></div></div>
+{% if autopilots %}
+<div class="collection-list autopilot-list">
+{% for ap in autopilots %}
+  <div class="collection-row autopilot-row">
+    <div class="collection-row-main">
+      <strong>{{ ap.name }} {% if not ap.enabled %}<span class="chip disabled">disabled</span>{% endif %}</strong>
+      <small>{{ ap.agent.name }}{% if ap.project %} &middot; {{ ap.project.name }}{% endif %}{% if ap.filter_status %} &middot; {{ ap.filter_status.value.replace('_', ' ').title() }}{% endif %}</small>
+    </div>
+    <span class="collection-row-meta">
+      {% for trigger in ap.triggers %}<span class="chip"><code>{{ trigger.cron_expression }}</code></span>{% else %}<span class="faint">No schedule</span>{% endfor %}
+    </span>
+    <div class="autopilot-controls">
+      <details><summary>Add schedule</summary><form class="inline field-row" method="post" action="/autopilots/{{ ap.id }}/triggers"><input name="cron" placeholder="*/5 * * * *" aria-label="Cron schedule" required><button type="submit">Add</button></form></details>
+      <form class="inline" method="post" action="/autopilots/{{ ap.id }}/trigger-now"><button type="submit">Run now</button></form>
+    </div>
+  </div>
+{% endfor %}
+</div>
+{% else %}
+<div class="empty-state"><h4>No autopilots yet</h4><p>Set one up to run an agent on a schedule with the + button above.</p></div>
+{% endif %}
+
+{% if request.state.recent_autopilot_runs %}
+<section class="detail-section autopilot-history">
+  <div class="section-heading"><div><h3>Recent executions</h3><p>Outcomes and issue counts for the latest scheduled or manual runs.</p></div></div>
+  <div class="activity-list">
+  {% for run, name in request.state.recent_autopilot_runs %}
+    <div class="activity-row">
+      <span class="activity-main"><strong>{{ name }}</strong><small>{{ run.started_at.strftime('%b %d, %Y %H:%M') }} &middot; {{ run.summary }}</small></span>
+      <span class="status-badge status-{{ run.status }}">{{ run.status }}</span>
+    </div>
+  {% endfor %}
+  </div>
+</section>
+{% endif %}
+{% endblock %}
+{% block modals %}<div class="modal" id="page-modal-autopilot" hidden role="dialog" aria-modal="true" aria-labelledby="autopilot-modal-title"><div class="modal-head"><div><div class="eyebrow">Scheduled work</div><h3 id="autopilot-modal-title">Create autopilot</h3></div><button type="button" class="icon-btn modal-close" data-close aria-label="Close">&times;</button></div><form method="post" action="/autopilots" class="stack"><div><label class="field-label" for="autopilot-name">Name</label><input id="autopilot-name" name="name" placeholder="e.g. Triage new issues" required autofocus></div><div><label class="field-label" for="autopilot-agent">Agent</label><select id="autopilot-agent" name="agent_id" required>{% for a in agents %}<option value="{{ a.id }}">{{ a.name }}</option>{% endfor %}</select></div><div><label class="field-label" for="autopilot-project">Project</label><select id="autopilot-project" name="project_id"><option value="">Any project</option>{% for p in projects %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}</select></div><div><label class="field-label" for="autopilot-status">Issue status</label><select id="autopilot-status" name="filter_status"><option value="">Any status</option>{% for s in statuses %}<option value="{{ s.value }}">{{ s.value.replace('_',' ').title() }}</option>{% endfor %}</select></div><button class="primary" type="submit">Create autopilot</button></form></div>{% endblock %}

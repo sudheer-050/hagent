@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Approvals &middot; {{ site.app_name }}{% endblock %}
+{% block content %}
+<div class="page-header"><div><div class="eyebrow">Human review</div><h2>Approvals</h2><p class="page-sub">Runs configured to wait for your decision before contacting an AI provider or using tools.</p></div><span class="section-count">{{ runs|length }} pending</span></div>
+{% if runs %}
+<div class="approval-list">
+  {% for run in runs %}
+  <article class="approval-row">
+    <div class="approval-main">
+      <div class="approval-title"><a href="/issues/{{ run.issue_id }}"><strong>{{ run.issue.title }}</strong></a><span class="status-badge status-waiting_approval">waiting approval</span></div>
+      <small>{{ run.agent.name }} &middot; {{ run.issue.project.name }} &middot; {{ run.created_at.strftime('%b %d, %Y %H:%M') }}</small>
+      <p>{{ run.prompt }}</p>
+      <div class="approval-safe-note">No model request or agent tool has run yet.</div>
+    </div>
+    <div class="approval-actions">
+      <form method="post" action="/issues/{{ run.issue_id }}/runs/{{ run.id }}/approve"><button class="primary" type="submit">Approve and run</button></form>
+      <form method="post" action="/issues/{{ run.issue_id }}/runs/{{ run.id }}/reject"><button type="submit">Reject</button></form>
+    </div>
+  </article>
+  {% endfor %}
+</div>
+{% else %}
+<div class="empty-state"><h4>Nothing needs approval</h4><p>Runs from agents with the approval gate enabled will appear here.</p></div>
+{% endif %}
+{% endblock %}

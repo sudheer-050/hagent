@@ -86,16 +86,29 @@
     if (paletteOverlay) paletteOverlay.hidden = true;
   }
 
+  var GROUP_LABELS = {
+    page: "Pages", project: "Projects", agent: "Agents", chat: "Chat",
+    issue: "Issues", runtime: "Runtimes", skill: "Skills", squad: "Squads",
+  };
+
   function renderResults(results) {
     currentResults = results;
     selectedIndex = results.length ? 0 : -1;
     if (!paletteResults) return;
     if (!results.length) {
-      paletteResults.innerHTML = '<div class="palette-empty">Type to search projects, agents, and issues&hellip;</div>';
+      paletteResults.innerHTML = '<div class="palette-empty">Search everything &mdash; chat, issues, runtimes, settings&hellip;</div>';
       return;
     }
     paletteResults.innerHTML = "";
+    var lastType = null;
     results.forEach(function (r, idx) {
+      if (r.type !== lastType) {
+        var heading = document.createElement("div");
+        heading.className = "palette-group-label";
+        heading.textContent = GROUP_LABELS[r.type] || r.type;
+        paletteResults.appendChild(heading);
+        lastType = r.type;
+      }
       var row = document.createElement("div");
       row.className = "palette-item" + (idx === selectedIndex ? " selected" : "");
       row.dataset.index = String(idx);

@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="eyebrow">Diff view</div>
+    <h2>{{ issue.title }}</h2>
+    <p class="page-sub">Isolated worktree branch vs. base branch{% if repo %} in {{ repo.name }}{% endif %}.</p>
+  </div>
+  <a class="text-link" href="/issues/{{ issue.id }}">Back to issue</a>
+</div>
+{% if error %}
+<div class="empty-state"><h4>No diff available</h4><p>{{ error }}</p></div>
+{% else %}
+<pre style="overflow-x:auto; background: var(--surface-2, #16181d); padding: 1rem; border-radius: 8px; font-size: 0.82rem; line-height: 1.5; white-space: pre-wrap; word-break: break-word;">{{ diff_text }}</pre>
+{% endif %}
+{% endblock %}

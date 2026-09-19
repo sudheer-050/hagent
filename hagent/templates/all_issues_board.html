@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <h2>Board</h2>
+  </div>
+</div>
+
+<div class="board board-fill">
+  {% for status in statuses %}
+  <div class="board-column">
+    <h3>{{ status.value.replace('_', ' ').title() }} <span class="count">{{ issues_by_status[status]|length }}</span></h3>
+    <div class="board-column-body">
+    {% for i in issues_by_status[status] %}
+    <div class="issue-card">
+      <a href="/issues/{{ i.id }}">{{ i.title }}</a>
+      <div class="meta">
+        <span class="chip">{{ i.project.name }}</span>
+        {% if i.assignee %}<span class="chip">{{ i.assignee.name }}</span>{% endif %}
+      </div>
+    </div>
+    {% else %}
+    <div class="column-empty">No issues</div>
+    {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}

@@ -51,6 +51,7 @@
                 v: random(),
                 r,
                 glow: r > 1.3,
+                color: random() < 0.22 ? '#a9d5ff' : '#e8f1ff',
                 baseAlpha: 0.2 + depth * 0.35,
                 vx: Math.cos(direction) * speed,
                 vy: Math.sin(direction) * speed,
@@ -94,9 +95,9 @@
             const phase = reducedMotion ? 0 : (elapsed + s.twinkleOffset) % s.twinklePeriod;
             const shine = phase < 1.4 ? Math.sin((phase / 1.4) * Math.PI) : 0;
             ctx.globalAlpha = s.baseAlpha + shine * (1 - s.baseAlpha);
-            ctx.fillStyle = '#ffffff';
+            ctx.fillStyle = s.color;
             ctx.shadowBlur = s.glow ? s.r * 3 : 0;
-            if (s.glow) ctx.shadowColor = '#ffffff';
+            if (s.glow) ctx.shadowColor = s.color;
             ctx.beginPath();
             ctx.arc(x, y, s.r, 0, Math.PI * 2);
             ctx.fill();
@@ -119,8 +120,8 @@
             const tailX = comet.x - comet.vx * 0.12;
             const tailY = comet.y - comet.vy * 0.12;
             const grad = ctx.createLinearGradient(tailX, tailY, comet.x, comet.y);
-            grad.addColorStop(0, 'rgba(255,255,255,0)');
-            grad.addColorStop(1, `rgba(255,255,255,${0.85 * fade})`);
+            grad.addColorStop(0, 'rgba(179,219,255,0)');
+            grad.addColorStop(1, `rgba(214,234,255,${0.85 * fade})`);
             ctx.strokeStyle = grad;
             ctx.lineWidth = 1.4;
             ctx.lineCap = 'round';
@@ -130,8 +131,8 @@
             ctx.stroke();
 
             ctx.globalAlpha = fade;
-            ctx.fillStyle = '#ffffff';
-            ctx.shadowColor = '#ffffff';
+            ctx.fillStyle = '#e8f1ff';
+            ctx.shadowColor = '#a9d5ff';
             ctx.shadowBlur = 6;
             ctx.beginPath();
             ctx.arc(comet.x, comet.y, 1.3, 0, Math.PI * 2);

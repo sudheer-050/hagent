@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Settings &middot; {{ settings.app_name }}{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="eyebrow">Control center</div>
+    <h2>Settings</h2>
+    <p class="page-sub">Customize Hagent and choose the defaults used when you create new agents.</p>
+  </div>
+</div>
+
+{% if saved %}<div class="settings-saved" role="status">Settings saved. Changes are active across Hagent.</div>{% endif %}
+
+<div class="settings-layout">
+  <form method="post" action="/settings" enctype="multipart/form-data" class="settings-form">
+    <section class="settings-card">
+      <div class="section-heading"><div><h3>Identity and appearance</h3><p>These choices apply throughout the website and browser tab.</p></div></div>
+      <div class="settings-icon-row">
+        <img src="{{ settings.app_icon_url }}" alt="" class="settings-icon-preview">
+        <div>
+          <label class="field-label" for="settings-icon">App icon <span>Optional</span></label>
+          <input id="settings-icon" name="app_icon" type="file" accept=".png,.jpg,.jpeg,.webp,.ico,image/png,image/jpeg,image/webp,image/x-icon">
+          <div class="field-help">PNG, JPEG, WebP, or ICO, up to 2 MiB. Leave empty to keep the current icon.</div>
+        </div>
+      </div>
+      <div class="form-grid">
+        <div><label class="field-label" for="settings-name">App name</label><input id="settings-name" name="app_name" maxlength="40" value="{{ settings.app_name }}" required></div>
+        <div><label class="field-label" for="settings-tagline">Sidebar tagline</label><input id="settings-tagline" name="tagline" maxlength="100" value="{{ settings.tagline }}"></div>
+        <div><label class="field-label" for="settings-accent">Accent color</label><div class="color-setting"><input id="settings-accent" name="accent_color" type="color" value="{{ settings.accent_color }}"><code>{{ settings.accent_color }}</code></div></div>
+        <div><label class="field-label" for="settings-density">Interface density</label><select id="settings-density" name="density"><option value="comfortable" {{ 'selected' if settings.density == 'comfortable' }}>Comfortable</option><option value="compact" {{ 'selected' if settings.density == 'compact' }}>Compact</option></select></div>
+      </div>
+      <div class="check-grid settings-checks">
+        <label class="check-card"><input type="checkbox" name="show_starfield" value="1" {{ 'checked' if settings.show_starfield }}><span><strong>Animated starfield</strong><small>Show the moving background and comets.</small></span></label>
+      </div>
+    </section>
+
+    <section class="settings-card">
+      <div class="section-heading"><div><h3>New-agent defaults</h3><p>Pre-fill safety, delegation, and terminal choices for agents you create later.</p></div></div>
+      <div class="form-grid">
+        <div><label class="field-label" for="settings-delegation">Delegation calls per run</label><input id="settings-delegation" name="default_agent_delegation_limit" type="number" min="0" max="50" value="{{ settings.default_agent_delegation_limit }}"></div>
+        <div><label class="field-label" for="settings-cwd">Terminal starting directory</label><input id="settings-cwd" name="default_agent_terminal_directory" value="{{ settings.default_agent_terminal_directory }}" placeholder="C:/Users/you"></div>
+      </div>
+      <div class="check-grid settings-checks">
+        <label class="check-card"><input type="checkbox" name="default_agent_require_approval" value="1" {{ 'checked' if settings.default_agent_require_approval }}><span><strong>Require run approval by default</strong><small>New agents pause before contacting a provider or using tools.</small></span></label>
+        <label class="check-card"><input type="checkbox" name="default_agent_terminal_enabled" value="1" {{ 'checked' if settings.default_agent_terminal_enabled }}><span><strong>Enable terminal by default</strong><small>New agents receive terminal access using the directory above.</small></span></label>
+      </div>
+    </section>
+
+    <div class="settings-save-bar"><span>Saved locally in Hagent's database.</span><button class="primary" type="submit">Save settings</button></div>
+  </form>
+
+  <aside class="settings-hub">
+    <section class="settings-card">
+      <div class="section-heading"><div><h3>Manage Hagent</h3><p>Open the specialized screens for everything else.</p></div></div>
+      <nav class="settings-links">
+        <a href="/profile"><strong>Your profile</strong><small>Name, email, and personal context.</small></a>
+        <a href="/workspaces"><strong>Workspaces</strong><small>Separate teams, projects, and data.</small></a>
+        <a href="/runtimes"><strong>AI runtimes</strong><small>Providers, models, local CLIs, and credentials.</small></a>
+        <a href="/agents"><strong>Agents</strong><small>Instructions, tools, skills, safety, and terminal access.</small></a>
+        <a href="/skills"><strong>Skills</strong><small>Reusable capabilities shared across agents.</small></a>
+        <a href="/squads"><strong>Squads</strong><small>Agent teams and delegation relationships.</small></a>
+        <a href="/autopilots"><strong>Autopilots</strong><small>Schedules, filters, and automated work.</small></a>
+        <a href="/repos"><strong>Repositories</strong><small>Source repositories and local working copies.</small></a>
+        <a href="/usage"><strong>Usage</strong><small>Runs, tokens, and verification activity.</small></a>
+      </nav>
+    </section>
+    <section class="settings-card settings-note">
+      <h3>Security boundary</h3>
+      <p>Provider secrets stay in Runtime settings, and high-impact controls remain on the agent or automation they affect. This page does not expose raw environment variables or arbitrary server commands.</p>
+    </section>
+  </aside>
+</div>
+{% endblock %}

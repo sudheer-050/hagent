@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header"><div><div class="eyebrow">Observability</div><h2>Usage</h2><p class="page-sub">Runs and estimated tokens per agent and runtime, workspace-wide. No hard spend cap exists yet - this is visibility, not a limit.</p></div></div>
+
+<div class="section-heading"><div><h3>By runtime</h3></div></div>
+{% if runtime_rows %}
+<div class="collection-list">
+{% for row in runtime_rows %}
+  <div class="collection-row">
+    <span class="collection-row-main"><strong>{{ row.name }}</strong><small>{{ row.type }}</small></span>
+    <span class="collection-row-meta">{{ row.run_count }} run{{ '' if row.run_count == 1 else 's' }}</span>
+    <span class="collection-row-meta">{{ row.input_tokens }} in / {{ row.output_tokens }} out tokens</span>
+    <span class="collection-row-meta">{{ row.completed }} completed &middot; {{ row.failed }} failed</span>
+  </div>
+{% endfor %}
+</div>
+{% else %}<div class="empty-state"><h4>No runs yet</h4><p>Usage appears here once an agent completes a run.</p></div>{% endif %}
+
+<div class="section-heading"><div><h3>By agent</h3></div></div>
+{% if agent_rows %}
+<div class="collection-list">
+{% for row in agent_rows %}
+  <div class="collection-row">
+    <span class="collection-row-main"><strong>{{ row.name }}</strong><small>{{ row.runtime_name }}</small></span>
+    <span class="collection-row-meta">{{ row.run_count }} run{{ '' if row.run_count == 1 else 's' }}</span>
+    <span class="collection-row-meta">{{ row.input_tokens }} in / {{ row.output_tokens }} out tokens</span>
+    <span class="collection-row-meta">last run: {{ row.last_run.strftime('%b %d, %H:%M') if row.last_run else 'never' }}</span>
+  </div>
+{% endfor %}
+</div>
+{% else %}<div class="empty-state"><h4>No agents yet</h4></div>{% endif %}
+
+<div class="section-heading"><div><h3>Verification outcomes</h3></div></div>
+<div class="collection-list">
+  <div class="collection-row">
+    <span class="collection-row-main"><strong>Passed</strong></span>
+    <span class="collection-row-meta">{{ verification_passed }}</span>
+  </div>
+  <div class="collection-row">
+    <span class="collection-row-main"><strong>Failed (issue reopened)</strong></span>
+    <span class="collection-row-meta">{{ verification_failed }}</span>
+  </div>
+</div>
+{% endblock %}

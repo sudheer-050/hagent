@@ -3,9 +3,17 @@ __pycache__/
 .venv/
 venv/
 *.db
+*.db-shm
+*.db-wal
 .env
 .pytest_cache/
 *.egg-info/
 build/
 dist/
 .claude/worktrees/
+hagent/voice/holly_history.json
+hagent/voice/holly_voice_history.json
+hagent-server*.log
+hagent-watchdog-error.log
+hagent/voice/holly_voice_stdout.log
+hagent/voice/holly_voice_stderr.log

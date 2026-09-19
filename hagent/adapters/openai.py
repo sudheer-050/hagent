@@ -31,6 +31,11 @@ class OpenAIRuntime(BaseRuntime):
         transcript = []
         for _ in range(self.config.get("max_tool_rounds", 8)):
             payload = {"model": self.model, "messages": messages}
+            if self.config.get("max_tokens"):
+                payload["max_tokens"] = self.config["max_tokens"]
+            effort_parameter = self.config.get("effort_parameter")
+            if effort_parameter and self.config.get("reasoning_effort"):
+                payload[effort_parameter] = self.config["reasoning_effort"]
             if tools:
                 payload["tools"] = tools
             try:

@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Memory ? {{ site.app_name }}{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Unified memory</h1><p>Hagent-owned, provider-neutral, scoped, and attributable.</p></div>
+  <a class="button" href="/api/memory/export?project_id={{ filters.project_id }}">Export JSON</a></div>
+<div class="panel">
+  <form method="get" class="form-grid">
+    <input name="q" value="{{ filters.q }}" placeholder="Search memories">
+    <select name="project_id"><option value="">Global personal memory</option>{% for p in projects %}<option value="{{ p.id }}" {{ 'selected' if filters.project_id == p.id }}>{{ p.name }}</option>{% endfor %}</select>
+    <input name="provider" value="{{ filters.provider }}" placeholder="Provider">
+    <select name="category"><option value="">All categories</option>{% for c in ['user_profile','preference','project_fact','decision','current_task','durable_discovery','session_summary','explicit','raw_event'] %}<option value="{{ c }}" {{ 'selected' if filters.category == c }}>{{ c }}</option>{% endfor %}</select>
+    <select name="status">{% for s in ['active','superseded','deleted'] %}<option {{ 'selected' if filters.status == s }}>{{ s }}</option>{% endfor %}</select>
+    <label><input type="checkbox" name="sensitive_only" value="true" {{ 'checked' if filters.sensitive_only }}> Sensitive review</label>
+    <button type="submit">Filter</button>
+  </form>
+</div>
+<div class="panel">
+  <h2>Remember explicitly</h2>
+  <form method="post" action="/memory" class="stack">
+    <input type="hidden" name="project_id" value="{{ filters.project_id }}">
+    <textarea name="content" rows="3" required placeholder="A durable fact, preference, decision, or discovery"></textarea>
+    <div class="form-grid"><select name="category">{% for c in ['explicit','preference','project_fact','decision','durable_discovery','current_task'] %}<option>{{ c }}</option>{% endfor %}</select>
+    <select name="sensitivity"><option>normal</option><option>personal</option><option>sensitive</option></select>
+    <label><input type="checkbox" name="verified"> Verified</label><button type="submit">Remember</button></div>
+  </form>
+</div>
+<div class="cards">
+{% for m in memories %}
+  <article class="panel">
+    <div class="row"><strong>{{ m.category }}</strong><span class="badge">{{ m.status }}</span><span class="badge">{{ m.verification_status }}</span><span class="badge">{{ m.sensitivity }}</span></div>
+    <p style="white-space:pre-wrap">{{ m.content }}</p>
+    <small>Source: {{ m.source.provider }} / {{ m.source.agent or 'unknown agent' }} ? session {{ m.source.session_id or 'n/a' }} ? {{ m.updated_at }}</small>
+    <details><summary>Correct or supersede</summary>
+      <form method="post" action="/memory/{{ m.id }}" class="stack">
+        <input type="hidden" name="project_id" value="{{ filters.project_id }}">
+        <textarea name="content" rows="3">{{ m.content }}</textarea>
+        <div class="form-grid"><input name="category" value="{{ m.category }}"><select name="verification_status"><option>verified</option><option>user_stated</option><option>unverified</option><option>disputed</option></select>
+        <select name="sensitivity"><option {{ 'selected' if m.sensitivity == 'normal' }}>normal</option><option {{ 'selected' if m.sensitivity == 'personal' }}>personal</option><option {{ 'selected' if m.sensitivity == 'sensitive' }}>sensitive</option><option {{ 'selected' if m.sensitivity == 'restricted' }}>restricted</option></select>
+        <label><input type="checkbox" name="supersede"> Preserve old version as superseded</label><button type="submit">Save correction</button></div>
+      </form>
+    </details>
+    {% if m.status != 'deleted' %}<form method="post" action="/memory/{{ m.id }}/forget"><input type="hidden" name="project_id" value="{{ filters.project_id }}"><button class="danger" type="submit">Forget</button></form>{% endif %}
+  </article>
+{% else %}<div class="empty-state">No memories match this scope and filter.</div>{% endfor %}
+</div>
+<div class="panel"><h2>Memory controls</h2>
+  <form method="post" action="/memory/settings" class="form-grid">
+    <input type="hidden" name="project_id" value="{{ filters.project_id }}">
+    <label><input type="checkbox" name="enabled" {{ 'checked' if settings.enabled }}> Enabled</label>
+    <label><input type="checkbox" name="automatic_extraction" {{ 'checked' if settings.automatic_extraction }}> Automatic summaries/extraction</label>
+    <label><input type="checkbox" name="retain_raw_events" {{ 'checked' if settings.retain_raw_events }}> Retain raw conversation events</label>
+    <label><input type="checkbox" name="strict_mode" {{ 'checked' if settings.strict_mode }}> Strict failure mode</label>
+    <label>Retrieval limit<input type="number" name="retrieval_limit" value="{{ settings.retrieval_limit }}" min="1" max="50"></label>
+    <label>Token budget<input type="number" name="token_budget" value="{{ settings.token_budget }}" min="100" max="20000"></label>
+    <label>Retention days<input type="number" name="retention_days" value="{{ settings.retention_days }}" min="0"></label>
+    <label>Embedding provider<input name="embedding_provider" value="{{ settings.embedding_provider }}"></label>
+    <label>Embedding model<input name="embedding_model" value="{{ settings.embedding_model }}"></label>
+    <label>Embedding base URL<input name="embedding_base_url" value="{{ settings.embedding_base_url }}"></label>
+    <button type="submit">Save controls</button>
+  </form>
+</div>
+{% endblock %}

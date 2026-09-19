@@ -1,0 +1,11 @@
+# Merge this table into the supported Codex config.toml for the current client.
+# Replace every angle-bracket placeholder. Use an absolute Python executable.
+[mcp_servers.hagent_memory]
+command = "<ABSOLUTE_PATH_TO_HAGENT_VENV_PYTHON>"
+args = ["-m", "hagent.memory_mcp"]
+
+[mcp_servers.hagent_memory.env]
+HAGENT_MEMORY_WORKSPACE_ID = "<WORKSPACE_UUID>"
+HAGENT_MEMORY_USER_ID = "<USER_ID>"
+HAGENT_MEMORY_PROJECT_ID = "<PROJECT_UUID>"
+HAGENT_MEMORY_PROVIDER = "codex_cli"

@@ -29,6 +29,9 @@ class ClaudeRuntime(BaseRuntime):
                 }
                 if tools:
                     kwargs["tools"] = tools
+                effort_parameter = self.config.get("effort_parameter")
+                if effort_parameter and self.config.get("reasoning_effort"):
+                    kwargs[effort_parameter] = self.config["reasoning_effort"]
                 message = client.messages.create(**kwargs)
                 raw = message.model_dump() if hasattr(message, "model_dump") else {}
                 transcript.append(raw)

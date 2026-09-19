@@ -6,23 +6,31 @@ from datetime import datetime, timezone
 import asyncio
 import json
 import os
+import re
 import shutil
 
-from fastapi import FastAPI, Form, Request, HTTPException, UploadFile, File, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, FastAPI, Form, Request, HTTPException, UploadFile, File, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 import httpx
 import click
 from hagent.tenancy import ScopeError
 from hagent.db import request_workspace
+from starlette.middleware.gzip import GZipMiddleware
+
+from hagent.auth import AuthMiddleware, router as auth_router
+from hagent.remote_api import router as remote_api_router
+from hagent.worker_api import router as worker_api_router
 from hagent.triggers import configure as configure_trigger
-from hagent.engine import cancel_issue, execute_agent
+from hagent.engine import cancel_issue, execute_agent, mark_agent_skills_used
+from hagent.agent_avatars import agent_avatar_url
 from hagent.adapters import get_runtime_class
-from fastapi.responses import RedirectResponse, JSONResponse, HTMLResponse, FileResponse
+from fastapi.responses import RedirectResponse, JSONResponse, HTMLResponse, FileResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select
+from sqlalchemy import func, select, update
+from sqlalchemy.orm import joinedload, selectinload
 
 from hagent.db import get_active_workspace, get_or_create_default_workspace, get_session, init_db
-from hagent.engine import run_issue as engine_run_issue
+from hagent.engine import process_queued_run_by_id, queue_issue_run
 from hagent.models import (
     Attachment,
     IssueMetadata,
@@ -30,7 +38,10 @@ from hagent.models import (
     SquadActivity,
     Agent,
     Autopilot,
+    AutopilotRun,
     AutopilotTrigger,
+    ChatMessage,
+    ChatThread,
     Comment,
     ISSUE_STATUS_ORDER,
     Issue,
@@ -46,89 +57,34 @@ from hagent.models import (
     Squad,
     SquadMember,
     TimelineEvent,
-    ChatThread,
-    ChatMessage,
     Workspace,
     UserProfile,
-    KnowledgeBase,
-    KnowledgeFolder,
-    KnowledgeDocument,
-    KnowledgeChunk,
+    AppSetting,
 )
-from hagent.scheduler import find_webhook_trigger, run_autopilot_once, start_scheduler, sync_scheduler_jobs
+from hagent.scheduler import find_webhook_trigger, resume_pending_runs, run_autopilot_once, start_scheduler, sync_scheduler_jobs
 from hagent.runtime_catalog import PROVIDERS, catalog_for, provider_config, provider_options
-from hagent.terminal import resolve_working_directory, spawn_terminal
-from hagent.rag import MAX_DOCUMENT_BYTES, embed_texts, fetch_url, index_local_folder, ingest_document, local_folder_snapshot, search_knowledge
-from hagent.local_watch import refresh_local_folder_watches, start_local_folder_watcher, stop_local_folder_watcher
+from hagent.skill_icons import choose_skill_emoji
+from hagent.skill_badges import skill_badge_svg
+from hagent.terminal import resolve_working_directory
+from hagent.memory import MemoryScope, MemoryService
+from hagent.router import ModelRouter
+from hagent.models import RoutingDecision
 
 get_or_create_default_workspace = get_active_workspace
 
 app = FastAPI(title="Hagent")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+templates.env.globals["skill_badge_svg"] = skill_badge_svg
+templates.env.globals["agent_avatar_url"] = agent_avatar_url
+
+
+def chat_unread_count() -> int:
+    with get_session() as s:
+        return s.scalar(select(func.count()).select_from(ChatThread).where(ChatThread.unread.is_(True))) or 0
+
+
+templates.env.globals["chat_unread_count"] = chat_unread_count
 app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
-@app.get("/terminal")
-def terminal_page(request: Request):
-    return templates.TemplateResponse(
-        request,
-        "terminal.html",
-        {"active": "terminal", "default_cwd": str(Path.home()), "user_home": str(Path.home()), "project_cwd": str(Path.cwd())},
-    )
-
-
-@app.websocket("/ws/terminal")
-async def terminal_socket(websocket: WebSocket):
-    """Bridge one browser tab to one native Windows ConPTY session."""
-    origin = websocket.headers.get("origin")
-    host = websocket.headers.get("host", "")
-    if origin and urlparse(origin).netloc.lower() != host.lower():
-        await websocket.close(code=1008, reason="Cross-origin terminal access denied")
-        return
-    await websocket.accept()
-    process = None
-    reader = None
-    try:
-        cwd = websocket.query_params.get("cwd") or str(Path.cwd())
-        rows = int(websocket.query_params.get("rows", "30"))
-        cols = int(websocket.query_params.get("cols", "120"))
-        process = await asyncio.to_thread(spawn_terminal, cwd, rows, cols)
-        await websocket.send_json({"type": "ready", "cwd": resolve_working_directory(cwd)})
-
-        async def stream_output():
-            while process.isalive():
-                try:
-                    output = await asyncio.to_thread(process.read, 4096)
-                except (EOFError, OSError):
-                    break
-                if output:
-                    await websocket.send_json({"type": "output", "data": output})
-            try:
-                await websocket.send_json({"type": "exit"})
-            except Exception:
-                pass
-
-        reader = asyncio.create_task(stream_output())
-        while process.isalive():
-            message = await websocket.receive_json()
-            kind = message.get("type")
-            if kind == "input":
-                await asyncio.to_thread(process.write, str(message.get("data", "")))
-            elif kind == "resize":
-                rows = max(2, min(int(message.get("rows", 30)), 200))
-                cols = max(2, min(int(message.get("cols", 120)), 400))
-                await asyncio.to_thread(process.setwinsize, rows, cols)
-    except WebSocketDisconnect:
-        pass
-    except (ValueError, RuntimeError, OSError) as exc:
-        try:
-            await websocket.send_json({"type": "error", "message": str(exc)})
-        except Exception:
-            pass
-    finally:
-        if process is not None and process.isalive():
-            await asyncio.to_thread(process.close, True)
-        if reader is not None:
-            reader.cancel()
-
 @app.get("/api/runtime-models")
 def runtime_models(provider: str):
     if provider not in PROVIDERS:
@@ -171,6 +127,50 @@ def quickcreate_data():
 templates.env.globals["quickcreate_data"] = quickcreate_data
 
 
+APP_SETTING_DEFAULTS = {
+    "app_name": "Hagent",
+    "tagline": "Self-hosted · local-first",
+    "accent_color": "#e8a857",
+    "app_icon_url": "/static/holly_icon.png",
+    "density": "comfortable",
+    "show_starfield": "true",
+    "default_agent_delegation_limit": "8",
+    "default_agent_require_approval": "false",
+    "default_agent_terminal_enabled": "false",
+    "default_agent_terminal_directory": str(Path.home()),
+}
+
+
+def get_app_settings() -> dict:
+    values = dict(APP_SETTING_DEFAULTS)
+    with get_session(scoped=False) as session:
+        values.update({item.key: item.value for item in session.scalars(select(AppSetting)).all()})
+    values["show_starfield"] = values["show_starfield"].lower() == "true"
+    values["default_agent_require_approval"] = values["default_agent_require_approval"].lower() == "true"
+    values["default_agent_terminal_enabled"] = values["default_agent_terminal_enabled"].lower() == "true"
+    try:
+        values["default_agent_delegation_limit"] = max(
+            0, min(50, int(values["default_agent_delegation_limit"]))
+        )
+    except (TypeError, ValueError):
+        values["default_agent_delegation_limit"] = 8
+    return values
+
+
+templates.env.globals["app_settings"] = get_app_settings
+
+
+def _save_app_settings(values: dict[str, str]) -> None:
+    with get_session(scoped=False) as session:
+        for key, value in values.items():
+            item = session.get(AppSetting, key)
+            if item is None:
+                session.add(AppSetting(key=key, value=value))
+            else:
+                item.value = value
+        session.commit()
+
+
 def require(session, model, identifier):
     item = session.get(model, identifier)
     if item is None:
@@ -187,6 +187,14 @@ async def workspace_context(request, call_next):
         request_workspace.reset(token)
 
 
+# Added after workspace_context so it is the outermost layer and runs first.
+app.add_middleware(GZipMiddleware, minimum_size=1024)  # dashboard pages are large; matters most over a network
+app.add_middleware(AuthMiddleware)
+app.include_router(auth_router)
+app.include_router(remote_api_router)
+app.include_router(worker_api_router)
+
+
 @app.exception_handler(ScopeError)
 async def scope_error(request, exc):
     return JSONResponse({"error": str(exc)}, status_code=404)
@@ -196,6 +204,159 @@ async def scope_error(request, exc):
 @app.exception_handler(ValueError)
 async def input_error(request, exc):
     return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+@app.exception_handler(KeyError)
+@app.exception_handler(PermissionError)
+async def memory_scope_error(request, exc):
+    return JSONResponse({"error": str(exc)}, status_code=404)
+
+
+def _memory_owner(session):
+    profile = session.scalar(select(UserProfile))
+    return profile.id if profile else "local-user"
+
+
+def _memory_service(session, project_id=None, provider="web"):
+    workspace = get_active_workspace(session)
+    return MemoryService(session, MemoryScope(
+        workspace_id=workspace.id, user_id=_memory_owner(session),
+        project_id=project_id or None, provider=provider))
+
+
+@app.get("/memory")
+def memory_page(request: Request, q: str = "", project_id: str = "",
+                provider: str = "", category: str = "", status: str = "active",
+                sensitive_only: bool = False):
+    with get_session() as session:
+        service = _memory_service(session, project_id)
+        memories = service.search(q, category=category or None,
+            provider=provider or None, status=status, limit=50)
+        if sensitive_only:
+            memories = [item for item in memories if item["sensitivity"] in {"sensitive", "restricted"}]
+        return templates.TemplateResponse(request, "memory.html", {
+            "active": "memory", "memories": memories, "projects": session.scalars(select(Project)).all(),
+            "filters": {"q": q, "project_id": project_id, "provider": provider,
+                        "category": category, "status": status, "sensitive_only": sensitive_only},
+            "settings": service.settings_dict(service.settings()),
+        })
+
+
+@app.get("/api/memory")
+def memory_api(q: str = "", memory_id: str = "", project_id: str = "",
+               provider: str = "", category: str = "", status: str = "active",
+               origin_type: str = "", verification_status: str = "",
+               sensitivity: str = "", source_session_id: str = "",
+               limit: int = 20):
+    with get_session() as session:
+        return {"memories": _memory_service(session, project_id).search(
+            q, memory_id=memory_id or None, provider=provider or None,
+            category=category or None, status=status,
+            origin_type=origin_type or None,
+            verification_status=verification_status or None,
+            sensitivity=sensitivity or None,
+            source_session_id=source_session_id or None, limit=limit)}
+
+
+@app.post("/memory")
+def memory_create(content: str = Form(...), project_id: str = Form(""),
+                  category: str = Form("explicit"), sensitivity: str = Form("normal"),
+                  verified: str | None = Form(None)):
+    with get_session() as session:
+        _memory_service(session, project_id).remember(content, category=category,
+            origin_type="explicit_user", sensitivity=sensitivity,
+            verification_status="verified" if verified else "user_stated", actor="user")
+    return RedirectResponse(f"/memory?project_id={quote(project_id)}", status_code=303)
+
+
+@app.post("/memory/{memory_id}")
+def memory_correct(memory_id: str, content: str = Form(...), project_id: str = Form(""),
+                   category: str = Form("explicit"), verification_status: str = Form("verified"),
+                   sensitivity: str = Form("normal"), supersede: str | None = Form(None)):
+    with get_session() as session:
+        _memory_service(session, project_id).update(memory_id, content=content,
+            category=category, verification_status=verification_status,
+            sensitivity=sensitivity, supersede=bool(supersede), actor="user")
+    return RedirectResponse(f"/memory?project_id={quote(project_id)}", status_code=303)
+
+
+@app.post("/memory/{memory_id}/forget")
+def memory_delete(memory_id: str, project_id: str = Form("")):
+    with get_session() as session:
+        _memory_service(session, project_id).forget(memory_id)
+    return RedirectResponse(f"/memory?project_id={quote(project_id)}", status_code=303)
+
+
+@app.post("/memory/settings")
+def memory_settings(project_id: str = Form(""), enabled: str | None = Form(None),
+                    retain_raw_events: str | None = Form(None),
+                    automatic_extraction: str | None = Form(None),
+                    retrieval_limit: int = Form(8), token_budget: int = Form(1200),
+                    retention_days: int = Form(365), strict_mode: str | None = Form(None),
+                    embedding_provider: str = Form(""), embedding_model: str = Form(""),
+                    embedding_base_url: str = Form("")):
+    with get_session() as session:
+        _memory_service(session, project_id).update_settings(
+            enabled=bool(enabled), retain_raw_events=bool(retain_raw_events),
+            automatic_extraction=bool(automatic_extraction),
+            retrieval_limit=retrieval_limit, token_budget=token_budget,
+            retention_days=retention_days, strict_mode=bool(strict_mode),
+            embedding_provider=embedding_provider.strip(),
+            embedding_model=embedding_model.strip(),
+            embedding_base_url=embedding_base_url.strip())
+    return RedirectResponse(f"/memory?project_id={quote(project_id)}", status_code=303)
+
+
+@app.get("/api/memory/export")
+def memory_export_api(project_id: str = ""):
+    with get_session() as session:
+        return JSONResponse(_memory_service(session, project_id).export(),
+            headers={"Content-Disposition": 'attachment; filename="hagent-memory.json"'})
+
+
+@app.get("/routing")
+def routing_page(request: Request, project_id: str = ""):
+    with get_session() as session:
+        workspace = get_active_workspace(session)
+        router = ModelRouter(session, workspace.id, project_id or None)
+        decisions = list(session.scalars(select(RoutingDecision)
+            .order_by(RoutingDecision.created_at.desc()).limit(50)).all())
+        return templates.TemplateResponse(request, "routing.html", {
+            "active": "routing", "projects": session.scalars(select(Project)).all(),
+            "runtimes": session.scalars(select(Runtime).where(Runtime.archived.is_(False))).all(),
+            "project_id": project_id, "policy": router.policy_dict(router.policy()),
+            "decisions": [router.serialize(item) for item in decisions],
+        })
+
+
+@app.get("/api/routing/preview")
+def routing_preview(prompt: str, project_id: str = "", runtime_id: str = "",
+                    mode: str = "", model: str = "", effort: str = ""):
+    with get_session() as session:
+        workspace = get_active_workspace(session)
+        runtime = require(session, Runtime, runtime_id) if runtime_id else None
+        override = {key: value for key, value in {
+            "runtime_id": runtime_id or None, "mode": mode or None,
+            "model": model or None, "effort": effort or None}.items() if value is not None}
+        return ModelRouter(session, workspace.id, project_id or None).route(
+            prompt, default_runtime=runtime, override=override, persist=False)
+
+
+@app.post("/routing/settings")
+def routing_settings(project_id: str = Form(""), mode: str = Form("provider_fixed"),
+                     provider: str = Form(""), model: str = Form(""),
+                     effort: str = Form(""), max_effort: str = Form("high"),
+                     max_cost_usd: str = Form(""), max_latency_ms: str = Form(""),
+                     latency_preference: str = Form("balanced")):
+    with get_session() as session:
+        workspace = get_active_workspace(session)
+        ModelRouter(session, workspace.id, project_id or None).set_policy(
+            mode=mode, provider=provider.strip(), model=model.strip(), effort=effort,
+            max_effort=max_effort,
+            max_cost_usd=float(max_cost_usd) if max_cost_usd.strip() else None,
+            max_latency_ms=int(max_latency_ms) if max_latency_ms.strip() else None,
+            latency_preference=latency_preference)
+    return RedirectResponse(f"/routing?project_id={quote(project_id)}", status_code=303)
 
 
 @app.post("/workspaces")
@@ -225,53 +386,99 @@ def update_profile(name: str = Form(""), email: str = Form(""), bio: str = Form(
     return RedirectResponse("/profile", status_code=303)
 
 
-@app.post("/chat")
-def create_chat(title: str = Form(""), body: str = Form(""), agent_id: str = Form(...)):
-    body = body.strip()
-    title = title.strip() or (body[:64] if body else "New conversation")
-    with get_session() as s:
-        agent = require(s, Agent, agent_id)
-        thread = ChatThread(workspace_id=get_active_workspace(s).id, agent_id=agent.id, title=title)
-        s.add(thread); s.flush()
-        if body:
-            s.add(ChatMessage(thread_id=thread.id, body=body))
-            s.commit()
-            _reply_in_chat(s, thread, agent)
-        else:
-            s.commit()
-        thread_id = thread.id
-    return RedirectResponse(f"/chat?thread_id={thread_id}", status_code=303)
+@app.post("/settings")
+async def update_settings(
+    app_name: str = Form("Hagent"),
+    tagline: str = Form(""),
+    accent_color: str = Form("#e8a857"),
+    density: str = Form("comfortable"),
+    show_starfield: str | None = Form(None),
+    default_agent_delegation_limit: int = Form(8),
+    default_agent_require_approval: str | None = Form(None),
+    default_agent_terminal_enabled: str | None = Form(None),
+    default_agent_terminal_directory: str = Form(""),
+    app_icon: UploadFile | None = File(None),
+):
+    app_name = app_name.strip()
+    tagline = tagline.strip()
+    accent_color = accent_color.strip().lower()
+    if not app_name or len(app_name) > 40:
+        raise HTTPException(400, "App name must be between 1 and 40 characters")
+    if len(tagline) > 100:
+        raise HTTPException(400, "Tagline must be 100 characters or fewer")
+    if not re.fullmatch(r"#[0-9a-f]{6}", accent_color):
+        raise HTTPException(400, "Accent color must be a six-digit hex color")
+    if density not in {"comfortable", "compact"}:
+        raise HTTPException(400, "Unknown interface density")
+    if not 0 <= default_agent_delegation_limit <= 50:
+        raise HTTPException(400, "Delegation calls per run must be between 0 and 50")
+    terminal_directory = default_agent_terminal_directory.strip()
+    if terminal_directory:
+        terminal_directory = resolve_working_directory(terminal_directory)
+
+    values = {
+        "app_name": app_name,
+        "tagline": tagline,
+        "accent_color": accent_color,
+        "density": density,
+        "show_starfield": str(show_starfield is not None).lower(),
+        "default_agent_delegation_limit": str(default_agent_delegation_limit),
+        "default_agent_require_approval": str(default_agent_require_approval is not None).lower(),
+        "default_agent_terminal_enabled": str(default_agent_terminal_enabled is not None).lower(),
+        "default_agent_terminal_directory": terminal_directory,
+    }
+
+    if app_icon and app_icon.filename:
+        content_types = {
+            "image/png": ".png",
+            "image/jpeg": ".jpg",
+            "image/webp": ".webp",
+            "image/x-icon": ".ico",
+            "image/vnd.microsoft.icon": ".ico",
+        }
+        extension = content_types.get((app_icon.content_type or "").lower())
+        if extension is None:
+            raise HTTPException(400, "App icon must be PNG, JPEG, WebP, or ICO")
+        data = await app_icon.read(2 * 1024 * 1024 + 1)
+        if len(data) > 2 * 1024 * 1024:
+            raise HTTPException(413, "App icon exceeds 2 MiB")
+        target = Path(__file__).parent / "static" / f"user_app_icon{extension}"
+        target.write_bytes(data)
+        values["app_icon_url"] = f"/static/{target.name}?v={int(datetime.now(timezone.utc).timestamp())}"
+
+    _save_app_settings(values)
+    app.title = app_name
+    return RedirectResponse("/settings?saved=1", status_code=303)
 
 
-def _reply_in_chat(session, thread, agent):
-    prompt = "\n".join(f"{message.author}: {message.body}" for message in thread.messages)
-    try:
-        result = execute_agent(agent, prompt)
-        answer = result.output or "The agent returned an empty response."
-    except Exception as exc:
-        answer = f"I couldn't complete that response: {exc}"
-    session.add(ChatMessage(thread_id=thread.id, author=agent.name, body=answer))
+HISTORY_CHAR_BUDGET = 16000
+
+
+# Kept well above HISTORY_CHAR_BUDGET (the per-request prompt window) so trimming
+# only fires occasionally in bulk, rather than shaving the thread on every message.
+TRIM_TRIGGER_CHARS = 4 * HISTORY_CHAR_BUDGET
+TRIM_TARGET_CHARS = 2 * HISTORY_CHAR_BUDGET
+
+
+def _trim_thread_history(session, thread):
+    session.refresh(thread, attribute_names=["messages"])
+    messages = thread.messages
+    total = sum(len(m.body) for m in messages)
+    if total <= TRIM_TRIGGER_CHARS:
+        return
+    kept = 0
+    cutoff = len(messages)
+    for i, message in enumerate(reversed(messages)):
+        kept += len(message.body)
+        if kept > TRIM_TARGET_CHARS:
+            cutoff = len(messages) - i - 1
+            break
+    for message in messages[:cutoff]:
+        session.delete(message)
     session.commit()
 
 
-@app.post("/chat/{thread_id}/messages")
-def send_chat(thread_id: str, body: str = Form(...), agent_id: str = Form("")):
-    body = body.strip()
-    if not body:
-        raise HTTPException(400, "Message cannot be empty")
-    with get_session() as s:
-        thread = require(s, ChatThread, thread_id)
-        selected_agent = require(s, Agent, agent_id) if agent_id else None
-        if selected_agent:
-            thread.agent_id = selected_agent.id
-        elif thread.agent_id:
-            selected_agent = require(s, Agent, thread.agent_id)
-        s.add(ChatMessage(thread_id=thread.id, body=body))
-        s.commit()
-        if selected_agent:
-            _reply_in_chat(s, thread, selected_agent)
-        current_thread_id = thread.id
-    return RedirectResponse(f"/chat?thread_id={current_thread_id}", status_code=303)
+HOLLY_VOICE_URL = "http://127.0.0.1:5000"
 
 
 @app.post("/issues/{issue_id}/cancel")
@@ -338,55 +545,99 @@ def download_attachment(attachment_id: str):
 def _startup():
     init_db()
     start_scheduler()
-    start_local_folder_watcher()
+    resume_pending_runs()
 
 
 @app.on_event("shutdown")
 def _shutdown():
-    stop_local_folder_watcher()
+    pass
+
+
+@app.get("/approvals")
+def approvals_page(request: Request):
+    with get_session() as s:
+        runs = s.scalars(
+            select(Run).where(Run.status == RunStatus.WAITING_APPROVAL).order_by(Run.created_at.desc())
+        ).all()
+        return templates.TemplateResponse(request, "approvals.html", {"runs": runs, "active": "approvals"})
+
+
+A2A_INBOUND_PROJECT_NAME = "A2A Inbound"
 
 
 @app.get("/")
 def dashboard(request: Request):
     with get_session() as s:
-        projects = s.scalars(select(Project)).all()
-        agents = s.scalars(select(Agent)).all()
-        autopilots = s.scalars(select(Autopilot)).all()
-        issues = s.scalars(select(Issue)).all()
+        project_count = s.scalar(select(func.count()).select_from(Project))
+        agent_count = s.scalar(select(func.count()).select_from(Agent))
+        autopilot_count = s.scalar(select(func.count()).select_from(Autopilot))
+        issue_count = s.scalar(select(func.count()).select_from(Issue))
+        runtime_count = s.scalar(select(func.count()).select_from(Runtime))
 
-        needs_attention = sorted(
-            (
-                i
-                for i in issues
-                if i.status == IssueStatus.IN_PROGRESS
-                or any(r.status == RunStatus.FAILED for r in i.runs)
-            ),
-            key=lambda i: i.updated_at,
-            reverse=True,
-        )[:8]
+        # An issue only "needs attention" for a failed run if its *latest* run
+        # failed - a later successful retry should clear it, not leave it stuck
+        # here forever.
+        latest_run_at = (
+            select(Run.issue_id, func.max(Run.created_at).label("latest_created_at"))
+            .group_by(Run.issue_id)
+            .subquery()
+        )
+        latest_failed_issue_ids = (
+            select(Run.issue_id)
+            .join(
+                latest_run_at,
+                (Run.issue_id == latest_run_at.c.issue_id)
+                & (Run.created_at == latest_run_at.c.latest_created_at),
+            )
+            .where(Run.status == RunStatus.FAILED)
+        )
+        needs_attention = s.scalars(
+            select(Issue)
+            .where((Issue.status == IssueStatus.IN_PROGRESS) | Issue.id.in_(latest_failed_issue_ids))
+            .order_by(Issue.updated_at.desc())
+            .limit(8)
+        ).all()
 
-        recent_issues = sorted(issues, key=lambda i: i.updated_at, reverse=True)[:6]
+        # "Recently active" is meant to complement "Needs attention", not repeat
+        # it - exclude anything already shown there so the two panels aren't
+        # near-duplicates when most updates are in-progress/failed issues.
+        needs_attention_ids = [i.id for i in needs_attention]
+        recent_issues_query = select(Issue).order_by(Issue.updated_at.desc()).limit(6)
+        if needs_attention_ids:
+            recent_issues_query = select(Issue).where(Issue.id.notin_(needs_attention_ids)).order_by(
+                Issue.updated_at.desc()
+            ).limit(6)
+        recent_issues = s.scalars(recent_issues_query).all()
 
-        recent_runs = sorted(
-            (r for i in issues for r in i.runs),
-            key=lambda r: r.created_at,
-            reverse=True,
-        )[:6]
+        recent_runs = s.scalars(
+            select(Run).options(joinedload(Run.issue)).order_by(Run.created_at.desc()).limit(6)
+        ).all()
 
         return templates.TemplateResponse(
             request,
             "dashboard.html",
             {
-                "project_count": len(projects),
-                "agent_count": len(agents),
-                "autopilot_count": len(autopilots),
-                "issue_count": len(issues),
+                "project_count": project_count,
+                "agent_count": agent_count,
+                "autopilot_count": autopilot_count,
+                "issue_count": issue_count,
+                "runtime_count": runtime_count,
                 "needs_attention": needs_attention,
                 "recent_issues": recent_issues,
                 "recent_runs": recent_runs,
                 "active": "dashboard",
             },
         )
+
+
+SEARCH_PAGES = [
+    ("Dashboard", "/"), ("Board", "/board"), ("Agents", "/agents"), ("Chat", "/chat"),
+    ("Projects", "/projects"), ("Approvals", "/approvals"), ("Repos", "/repos"),
+    ("Squads", "/squads"), ("Skills", "/skills"), ("Autopilots", "/autopilots"),
+    ("General settings", "/settings"), ("Usage", "/usage"), ("Profile", "/profile"),
+    ("Workspaces", "/workspaces"), ("Runtimes", "/runtimes"), ("Memory", "/memory"),
+    ("Model routing", "/routing"),
+]
 
 
 @app.get("/api/search")
@@ -396,17 +647,30 @@ def api_search(q: str = ""):
         return {"results": []}
     results = []
     with get_session() as s:
+        for label, url in SEARCH_PAGES:
+            if needle in label.casefold():
+                results.append({"type": "page", "title": label, "subtitle": "Page", "url": url})
         for p in s.scalars(select(Project)).all():
             if needle in p.name.casefold():
                 results.append({"type": "project", "title": p.name, "subtitle": "Project", "url": f"/projects/{p.id}"})
         for a in s.scalars(select(Agent)).all():
             if needle in a.name.casefold():
                 results.append({"type": "agent", "title": a.name, "subtitle": "Agent", "url": f"/agents/{a.id}"})
+                results.append({"type": "chat", "title": f"Chat with {a.name}", "subtitle": "Chat", "url": f"/chat/{a.id}"})
         for i in s.scalars(select(Issue)).all():
             if needle in i.title.casefold():
                 project_name = i.project.name if i.project else ""
                 results.append({"type": "issue", "title": i.title, "subtitle": f"Issue · {project_name}", "url": f"/issues/{i.id}"})
-    return {"results": results[:20]}
+        for r in s.scalars(select(Runtime).where(Runtime.archived.is_(False))).all():
+            if needle in r.name.casefold():
+                results.append({"type": "runtime", "title": r.name, "subtitle": "Runtime", "url": f"/runtimes/{r.id}"})
+        for skill in s.scalars(select(Skill)).all():
+            if needle in skill.name.casefold():
+                results.append({"type": "skill", "title": skill.name, "subtitle": "Skill", "url": "/skills"})
+        for squad in s.scalars(select(Squad)).all():
+            if needle in squad.name.casefold():
+                results.append({"type": "squad", "title": squad.name, "subtitle": "Squad", "url": "/squads"})
+    return {"results": results[:30]}
 
 
 @app.post("/webhooks/{token}")
@@ -436,17 +700,13 @@ def profile_page(request: Request):
         return templates.TemplateResponse(request, "profile.html", {"profile": profile, "active": "profile"})
 
 
-@app.get("/chat")
-def chat_page(request: Request, thread_id: str = ""):
-    with get_session() as s:
-        agents = s.scalars(select(Agent).where(Agent.archived.is_(False)).order_by(Agent.name)).all()
-        threads = s.scalars(select(ChatThread).order_by(ChatThread.created_at.desc())).all()
-        active_thread = require(s, ChatThread, thread_id) if thread_id else (threads[0] if threads else None)
-        return templates.TemplateResponse(
-            request,
-            "chat.html",
-            {"threads": threads, "agents": agents, "agent_names": {a.id: a.name for a in agents}, "active_thread": active_thread, "active": "chat"},
-        )
+@app.get("/settings")
+def settings_page(request: Request, saved: str = ""):
+    return templates.TemplateResponse(
+        request,
+        "settings.html",
+        {"settings": get_app_settings(), "active": "settings", "saved": saved == "1"},
+    )
 
 
 # --- projects ---
@@ -484,6 +744,7 @@ def project_board(request: Request, project_id: str):
                 "statuses": ISSUE_STATUS_ORDER,
                 "issues_by_status": issues_by_status,
                 "active": "projects",
+                "wide_layout": True,
             },
         )
 
@@ -521,6 +782,45 @@ def issue_detail(request: Request, issue_id: str):
                 "statuses": ISSUE_STATUS_ORDER,
                 "active": "projects",
             },
+        )
+
+
+@app.get("/board")
+def all_issues_board(request: Request):
+    """One board, every project's issues, grouped by status - so 'what's the current
+    state of everything' doesn't require clicking into each project one at a time."""
+    with get_session() as s:
+        visible_statuses = [status for status in ISSUE_STATUS_ORDER if status != IssueStatus.CANCELLED]
+        issues = s.scalars(select(Issue).where(Issue.status != IssueStatus.CANCELLED)).all()
+        issues_by_status = {status: [] for status in visible_statuses}
+        for i in sorted(issues, key=lambda i: i.updated_at, reverse=True):
+            issues_by_status[i.status].append(i)
+        return templates.TemplateResponse(
+            request,
+            "all_issues_board.html",
+            {"statuses": visible_statuses, "issues_by_status": issues_by_status, "active": "board", "wide_layout": True},
+        )
+
+
+@app.get("/issues/{issue_id}/diff")
+def issue_diff_page(request: Request, issue_id: str):
+    from hagent.worktrees import compute_diff
+    with get_session() as s:
+        issue = require(s, Issue, issue_id)
+        project = s.get(Project, issue.project_id)
+        repo = s.get(Repo, project.repo_id) if project and project.repo_id else None
+        diff_text = None
+        error = None
+        if not repo or not repo.local_path:
+            error = "This issue's project isn't linked to a repo with a local checkout."
+        else:
+            diff_text = compute_diff(repo.local_path, issue_id)
+            if diff_text is None:
+                error = f"No isolated worktree exists yet for this issue - it hasn't run against '{repo.name}' yet."
+        return templates.TemplateResponse(
+            request,
+            "issue_diff.html",
+            {"issue": issue, "repo": repo, "diff_text": diff_text, "error": error, "active": "projects"},
         )
 
 
@@ -565,31 +865,208 @@ def issue_add_comment(issue_id: str, body: str = Form(...)):
 
 
 @app.post("/issues/{issue_id}/run")
-def issue_run(issue_id: str):
+def issue_run(issue_id: str, background_tasks: BackgroundTasks):
     with get_session() as s:
         i = require(s, Issue, issue_id)
         if i.assignee_agent_id:
             a = require(s, Agent, i.assignee_agent_id)
-            engine_run_issue(s, i, a)
+            run = queue_issue_run(s, i, a)
+            if run.status == RunStatus.PENDING:
+                background_tasks.add_task(process_queued_run_by_id, run.id)
+    return RedirectResponse(url=f"/issues/{issue_id}", status_code=303)
+
+
+@app.post("/issues/{issue_id}/runs/{run_id}/approve")
+def approve_issue_run(issue_id: str, run_id: str, background_tasks: BackgroundTasks):
+    with get_session() as s:
+        issue = require(s, Issue, issue_id)
+        run = require(s, Run, run_id)
+        if run.issue_id != issue.id:
+            raise HTTPException(404, "Run not found for this issue")
+        changed = s.execute(
+            update(Run).where(Run.id == run.id, Run.status == RunStatus.WAITING_APPROVAL).values(status=RunStatus.PENDING),
+            execution_options={"synchronize_session": False},
+        ).rowcount
+        if not changed:
+            raise HTTPException(409, "This run is no longer waiting for approval")
+        issue.status = IssueStatus.IN_PROGRESS
+        s.add(TimelineEvent(issue_id=issue.id, event_type="run_approved", detail=f"Run approved for agent {run.agent.name}"))
+        s.commit()
+        background_tasks.add_task(process_queued_run_by_id, run.id)
+    return RedirectResponse(url=f"/issues/{issue_id}", status_code=303)
+
+
+@app.post("/issues/{issue_id}/runs/{run_id}/reject")
+def reject_issue_run(issue_id: str, run_id: str):
+    with get_session() as s:
+        issue = require(s, Issue, issue_id)
+        run = require(s, Run, run_id)
+        if run.issue_id != issue.id:
+            raise HTTPException(404, "Run not found for this issue")
+        changed = s.execute(
+            update(Run).where(Run.id == run.id, Run.status == RunStatus.WAITING_APPROVAL).values(
+                status=RunStatus.REJECTED, error="rejected by user", finished_at=datetime.now(timezone.utc)
+            ),
+            execution_options={"synchronize_session": False},
+        ).rowcount
+        if not changed:
+            raise HTTPException(409, "This run is no longer waiting for approval")
+        s.add(TimelineEvent(issue_id=issue.id, event_type="run_rejected", detail=f"Run rejected for agent {run.agent.name}"))
+        s.commit()
+    return RedirectResponse(url=f"/issues/{issue_id}", status_code=303)
+
+
+@app.post("/issues/{issue_id}/runs/{run_id}/retry")
+def issue_retry_run(issue_id: str, run_id: str, background_tasks: BackgroundTasks):
+    """Retry a failed or cancelled run with the same agent and original prompt."""
+    with get_session() as s:
+        issue = require(s, Issue, issue_id)
+        previous = require(s, Run, run_id)
+        if previous.issue_id != issue.id:
+            raise HTTPException(404, "Run not found for this issue")
+        if previous.status not in (RunStatus.FAILED, RunStatus.CANCELLED):
+            raise HTTPException(409, "Only failed or cancelled runs can be retried")
+        agent = require(s, Agent, previous.agent_id)
+        run = queue_issue_run(s, issue, agent, prompt=previous.prompt)
+        if run.status == RunStatus.PENDING:
+            background_tasks.add_task(process_queued_run_by_id, run.id)
     return RedirectResponse(url=f"/issues/{issue_id}", status_code=303)
 
 
 # --- agents & runtimes ---
+
+def _agent_activity_state_from_statuses(statuses) -> str:
+    """Working = an active run in flight; thinking = a run queued or waiting
+    on approval; resting = nothing pending."""
+    if any(status == RunStatus.RUNNING for status in statuses):
+        return "running"
+    if any(status in (RunStatus.PENDING, RunStatus.WAITING_APPROVAL) for status in statuses):
+        return "thinking"
+    return "resting"
+
+
+def _agent_activity_state(runs: list) -> str:
+    return _agent_activity_state_from_statuses(r.status for r in runs)
+
+
+def _chat_rows(s) -> list[dict]:
+    agents = s.scalars(
+        select(Agent).where(Agent.archived.is_(False)).order_by(Agent.name)
+    ).all()
+    threads = {t.agent_id: t for t in s.scalars(select(ChatThread)).all()}
+    last_message = {}
+    for thread in threads.values():
+        if thread.messages:
+            last_message[thread.agent_id] = thread.messages[-1]
+    rows = [
+        {
+            "agent": agent,
+            "thread": threads.get(agent.id),
+            "unread": bool(threads.get(agent.id) and threads[agent.id].unread),
+            "last_message": last_message.get(agent.id),
+        }
+        for agent in agents
+    ]
+    rows.sort(key=lambda r: (r["last_message"].created_at if r["last_message"] else r["agent"].created_at), reverse=True)
+    return rows
+
+
+@app.get("/chat")
+def chat_index(request: Request):
+    """General conversation with an agent - not tied to any issue. Also where
+    an agent's direct messages to the owner (the message_user tool) show up."""
+    with get_session() as s:
+        rows = _chat_rows(s)
+        return templates.TemplateResponse(request, "chat_list.html", {"rows": rows, "active": "chat"})
+
+
+@app.get("/chat/{agent_id}")
+def chat_thread_page(request: Request, agent_id: str):
+    with get_session() as s:
+        agent = require(s, Agent, agent_id)
+        thread = s.scalars(select(ChatThread).where(ChatThread.agent_id == agent.id)).first()
+        if thread and thread.unread:
+            thread.unread = False
+            s.commit()
+        messages = thread.messages if thread else []
+        rows = _chat_rows(s)
+        return templates.TemplateResponse(
+            request,
+            "chat_thread.html",
+            {"agent": agent, "messages": messages, "rows": rows, "active": "chat"},
+        )
+
+
+def _run_chat_turn(agent_id: str, message: str, resume_session_id: str | None, user_id: str | None) -> tuple[str, str | None]:
+    """Runs on a worker thread with its own session - execute_agent needs a
+    live session bound to the agent (routing, memory, delegation all read it)."""
+    with get_session() as s:
+        agent = require(s, Agent, agent_id)
+        try:
+            result = execute_agent(agent, message, resume_session_id=resume_session_id, memory_user_id=user_id)
+            return (result.output or "").strip() or "(No response.)", result.session_id
+        except Exception as exc:
+            return f"Something went wrong reaching {agent.name}: {exc}", None
+
+
+@app.post("/chat/{agent_id}/messages")
+async def chat_send_message(request: Request, agent_id: str, message: str = Form(...)):
+    message = message.strip()
+    if not message:
+        raise HTTPException(400, "Message cannot be empty")
+    with get_session() as s:
+        agent = require(s, Agent, agent_id)
+        workspace = get_active_workspace(s)
+        thread = s.scalars(select(ChatThread).where(ChatThread.agent_id == agent.id)).first()
+        if thread is None:
+            thread = ChatThread(workspace_id=workspace.id, agent_id=agent.id)
+            s.add(thread)
+            s.flush()
+        s.add(ChatMessage(thread_id=thread.id, role="user", content=message))
+        thread.unread = False
+        s.commit()
+        thread_id = thread.id
+        resume_session_id = thread.session_id
+        profile = s.scalar(select(UserProfile))
+        user_id = profile.id if profile else None
+    reply, new_session_id = await asyncio.to_thread(_run_chat_turn, agent_id, message, resume_session_id, user_id)
+    with get_session() as s:
+        thread = require(s, ChatThread, thread_id)
+        s.add(ChatMessage(thread_id=thread.id, role="agent", content=reply))
+        if new_session_id:
+            thread.session_id = new_session_id
+        s.commit()
+    return RedirectResponse(f"/chat/{agent_id}", status_code=303)
+
 
 @app.get("/agents")
 def agents_page(request: Request):
     with get_session() as s:
         runtimes = s.scalars(select(Runtime).where(Runtime.archived.is_(False)).order_by(Runtime.name)).all()
         skills = s.scalars(select(Skill).order_by(Skill.name)).all()
-        agents = s.scalars(select(Agent).where(Agent.archived.is_(False)).order_by(Agent.name)).all()
+        agents = s.scalars(
+            select(Agent)
+            .options(joinedload(Agent.runtime), selectinload(Agent.skills), selectinload(Agent.mcp_servers))
+            .where(Agent.archived.is_(False))
+            .order_by(Agent.name)
+        ).all()
         agent_stats = {}
+        runs_by_agent: dict[str, list] = {}
+        for run in s.scalars(select(Run).order_by(Run.created_at.desc())).all():
+            runs_by_agent.setdefault(run.agent_id, []).append(run)
+        issue_counts = dict(
+            s.execute(
+                select(Issue.assignee_agent_id, func.count()).where(Issue.assignee_agent_id.is_not(None)).group_by(Issue.assignee_agent_id)
+            ).all()
+        )
         for agent in agents:
-            runs = s.scalars(select(Run).where(Run.agent_id == agent.id).order_by(Run.created_at.desc())).all()
-            assigned_issues = s.scalars(select(Issue).where(Issue.assignee_agent_id == agent.id)).all()
+            runs = runs_by_agent.get(agent.id, [])
             agent_stats[agent.id] = {
                 "run_count": len(runs),
-                "issue_count": len(assigned_issues),
+                "issue_count": issue_counts.get(agent.id, 0),
                 "last_run": runs[0] if runs else None,
+                "is_running": any(r.status == RunStatus.RUNNING for r in runs),
+                "state": _agent_activity_state(runs),
             }
         return templates.TemplateResponse(
             request,
@@ -616,12 +1093,22 @@ def agent_detail(request: Request, agent_id: str):
         ).all()
         memberships = s.scalars(select(SquadMember).where(SquadMember.agent_id == agent.id)).all()
         completed_runs = sum(1 for run in runs if run.status == RunStatus.COMPLETED)
+        active_statuses = s.scalars(
+            select(Run.status).where(
+                Run.agent_id == agent.id,
+                Run.status.in_([RunStatus.RUNNING, RunStatus.PENDING, RunStatus.WAITING_APPROVAL]),
+            )
+        ).all()
+        agent_state = _agent_activity_state_from_statuses(active_statuses)
+        is_running = agent_state == "running"
         backup_runtime = s.get(Runtime, agent.backup_runtime_id) if agent.backup_runtime_id else None
         return templates.TemplateResponse(
             request,
             "agent_detail.html",
             {
                 "agent": agent,
+                "is_running": is_running,
+                "agent_state": agent_state,
                 "runtimes": runtimes,
                 "skills": skills,
                 "mcp_servers": mcp_servers,
@@ -640,6 +1127,7 @@ def agent_detail(request: Request, agent_id: str):
 def update_agent(
     agent_id: str,
     name: str = Form(...),
+    designation: str = Form(""),
     description: str = Form(""),
     runtime_id: str = Form(...),
     backup_runtime_id: str = Form(""),
@@ -649,6 +1137,8 @@ def update_agent(
     environment_json: str = Form("{}"),
     terminal_enabled: str | None = Form(None),
     terminal_working_directory: str = Form(""),
+    require_run_approval: str | None = Form(None),
+    delegation_limit: int = Form(8),
 ):
     with get_session() as s:
         agent = require(s, Agent, agent_id)
@@ -664,7 +1154,10 @@ def update_agent(
             raise HTTPException(400, "Environment must be valid JSON") from exc
         if not isinstance(environment, dict) or not all(isinstance(key, str) for key in environment):
             raise HTTPException(400, "Environment must be a JSON object")
+        if not 0 <= delegation_limit <= 50:
+            raise HTTPException(400, "Delegation calls per run must be between 0 and 50")
         agent.name = name.strip()
+        agent.designation = designation.strip()
         agent.description = description.strip()
         if not agent.name:
             raise ValueError("Agent name cannot be empty")
@@ -679,8 +1172,79 @@ def update_agent(
             resolve_working_directory(terminal_working_directory)
             if agent.terminal_enabled else None
         )
+        agent.require_run_approval = require_run_approval is not None
+        agent.delegation_limit = delegation_limit
         s.commit()
     return RedirectResponse(url=f"/agents/{agent_id}", status_code=303)
+
+
+@app.get("/autopilots/graph")
+def autopilots_graph(request: Request):
+    """Read-only visual graph: Trigger -> Autopilot -> Agent -> Project for every
+    autopilot in the workspace. A first, deliberately-scoped slice of a visual workflow
+    builder - shows the real wiring, doesn't (yet) let you edit it here."""
+    with get_session() as s:
+        autopilots = s.scalars(select(Autopilot)).all()
+        rows = []
+        for ap in autopilots:
+            triggers = list(ap.triggers)
+            trigger_labels = [
+                (f"cron: {t.cron_expression}" if t.type.value == "cron" else "webhook")
+                for t in triggers
+            ] or ["(no trigger)"]
+            rows.append({
+                "id": ap.id,
+                "name": ap.name,
+                "enabled": ap.enabled,
+                "trigger_labels": trigger_labels,
+                "agent_name": ap.agent.name if ap.agent else "(none)",
+                "project_name": ap.project.name if ap.project else "(any project)",
+            })
+        return templates.TemplateResponse(request, "autopilots_graph.html", {"rows": rows, "active": "autopilots"})
+
+
+@app.get("/usage")
+def usage_page(request: Request):
+    with get_session() as s:
+        runtimes = s.scalars(select(Runtime)).all()
+        runtime_rows = []
+        for runtime in runtimes:
+            runs = s.scalars(select(Run).join(Agent).where(Agent.runtime_id == runtime.id)).all()
+            if not runs:
+                continue
+            runtime_rows.append({
+                "name": runtime.name,
+                "type": runtime.type.value,
+                "run_count": len(runs),
+                "input_tokens": sum(r.input_tokens or 0 for r in runs),
+                "output_tokens": sum(r.output_tokens or 0 for r in runs),
+                "completed": sum(1 for r in runs if r.status == RunStatus.COMPLETED),
+                "failed": sum(1 for r in runs if r.status == RunStatus.FAILED),
+            })
+        agents = s.scalars(select(Agent).where(Agent.archived.is_(False))).all()
+        agent_rows = []
+        for agent in agents:
+            runs = s.scalars(select(Run).where(Run.agent_id == agent.id)).all()
+            if not runs:
+                continue
+            agent_rows.append({
+                "name": agent.name,
+                "runtime_name": agent.runtime.name if agent.runtime else "(none)",
+                "run_count": len(runs),
+                "input_tokens": sum(r.input_tokens or 0 for r in runs),
+                "output_tokens": sum(r.output_tokens or 0 for r in runs),
+                "last_run": max((r.created_at for r in runs), default=None),
+            })
+        agent_rows.sort(key=lambda row: row["last_run"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        verification_passed_count = len(s.scalars(select(TimelineEvent).where(TimelineEvent.event_type == "verification_passed")).all())
+        verification_failed_count = len(s.scalars(select(TimelineEvent).where(TimelineEvent.event_type == "verification_failed")).all())
+        return templates.TemplateResponse(request, "usage.html", {
+            "active": "usage",
+            "runtime_rows": runtime_rows,
+            "agent_rows": agent_rows,
+            "verification_passed": verification_passed_count,
+            "verification_failed": verification_failed_count,
+        })
 
 
 @app.get("/runtimes")
@@ -728,6 +1292,12 @@ def runtimes_page(request: Request):
                 status.update(label="No key required", ready=True)
             else:
                 status.update(label="API key needed", ready=False)
+            if runtime.health_status == "healthy":
+                status.update(label="Provider responding", ready=True)
+            elif runtime.health_status == "limited":
+                status.update(label="Usage limit reached - backups promoted", ready=False)
+            elif runtime.health_status == "error":
+                status.update(label="Provider check failed", ready=False)
             connection_status[runtime.id] = status
         return templates.TemplateResponse(
             request,
@@ -902,6 +1472,7 @@ async def draft_agent_instructions(request: Request):
 @app.post("/agents")
 def create_agent(
     name: str = Form(...),
+    designation: str = Form(""),
     runtime_id: str = Form(...),
     backup_runtime_id: str = Form(""),
     description: str = Form(""),
@@ -909,7 +1480,14 @@ def create_agent(
     skill_ids: list[str] = Form(default=[]),
     terminal_enabled: str | None = Form(None),
     terminal_working_directory: str = Form(""),
+    require_run_approval: str | None = Form(None),
+    delegation_limit: int | None = Form(None),
 ):
+    defaults = get_app_settings()
+    if delegation_limit is None:
+        delegation_limit = defaults["default_agent_delegation_limit"]
+    if terminal_enabled is not None and not terminal_working_directory.strip():
+        terminal_working_directory = defaults["default_agent_terminal_directory"]
     with get_session() as s:
         ws = get_or_create_default_workspace(s)
         runtime = require(s, Runtime, runtime_id)
@@ -917,11 +1495,14 @@ def create_agent(
         if backup_runtime and backup_runtime.id == runtime.id:
             raise HTTPException(400, "Backup runtime must differ from primary runtime")
         selected_skills = [require(s, Skill, skill_id) for skill_id in skill_ids]
+        if not 0 <= delegation_limit <= 50:
+            raise HTTPException(400, "Delegation calls per run must be between 0 and 50")
         agent = Agent(
             workspace_id=ws.id,
             runtime_id=runtime.id,
             backup_runtime_id=backup_runtime.id if backup_runtime else None,
             name=name.strip(),
+            designation=designation.strip(),
             description=description.strip(),
             instructions=instructions.strip(),
             terminal_enabled=terminal_enabled is not None,
@@ -929,6 +1510,8 @@ def create_agent(
                 resolve_working_directory(terminal_working_directory)
                 if terminal_enabled is not None else None
             ),
+            require_run_approval=require_run_approval is not None,
+            delegation_limit=delegation_limit,
         )
         if not agent.name:
             raise ValueError("Agent name cannot be empty")
@@ -972,16 +1555,18 @@ def add_squad_member(squad_id: str, agent_id: str = Form(...), role: str = Form(
 @app.get("/skills")
 def skills_page(request: Request):
     with get_session() as s:
-        skills = s.scalars(select(Skill).order_by(Skill.name)).all()
-        agents = s.scalars(select(Agent).where(Agent.archived.is_(False)).order_by(Agent.name)).all()
-        return templates.TemplateResponse(request, "skills.html", {"skills": skills, "agents": agents, "active": "skills"})
+        skills = s.scalars(select(Skill).options(selectinload(Skill.agents), selectinload(Skill.files)).order_by(Skill.name)).all()
+        agents = s.scalars(select(Agent).options(joinedload(Agent.runtime)).order_by(Agent.name)).all()
+        return templates.TemplateResponse(request, "skills.html", {"skills": skills, "agents": agents, "skill_editor_ready": True, "active": "skills"})
 
 
 @app.post("/skills")
 def create_skill(name: str = Form(...), description: str = Form(""), content: str = Form("")):
     with get_session() as s:
         ws = get_or_create_default_workspace(s)
-        s.add(Skill(workspace_id=ws.id, name=name, description=description, content=content))
+        used = s.scalars(select(Skill.emoji).where(Skill.workspace_id == ws.id)).all()
+        emoji = choose_skill_emoji(name, description, content, used)
+        s.add(Skill(workspace_id=ws.id, name=name, emoji=emoji, description=description, content=content))
         s.commit()
     return RedirectResponse(url="/skills", status_code=303)
 
@@ -996,229 +1581,36 @@ def update_skill_access(skill_id: str, agent_ids: list[str] = Form(default=[])):
     return RedirectResponse(url="/skills", status_code=303)
 
 
-# --- retrieval-augmented knowledge ---
-
-@app.get("/knowledge")
-def knowledge_page(request: Request):
-    with get_session() as s:
-        bases = s.scalars(select(KnowledgeBase).order_by(KnowledgeBase.name)).all()
-        return templates.TemplateResponse(request, "knowledge.html", {"bases": bases, "active": "knowledge"})
-
-
-@app.post("/knowledge")
-def create_knowledge_base(
-    name: str = Form(...), description: str = Form(""),
-    embedding_provider: str = Form("ollama"), embedding_model: str = Form(""),
+@app.post("/skills/{skill_id}")
+def update_skill(
+    skill_id: str,
+    name: str = Form(...),
+    description: str = Form(""),
+    content: str = Form(""),
+    last_used_at: str = Form(""),
+    agent_ids: list[str] = Form(default=[]),
 ):
-    if embedding_provider not in {"ollama", "openai", "openai_compatible", "gemini"}:
-        raise HTTPException(400, "Unsupported embedding provider")
-    if not name.strip():
-        raise HTTPException(400, "Knowledge base name is required")
-    default_models = {"ollama": "embeddinggemma", "openai": "text-embedding-3-small",
-        "gemini": "gemini-embedding-001", "openai_compatible": "text-embedding-3-small"}
-    embedding_model = embedding_model.strip() or default_models[embedding_provider]
-    with get_session() as s:
-        workspace = get_active_workspace(s)
-        base = KnowledgeBase(workspace_id=workspace.id, name=name.strip(), description=description.strip(),
-            embedding_provider=embedding_provider, embedding_model=embedding_model.strip())
-        if embedding_provider == "openai_compatible":
-            base.embedding_base_url = ""
-        if embedding_provider == "openai":
-            base.embedding_base_url = "https://api.openai.com/v1"
-        if embedding_provider == "gemini":
-            base.embedding_model = embedding_model.strip() or "gemini-embedding-001"
-        s.add(base)
-        s.commit()
-        base_id = base.id
-    return RedirectResponse(f"/knowledge/{base_id}", status_code=303)
-
-
-@app.get("/knowledge/{knowledge_base_id}")
-def knowledge_detail(
-    request: Request, knowledge_base_id: str, q: str = "", folder_done: bool = False,
-    folder_indexed: int = 0, folder_updated: int = 0, folder_unchanged: int = 0,
-    folder_removed: int = 0, folder_skipped: int = 0, folder_failed: int = 0, folder_error: str = "",
-):
-    with get_session() as s:
-        base = require(s, KnowledgeBase, knowledge_base_id)
-        documents = s.scalars(select(KnowledgeDocument).where(
-            KnowledgeDocument.knowledge_base_id == base.id).order_by(KnowledgeDocument.created_at.desc())).all()
-        local_folders = s.scalars(select(KnowledgeFolder).where(
-            KnowledgeFolder.knowledge_base_id == base.id).order_by(KnowledgeFolder.path)).all()
-        agents = s.scalars(select(Agent).where(Agent.archived.is_(False)).order_by(Agent.name)).all()
-        results = search_knowledge(s, [base.id], q, top_k=8) if q.strip() else []
-        return templates.TemplateResponse(request, "knowledge_detail.html", {
-            "base": base, "documents": documents, "local_folders": local_folders, "agents": agents,
-            "assigned_agent_ids": {agent.id for agent in base.agents},
-            "results": results, "q": q, "active": "knowledge",
-            "folder_done": folder_done, "folder_indexed": folder_indexed,
-            "folder_updated": folder_updated, "folder_unchanged": folder_unchanged,
-            "folder_removed": folder_removed, "folder_skipped": folder_skipped, "folder_failed": folder_failed,
-            "folder_error": folder_error,
-        })
-
-
-@app.post("/knowledge/{knowledge_base_id}/settings")
-def update_knowledge_settings(
-    knowledge_base_id: str, name: str = Form(...), description: str = Form(""),
-    embedding_provider: str = Form(...), embedding_model: str = Form(...),
-    embedding_base_url: str = Form(""), embedding_api_key: str = Form(""),
-):
-    if embedding_provider not in {"ollama", "openai", "openai_compatible", "gemini"}:
-        raise HTTPException(400, "Unsupported embedding provider")
-    with get_session() as s:
-        base = require(s, KnowledgeBase, knowledge_base_id)
-        base.name = name.strip() or base.name
-        base.description = description.strip()
-        base.embedding_provider = embedding_provider
-        base.embedding_model = embedding_model.strip()
-        if embedding_base_url.strip():
-            base.embedding_base_url = embedding_base_url.strip().rstrip("/")
-        elif embedding_provider == "ollama":
-            base.embedding_base_url = "http://localhost:11434"
-        elif embedding_provider == "openai":
-            base.embedding_base_url = "https://api.openai.com/v1"
-        elif embedding_provider in {"gemini", "openai_compatible"}:
-            base.embedding_base_url = ""
-        if embedding_api_key.strip():
-            base.embedding_api_key = embedding_api_key.strip()
-        s.commit()
-    return RedirectResponse(f"/knowledge/{knowledge_base_id}", status_code=303)
-
-
-@app.post("/knowledge/{knowledge_base_id}/agents")
-def set_knowledge_agents(knowledge_base_id: str, agent_ids: list[str] = Form(default=[])):
-    with get_session() as s:
-        base = require(s, KnowledgeBase, knowledge_base_id)
-        agents = [require(s, Agent, agent_id) for agent_id in dict.fromkeys(agent_ids)]
-        if any(agent.workspace_id != base.workspace_id for agent in agents):
-            raise HTTPException(400, "Agents and knowledge base must share a workspace")
-        base.agents = agents
-        s.commit()
-    return RedirectResponse(f"/knowledge/{knowledge_base_id}", status_code=303)
-
-
-@app.post("/knowledge/{knowledge_base_id}/documents")
-async def add_knowledge_document(knowledge_base_id: str, file: UploadFile = File(...)):
-    data = await file.read(MAX_DOCUMENT_BYTES + 1)
-    with get_session() as s:
-        base = require(s, KnowledgeBase, knowledge_base_id)
+    cleaned_name = name.strip()
+    if not cleaned_name:
+        raise HTTPException(400, "Skill name cannot be empty")
+    used_at = None
+    if last_used_at.strip():
         try:
-            ingest_document(s, base, file.filename or "upload.txt", data)
+            used_at = datetime.fromisoformat(last_used_at.strip())
         except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        s.commit()
-    return RedirectResponse(f"/knowledge/{knowledge_base_id}", status_code=303)
-
-
-@app.post("/knowledge/{knowledge_base_id}/folder")
-def add_local_knowledge_folder(knowledge_base_id: str, folder: str = Form(...)):
+            raise HTTPException(400, "Last used must be a valid date and time") from exc
+        used_at = used_at.replace(tzinfo=timezone.utc) if used_at.tzinfo is None else used_at.astimezone(timezone.utc)
     with get_session() as s:
-        base = require(s, KnowledgeBase, knowledge_base_id)
-        try:
-            normalized_path = str(Path(folder.strip()).expanduser().resolve(strict=True))
-            scan_snapshot = local_folder_snapshot(normalized_path)
-            counts = index_local_folder(s, base, normalized_path)
-            source = s.scalar(select(KnowledgeFolder).where(
-                KnowledgeFolder.knowledge_base_id == base.id,
-                KnowledgeFolder.path == normalized_path,
-            ))
-            if source is None:
-                source = KnowledgeFolder(knowledge_base_id=base.id, path=normalized_path)
-                s.add(source)
-            source.snapshot_json = json.dumps(scan_snapshot, separators=(",", ":"))
-            source.last_scanned_at = datetime.now(timezone.utc)
-            source.error = f"{counts['failed']} file(s) failed during this scan." if counts["failed"] else ""
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/knowledge/{knowledge_base_id}?folder_error={quote(str(exc))}", status_code=303,
-            )
+        skill = require(s, Skill, skill_id)
+        selected_agents = [require(s, Agent, agent_id) for agent_id in dict.fromkeys(agent_ids)]
+        skill.name = cleaned_name
+        skill.description = description.strip()
+        skill.content = content.strip()
+        skill.last_used_at = used_at
+        skill.agents = selected_agents
         s.commit()
-    refresh_local_folder_watches()
-    summary = "&".join(f"folder_{key}={counts[key]}" for key in ("indexed", "updated", "unchanged", "removed", "skipped", "failed"))
-    return RedirectResponse(f"/knowledge/{knowledge_base_id}?folder_done=1&{summary}", status_code=303)
+    return RedirectResponse(url="/skills", status_code=303)
 
-
-@app.post("/knowledge/{knowledge_base_id}/folders/{folder_id}/stop")
-def stop_watching_knowledge_folder(knowledge_base_id: str, folder_id: str):
-    with get_session() as s:
-        base = require(s, KnowledgeBase, knowledge_base_id)
-        source = require(s, KnowledgeFolder, folder_id)
-        if source.knowledge_base_id != base.id:
-            raise HTTPException(404, "Folder source not found")
-        s.delete(source)
-        s.commit()
-    refresh_local_folder_watches()
-    return RedirectResponse(f"/knowledge/{knowledge_base_id}", status_code=303)
-
-
-@app.post("/knowledge/{knowledge_base_id}/url")
-def add_knowledge_url(knowledge_base_id: str, url: str = Form(...)):
-    try:
-        name, data, content_type = fetch_url(url.strip())
-        if not name or "." not in name:
-            name = (name or "web-page") + (".html" if "html" in content_type else ".txt")
-    except (ValueError, httpx.HTTPError) as exc:
-        raise HTTPException(400, f"Could not read URL: {exc}") from exc
-    with get_session() as s:
-        base = require(s, KnowledgeBase, knowledge_base_id)
-        try:
-            ingest_document(s, base, name, data, source_type="url", source_uri=url.strip())
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        s.commit()
-    return RedirectResponse(f"/knowledge/{knowledge_base_id}", status_code=303)
-
-@app.post("/knowledge/{knowledge_base_id}/documents/{document_id}/delete")
-def delete_knowledge_document(knowledge_base_id: str, document_id: str):
-    with get_session() as s:
-        base = require(s, KnowledgeBase, knowledge_base_id)
-        document = require(s, KnowledgeDocument, document_id)
-        if document.knowledge_base_id != base.id:
-            raise HTTPException(404, "Document not found")
-        s.delete(document)
-        s.commit()
-    return RedirectResponse(f"/knowledge/{knowledge_base_id}", status_code=303)
-
-
-@app.post("/knowledge/{knowledge_base_id}/reindex")
-def reindex_knowledge(knowledge_base_id: str):
-    with get_session() as s:
-        base = require(s, KnowledgeBase, knowledge_base_id)
-        documents = s.scalars(select(KnowledgeDocument).where(KnowledgeDocument.knowledge_base_id == base.id)).all()
-        for document in documents:
-            chunks = list(document.chunks)
-            try:
-                vectors = []
-                for start in range(0, len(chunks), 24):
-                    vectors.extend(embed_texts(base, [chunk.content for chunk in chunks[start:start + 24]]))
-                if len(vectors) != len(chunks):
-                    raise ValueError("Embedding service returned a mismatched vector count")
-                for chunk, vector in zip(chunks, vectors):
-                    chunk.embedding_json = json.dumps(vector)
-                document.status, document.error = "ready", ""
-            except Exception as exc:
-                document.status = "keyword_only"
-                document.error = f"Re-embedding failed; keyword retrieval remains active. {str(exc)[:800]}"
-        s.commit()
-    return RedirectResponse(f"/knowledge/{knowledge_base_id}", status_code=303)
-
-
-@app.post("/knowledge/{knowledge_base_id}/delete")
-def delete_knowledge_base(knowledge_base_id: str):
-    with get_session() as s:
-        base = require(s, KnowledgeBase, knowledge_base_id)
-        s.delete(base)
-        s.commit()
-    return RedirectResponse("/knowledge", status_code=303)
-
-
-@app.get("/api/knowledge/{knowledge_base_id}/search")
-def api_knowledge_search(knowledge_base_id: str, q: str = "", top_k: int = 5):
-    with get_session() as s:
-        base = require(s, KnowledgeBase, knowledge_base_id)
-        results = search_knowledge(s, [base.id], q, top_k=top_k)
-        return {"results": results}
 
 
 # --- autopilots ---
@@ -1227,6 +1619,17 @@ def api_knowledge_search(knowledge_base_id: str, q: str = "", top_k: int = 5):
 def autopilots_page(request: Request):
     with get_session() as s:
         autopilots = s.scalars(select(Autopilot)).all()
+        autopilot_runs = s.scalars(
+            select(AutopilotRun)
+            .join(Autopilot, AutopilotRun.autopilot_id == Autopilot.id)
+            .where(Autopilot.workspace_id == get_active_workspace(s).id)
+            .order_by(AutopilotRun.started_at.desc())
+            .limit(25)
+        ).all()
+        names = {autopilot.id: autopilot.name for autopilot in autopilots}
+        request.state.recent_autopilot_runs = [
+            (run, names.get(run.autopilot_id, 'Unknown autopilot')) for run in autopilot_runs
+        ]
         agents = s.scalars(select(Agent)).all()
         projects = s.scalars(select(Project)).all()
         return templates.TemplateResponse(

@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% from "_chat_sidebar.html" import chat_sidebar %}
+{% block title %}{{ agent.name }} &middot; Chat &middot; {{ site.app_name }}{% endblock %}
+{% block body_class %}chat-page{% endblock %}
+{% block content %}
+<div class="chat-workspace">
+  {{ chat_sidebar(rows, agent.id) }}
+  <div class="chat-conversation">
+    <div class="chat-conversation-head">
+      <span class="agent-avatar agent-custom-avatar" role="img" aria-label="{{ agent.name }} avatar">
+        <img class="agent-avatar-img" src="{{ agent_avatar_url(agent.id) }}" alt="" loading="lazy">
+      </span>
+      <span class="chat-conversation-head-info">
+        <h2>{{ agent.name }}</h2>
+        {% if agent.designation or agent.description %}
+        <small class="chat-conversation-head-sub">{% if agent.designation %}{{ agent.designation }}{% endif %}{% if agent.designation and agent.description %} &middot; {% endif %}{% if agent.description %}{{ agent.description }}{% endif %}</small>
+        {% endif %}
+      </span>
+    </div>
+    <div class="chat-message-list" id="chat-message-list">
+      {% for m in messages %}
+      <div class="chat-message{% if m.role == 'user' %} from-user{% endif %}">
+        <div class="chat-message-bubble">{{ m.content }}</div>
+      </div>
+      {% else %}
+      <div class="chat-empty-state">
+        <h4>Say hello to {{ agent.name }}</h4>
+        <p>Ask about their work, a project they're on, or anything on your mind - this isn't tied to any issue.</p>
+      </div>
+      {% endfor %}
+    </div>
+    <form class="chat-composer" id="chat-composer" method="post" action="/chat/{{ agent.id }}/messages">
+      <textarea name="message" id="chat-composer-input" placeholder="Message {{ agent.name }}..." rows="1" required></textarea>
+      <button type="submit" class="primary">Send</button>
+    </form>
+  </div>
+</div>
+<script>
+  (function () {
+    var list = document.getElementById("chat-message-list");
+    if (list) list.scrollTop = list.scrollHeight;
+    var input = document.getElementById("chat-composer-input");
+    if (input) {
+      input.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          input.form.requestSubmit();
+        }
+      });
+    }
+  })();
+</script>
+{% endblock %}

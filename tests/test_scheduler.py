@@ -1,6 +1,6 @@
 from hagent.adapters.base import RuntimeResult
-from hagent.models import Agent, Autopilot, AutopilotRun, Issue, IssueStatus, Project, Runtime, RuntimeType, Workspace
-from hagent.scheduler import find_matching_issues, run_autopilot_once
+from hagent.models import Agent, Autopilot, AutopilotRun, Issue, IssueStatus, Project, Run, RunStatus, Runtime, RuntimeType, Workspace
+from hagent.scheduler import find_matching_issues, resume_pending_runs, run_autopilot_once
 
 
 def _setup(session):
@@ -78,6 +78,78 @@ def test_run_autopilot_once_returns_none_for_disabled_autopilot(session, monkeyp
     monkeypatch.setattr("hagent.scheduler.get_session", lambda **kwargs: _SessionCtx(session))
 
     assert run_autopilot_once(autopilot.id) is None
+
+
+def test_autopilot_records_partial_failure_truthfully(session, mocker, monkeypatch):
+    ws, agent, project = _setup(session)
+    session.add_all([
+        Issue(project_id=project.id, title='succeeds', status=IssueStatus.TODO),
+        Issue(project_id=project.id, title='fails', status=IssueStatus.TODO),
+    ])
+    session.flush()
+    autopilot = Autopilot(workspace_id=ws.id, name='ap', agent_id=agent.id, project_id=project.id, filter_status=IssueStatus.TODO)
+    session.add(autopilot)
+    session.commit()
+    mocker.patch(
+        'hagent.adapters.ollama.OllamaRuntime.run',
+        side_effect=[RuntimeResult(output='done'), RuntimeError('provider failed')],
+    )
+    monkeypatch.setattr('hagent.scheduler.get_session', lambda **kwargs: _SessionCtx(session))
+
+    result = run_autopilot_once(autopilot.id)
+
+    assert result.status == 'partial'
+    assert '1 succeeded, 1 failed' in result.summary
+
+
+def test_autopilot_records_runs_waiting_for_manual_approval(session, mocker, monkeypatch):
+    ws, agent, project = _setup(session)
+    agent.require_run_approval = True
+    session.add(Issue(project_id=project.id, title="Review first", status=IssueStatus.TODO))
+    autopilot = Autopilot(workspace_id=ws.id, name="approval autopilot", agent_id=agent.id, project_id=project.id, filter_status=IssueStatus.TODO)
+    session.add(autopilot)
+    session.commit()
+    runtime_call = mocker.patch("hagent.adapters.ollama.OllamaRuntime.run")
+    monkeypatch.setattr("hagent.scheduler.get_session", lambda **kwargs: _SessionCtx(session))
+
+    result = run_autopilot_once(autopilot.id)
+
+    runtime_call.assert_not_called()
+    assert result.status == "partial"
+    assert "1 awaiting approval" in result.summary
+    assert session.query(Run).filter_by(status=RunStatus.WAITING_APPROVAL).count() == 1
+
+
+def test_resume_pending_runs_schedules_only_not_started_runs(session, monkeypatch):
+    ws, agent, project = _setup(session)
+    issue = Issue(project_id=project.id, title="queued")
+    session.add(issue)
+    session.flush()
+    pending = Run(issue_id=issue.id, agent_id=agent.id, prompt="do work", status=RunStatus.PENDING)
+    running = Run(issue_id=issue.id, agent_id=agent.id, prompt="already started", status=RunStatus.RUNNING)
+    session.add_all([pending, running])
+    session.commit()
+
+    class FakeScheduler:
+        running = True
+
+        def __init__(self):
+            self.jobs = []
+
+        def add_job(self, func, **kwargs):
+            self.jobs.append((func, kwargs))
+
+    fake_scheduler = FakeScheduler()
+    monkeypatch.setattr("hagent.scheduler.get_scheduler", lambda: fake_scheduler)
+    monkeypatch.setattr("hagent.scheduler.get_session", lambda **kwargs: _SessionCtx(session))
+
+    assert resume_pending_runs() == 1
+    assert len(fake_scheduler.jobs) == 1
+    func, job = fake_scheduler.jobs[0]
+    assert func.__name__ == "process_queued_run_by_id"
+    assert job["args"] == [pending.id]
+    assert job["id"] == f"hagent-pending-run-{pending.id}"
+    assert job["trigger"] == "date"
 
 
 class _SessionCtx:

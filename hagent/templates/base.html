@@ -1,18 +1,22 @@
+{% set site = app_settings() %}
 <!doctype html>
-<html>
+<html class="density-{{ site.density }}" style="--accent:{{ site.accent_color }};--accent-strong:color-mix(in srgb, {{ site.accent_color }} 78%, white);--accent-tint:color-mix(in srgb, {{ site.accent_color }} 14%, transparent);--accent-tint-strong:color-mix(in srgb, {{ site.accent_color }} 24%, transparent)">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}Hagent{% endblock %}</title>
-  <link rel="stylesheet" href="/static/style.css?v=rag-1">
+  <meta name="color-scheme" content="dark">
+  <title>{% block title %}{{ site.app_name }}{% endblock %}</title>
+  <link rel="icon" href="{{ site.app_icon_url }}">
+  <link rel="apple-touch-icon" href="{{ site.app_icon_url }}">
+  <link rel="stylesheet" href="/static/style.css?v=global-search-new-runtime">
   {% block head %}{% endblock %}
 </head>
-<body>
-  <canvas id="starsCanvas" class="starfield-canvas"></canvas>
+<body class="{% block body_class %}{% endblock %}">
+  {% if site.show_starfield %}<canvas id="starsCanvas" class="starfield-canvas"></canvas>{% endif %}
   <div class="sidebar">
     <div class="brand">
-      <div class="brand-mark">H</div>
-      <a href="/">Hagent</a>
+      <img class="brand-mark" src="{{ site.app_icon_url }}" alt="{{ site.app_name }}">
+      <a href="/">{{ site.app_name }}</a>
     </div>
     <div class="sidebar-actions">
       <button type="button" class="icon-btn" id="qc-toggle" title="Quick create" aria-haspopup="true" aria-expanded="false">
@@ -27,64 +31,110 @@
         <button type="button" data-modal="qc-modal-project">New project</button>
         <button type="button" data-modal="qc-modal-agent">New agent</button>
         <button type="button" data-modal="qc-modal-issue">New issue</button>
+        <button type="button" data-modal="{{ 'page-modal-runtime' if active == 'runtimes' else 'qc-modal-runtime' }}">New runtime</button>
       </div>
     </div>
-    <div>
-      <div class="nav-label">Workspace</div>
+    <div class="sidebar-scroll">
       <nav>
         <a href="/" class="{{ 'active' if active == 'dashboard' }}">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
           Dashboard
         </a>
-        <a href="/projects" class="{{ 'active' if active == 'projects' }}">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="7" height="7" rx="1.5"/><rect x="14" y="4" width="7" height="16" rx="1.5"/><rect x="3" y="14" width="7" height="6" rx="1.5"/></svg>
-          Projects
+        <a href="/board" class="{{ 'active' if active == 'board' }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 4v16"/></svg>
+          Board
         </a>
-        <a href="/workspaces" class="{{ 'active' if active == 'workspaces' }}">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 12l9 5 9-5"/><path d="M3 17l9 5 9-5"/></svg>
-          Workspaces
+        <a href="/agents" class="{{ 'active' if active == 'agents' }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="7" width="16" height="12" rx="2.5"/><path d="M9 7V5a3 3 0 0 1 6 0v2"/><circle cx="9" cy="13" r="1.2" fill="currentColor" stroke="none"/><circle cx="15" cy="13" r="1.2" fill="currentColor" stroke="none"/></svg>
+          Agents
         </a>
         <a href="/chat" class="{{ 'active' if active == 'chat' }}">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v11H8l-4 4V5z"/></svg>
           Chat
+          {% set unread = chat_unread_count() %}
+          {% if unread %}<span class="section-count nav-badge">{{ unread }}</span>{% endif %}
         </a>
-        <a href="/terminal" class="{{ 'active' if active == 'terminal' }}">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M12 15h5"/></svg>
-          Terminal
-        </a>        <a href="/agents" class="{{ 'active' if active == 'agents' }}">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="7" width="16" height="12" rx="2.5"/><path d="M9 7V5a3 3 0 0 1 6 0v2"/><circle cx="9" cy="13" r="1.2" fill="currentColor" stroke="none"/><circle cx="15" cy="13" r="1.2" fill="currentColor" stroke="none"/></svg>
-          Agents
-        </a>
-        <a href="/runtimes" class="{{ 'active' if active == 'runtimes' }}">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 1v4M15 1v4M9 19v4M15 19v4M1 9h4M1 15h4M19 9h4M19 15h4"/><circle cx="12" cy="12" r="3"/></svg>
-          Runtimes
-        </a>
-        <a href="/squads" class="{{ 'active' if active == 'squads' }}">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="9" r="3"/><circle cx="17" cy="9" r="2.4"/><path d="M2.5 20c0-3 2.5-5 5.5-5s5.5 2 5.5 5"/><path d="M14.5 15.3c2.4.2 4.5 2 4.5 4.7"/></svg>
-          Squads
-        </a>
-        <a href="/skills" class="{{ 'active' if active == 'skills' }}">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.4 4.9 5.4.8-3.9 3.8.9 5.4L12 15.4 7.2 17.9l.9-5.4-3.9-3.8 5.4-.8z"/></svg>
-          Skills
-        </a>
-        <a href="/autopilots" class="{{ 'active' if active == 'autopilots' }}">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 8v4l2.6 1.6"/></svg>
-          Autopilots
-        </a>
-        <a href="/repos" class="{{ 'active' if active == 'repos' }}">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3v18"/><circle cx="7" cy="6" r="2.2"/><circle cx="7" cy="18" r="2.2"/><circle cx="17" cy="9" r="2.2"/><path d="M17 6.5v.5a5 5 0 0 1-5 5H9"/></svg>
-          Repos
-        </a>
-        <a href="/profile" class="{{ 'active' if active == 'profile' }}">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.5"/><path d="M4.5 20c1.2-4 4-6 7.5-6s6.3 2 7.5 6"/></svg>
-          Profile
-        </a>
-        <a href='/knowledge' class='{{ "active" if active == "knowledge" }}'>Knowledge</a>
       </nav>
+
+      <details class="nav-group" name="sidebar-nav" {{ 'open' if active in ['projects', 'approvals', 'repos'] }}>
+        <summary>Work</summary>
+        <nav>
+          <a href="/projects" class="{{ 'active' if active == 'projects' }}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="7" height="7" rx="1.5"/><rect x="14" y="4" width="7" height="16" rx="1.5"/><rect x="3" y="14" width="7" height="6" rx="1.5"/></svg>
+            Projects
+          </a>
+          <a href="/approvals" class="{{ 'active' if active == 'approvals' }}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v5c0 5-3.4 8.5-8 10-4.6-1.5-8-5-8-10V6l8-3z"/><path d="M8.5 12l2.2 2.2 4.8-5"/></svg>
+            Approvals
+          </a>
+          <a href="/repos" class="{{ 'active' if active == 'repos' }}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3v18"/><circle cx="7" cy="6" r="2.2"/><circle cx="7" cy="18" r="2.2"/><circle cx="17" cy="9" r="2.2"/><path d="M17 6.5v.5a5 5 0 0 1-5 5H9"/></svg>
+            Repos
+          </a>
+        </nav>
+      </details>
+
+      <details class="nav-group" name="sidebar-nav" {{ 'open' if active in ['squads', 'skills'] }}>
+        <summary>Assistants</summary>
+        <nav>
+          <a href="/squads" class="{{ 'active' if active == 'squads' }}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="9" r="3"/><circle cx="17" cy="9" r="2.4"/><path d="M2.5 20c0-3 2.5-5 5.5-5s5.5 2 5.5 5"/><path d="M14.5 15.3c2.4.2 4.5 2 4.5 4.7"/></svg>
+            Squads
+          </a>
+          <a href="/skills" class="{{ 'active' if active == 'skills' }}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.4 4.9 5.4.8-3.9 3.8.9 5.4L12 15.4 7.2 17.9l.9-5.4-3.9-3.8 5.4-.8z"/></svg>
+            Skills
+          </a>
+        </nav>
+      </details>
+
+      <details class="nav-group" name="sidebar-nav" {{ 'open' if active == 'autopilots' }}>
+        <summary>Automation</summary>
+        <nav>
+          <a href="/autopilots" class="{{ 'active' if active == 'autopilots' }}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 8v4l2.6 1.6"/></svg>
+            Autopilots
+          </a>
+        </nav>
+      </details>
+
+      <details class="nav-group" name="sidebar-nav" {{ 'open' if active in ['settings', 'usage', 'profile', 'workspaces', 'runtimes', 'memory', 'routing'] }}>
+        <summary>Settings</summary>
+        <nav>
+          <a href="/settings" class="{{ 'active' if active == 'settings' }}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1z"/></svg>
+            General
+          </a>
+          <a href="/usage" class="{{ 'active' if active == 'usage' }}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M12 20V4M20 20v-7"/></svg>
+            Usage
+          </a>
+          <a href="/profile" class="{{ 'active' if active == 'profile' }}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.5"/><path d="M4.5 20c1.2-4 4-6 7.5-6s6.3 2 7.5 6"/></svg>
+            Profile
+          </a>
+          <a href="/workspaces" class="{{ 'active' if active == 'workspaces' }}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 12l9 5 9-5"/><path d="M3 17l9 5 9-5"/></svg>
+            Workspaces
+          </a>
+          <a href="/runtimes" class="{{ 'active' if active == 'runtimes' }}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 1v4M15 1v4M9 19v4M15 19v4M1 9h4M1 15h4M19 9h4M19 15h4"/><circle cx="12" cy="12" r="3"/></svg>
+            Runtimes
+          </a>
+          <a href="/memory" class="{{ 'active' if active == 'memory' }}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>
+            Memory
+          </a>
+          <a href="/routing" class="{{ 'active' if active == 'routing' }}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h4l6 12h6"/><path d="M4 18h4l1.5-3"/><path d="M15.5 9L17 6h3"/><path d="M17 4l3 2-3 2"/><path d="M17 16l3 2-3 2"/></svg>
+            Model routing
+          </a>
+        </nav>
+      </details>
     </div>
-    <div class="sidebar-footer">Self-hosted &middot; local-first</div>
+    <div class="sidebar-footer">{{ site.tagline }}</div>
   </div>
-  <div class="main">
+  <div class="main{{ ' main-wide' if wide_layout else '' }}">
     {% block content %}{% endblock %}
   </div>
 
@@ -134,8 +184,10 @@
           </select>
         </div>
         {% if qc.skills %}<div><div class="field-label">Skills <span>Optional</span></div><div class="check-grid">{% for skill in qc.skills %}<label class="check-card"><input type="checkbox" name="skill_ids" value="{{ skill.id }}"><span><strong>{{ skill.name }}</strong><small>{{ skill.description or "Reusable skill" }}</small></span></label>{% endfor %}</div></div>{% endif %}
-        <label class="check-card terminal-access-card"><input type="checkbox" name="terminal_enabled" value="1"><span><strong>Allow terminal commands</strong><small>Optional agent PowerShell access.</small></span></label>
-        <div><label class="field-label">Terminal directory</label><input name="terminal_working_directory" placeholder="e.g. C:/Projects/my-app"></div>
+        <input type="hidden" name="delegation_limit" value="{{ site.default_agent_delegation_limit }}">
+        {% if site.default_agent_require_approval %}<input type="hidden" name="require_run_approval" value="1">{% endif %}
+        <label class="check-card terminal-access-card"><input type="checkbox" name="terminal_enabled" value="1" {{ 'checked' if site.default_agent_terminal_enabled }}><span><strong>Allow terminal commands</strong><small>Optional agent PowerShell access.</small></span></label>
+        <div><label class="field-label">Terminal directory</label><input name="terminal_working_directory" value="{{ site.default_agent_terminal_directory }}" placeholder="e.g. C:/Projects/my-app"></div>
         <div>
           <label class="field-label">Instructions</label>
           <input name="instructions" placeholder="Instructions (optional)">
@@ -181,17 +233,33 @@
       <p class="faint">Create a project first, then you can add issues to it.</p>
       {% endif %}
     </div>
+    {% if active != 'runtimes' %}
+    <div class="modal modal-wide runtime-modal" id="qc-modal-runtime" hidden role="dialog" aria-modal="true" aria-labelledby="qc-runtime-modal-title">
+      <div class="modal-head">
+        <div><div class="eyebrow">Model connection</div><h3 id="qc-runtime-modal-title">Add runtime</h3></div>
+        <button type="button" class="icon-btn modal-close" data-close aria-label="Close">&times;</button>
+      </div>
+      {% set form_action = "/runtimes" %}
+      {% set runtime_name = "" %}
+      {% set selected_provider = "ollama" %}
+      {% set selected_model = "" %}
+      {% set runtime_config = {} %}
+      {% set editing = false %}
+      {% set submit_label = "Add runtime" %}
+      {% include "_runtime_form.html" %}
+    </div>
+    {% endif %}
     {% block modals %}{% endblock %}
   </div>
 
   <div class="palette-overlay" id="palette-overlay" hidden>
     <div class="palette">
-      <input type="text" id="palette-input" placeholder="Search projects, agents, issues..." autocomplete="off">
+      <input type="text" id="palette-input" placeholder="Search chat, issues, runtimes, settings, everything..." autocomplete="off">
       <div class="palette-results" id="palette-results"></div>
     </div>
   </div>
 
-  <script src="/static/starfield.js?v=stable-starfield-1"></script>
+  {% if site.show_starfield %}<script src="/static/starfield.js?v=evening-blue-1"></script>{% endif %}
   <script src="/static/app.js?v=agent-builder-1"></script>
   {% block scripts %}{% endblock %}
 </body>

@@ -6,13 +6,14 @@
     <h2>{{ project.name }}</h2>
     {% if project.description %}<p class="page-sub">{{ project.description }}</p>{% endif %}
   </div>
-  <span class="status-badge status-{{ project.status.value }}">{{ project.status.value }}</span>
+  <span class="status-badge status-{{ project.status.value }}">{{ project.status.value.replace('_', ' ').title() }}</span>
 </div>
 
 <div class="board">
   {% for status in statuses %}
   <div class="board-column">
-    <h3>{{ status.value.replace('_', ' ') }} <span class="count">{{ issues_by_status[status]|length }}</span></h3>
+    <h3>{{ status.value.replace('_', ' ').title() }} <span class="count">{{ issues_by_status[status]|length }}</span></h3>
+    <div class="board-column-body">
     {% for i in issues_by_status[status] %}
     <div class="issue-card">
       <a href="/issues/{{ i.id }}">{{ i.title }}</a>
@@ -23,7 +24,7 @@
       <form class="inline status-form" method="post" action="/issues/{{ i.id }}/status">
         <select name="status" onchange="this.form.submit()">
           {% for s2 in statuses %}
-          <option value="{{ s2.value }}" {{ 'selected' if s2 == i.status }}>{{ s2.value.replace('_',' ') }}</option>
+          <option value="{{ s2.value }}" {{ 'selected' if s2 == i.status }}>{{ s2.value.replace('_',' ').title() }}</option>
           {% endfor %}
         </select>
       </form>
@@ -31,6 +32,7 @@
     {% else %}
     <div class="column-empty">No issues</div>
     {% endfor %}
+    </div>
   </div>
   {% endfor %}
 </div>

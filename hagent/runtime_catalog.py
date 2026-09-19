@@ -204,6 +204,7 @@ PROVIDERS = {
         "access_url": "https://openrouter.ai/settings/keys",
         "access_label": "Create OpenRouter key",
         "models": [
+            model("stealth/union-alpha", "Union Alpha", "Coding, research, and agentic workflows", "Free stealth preview with text and image input; provider identity and availability may change."),
             model("~openai/gpt-latest", "Latest OpenAI flagship", "Coding and general work", "OpenRouter rolling alias."),
             model("anthropic/claude-sonnet-5", "Claude Sonnet 5", "Writing and coding", "Anthropic through OpenRouter."),
             model("google/gemini-3.8-flash", "Gemini 3.8 Flash", "Multimodal coding and agents", "Google through OpenRouter."),
@@ -277,6 +278,34 @@ PROVIDERS = {
             model("opus", "Latest Opus", "Hard coding and analysis", "Highest capability; higher usage."),
         ],
     },
+    "antigravity_cli": {
+        "name": "Antigravity CLI",
+        "group": "Installed assistants",
+        "runtime_type": "antigravity_cli",
+        "kind": "cli",
+        "best_for": "Coding and agent tasks using your existing free Antigravity (Google) login.",
+        "note": "Runs the official 'agy' CLI in headless JSON mode. No API key is stored in Hagent.",
+        "command": "agy",
+        "access_url": "https://antigravity.google/docs/cli/getting-started/",
+        "access_label": "Install Antigravity CLI",
+        "models": [
+            model("default", "Account default", "Coding and agent tasks", "Uses your configured Antigravity model."),
+        ],
+    },
+    "opencode_cli": {
+        "name": "opencode CLI",
+        "group": "Installed assistants",
+        "runtime_type": "opencode_cli",
+        "kind": "cli",
+        "best_for": "Coding and agent tasks with any provider or local model opencode is configured for.",
+        "note": "Runs the installed 'opencode' CLI headlessly. Models are provider/model ids (see 'opencode models'). No API key is stored in Hagent.",
+        "command": "opencode",
+        "access_url": "https://opencode.ai/docs/",
+        "access_label": "Install opencode",
+        "models": [
+            model("default", "Configured default", "Coding and agent tasks", "Uses opencode's configured model."),
+        ],
+    },
     "openai_compatible": {
         "name": "Other OpenAI-compatible API",
         "group": "Advanced",
@@ -290,6 +319,54 @@ PROVIDERS = {
         "models": [],
     },
 }
+
+# Provider-neutral routing defaults. A runtime's config_json.capabilities object
+# can override these values with provider metadata discovered by an operator.
+# Model IDs deliberately do not appear here.
+ROUTING_CAPABILITIES = {
+    "ollama": {"efforts": ["low", "medium"], "effort_map": {"low": "", "medium": ""},
+               "cost_rank": 0, "latency_rank": 1, "context_window": 16384, "max_output": 4096},
+    "codex_cli": {"efforts": ["low", "medium", "high", "xhigh", "max"],
+                  "effort_map": {"low": "low", "medium": "medium", "high": "high",
+                                 "xhigh": "xhigh", "max": "max"},
+                  "cost_rank": 2, "latency_rank": 2, "context_window": 200000, "max_output": 32768},
+    "claude_code": {"efforts": ["low", "medium", "high", "xhigh", "max"],
+                    "effort_map": {"low": "low", "medium": "medium", "high": "high",
+                                   "xhigh": "xhigh", "max": "max"},
+                    "cost_rank": 2, "latency_rank": 2, "context_window": 200000, "max_output": 32768},
+    "openai": {"efforts": ["medium"], "effort_map": {"medium": ""},
+               "cost_rank": 3, "latency_rank": 2, "context_window": 128000, "max_output": 16384},
+    "claude": {"efforts": ["medium"], "effort_map": {"medium": ""},
+               "cost_rank": 3, "latency_rank": 2, "context_window": 200000, "max_output": 16384},
+    "gemini": {"efforts": ["medium"], "effort_map": {"medium": ""},
+               "cost_rank": 2, "latency_rank": 1, "context_window": 1000000, "max_output": 16384},
+    "openai_compatible": {"efforts": ["medium"], "effort_map": {"medium": ""},
+                          "cost_rank": 2, "latency_rank": 2, "context_window": 32768, "max_output": 8192},
+    "gemini_cli": {"efforts": ["medium"], "effort_map": {"medium": ""},
+                   "cost_rank": 1, "latency_rank": 2, "context_window": 1000000, "max_output": 8192},
+    "generic_cli": {"efforts": ["medium"], "effort_map": {"medium": ""},
+                    "cost_rank": 2, "latency_rank": 2, "context_window": 32768, "max_output": 8192},
+    "antigravity_cli": {"efforts": ["medium"], "effort_map": {"medium": ""},
+                        "cost_rank": 1, "latency_rank": 2, "context_window": 32768, "max_output": 8192},
+    "opencode_cli": {"efforts": ["medium"], "effort_map": {"medium": ""},
+                     "cost_rank": 1, "latency_rank": 2, "context_window": 32768, "max_output": 8192},
+}
+
+
+def routing_capabilities(runtime):
+    """Resolve capabilities from central defaults plus runtime/provider metadata."""
+    import json
+    runtime_type = runtime.type.value if hasattr(runtime.type, "value") else str(runtime.type)
+    result = dict(ROUTING_CAPABILITIES.get(runtime_type, ROUTING_CAPABILITIES["openai_compatible"]))
+    try:
+        configured = json.loads(runtime.config_json or "{}").get("capabilities", {})
+    except (TypeError, ValueError):
+        configured = {}
+    if isinstance(configured, dict):
+        result.update(configured)
+    result["provider"] = runtime_type
+    result["model"] = runtime.model
+    return result
 
 
 def provider_options():

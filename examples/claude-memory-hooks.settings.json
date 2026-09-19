@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"<ABSOLUTE_PATH_TO_HAGENT_VENV_PYTHON>\" \"<ABSOLUTE_PATH_TO_HAGENT_REPO>\\scripts\\claude_memory_hook.py\" start"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"<ABSOLUTE_PATH_TO_HAGENT_VENV_PYTHON>\" \"<ABSOLUTE_PATH_TO_HAGENT_REPO>\\scripts\\claude_memory_hook.py\" finish"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,12 +1,15 @@
 {% extends "base.html" %}
 {% block content %}
-<a class="crumb" href="/projects/{{ issue.project_id }}">&larr; {{ issue.project.name }}</a>
+<a class="crumb" href="/projects/{{ issue.project_id }}" onclick="if (document.referrer && new URL(document.referrer).origin === window.location.origin) { history.back(); return false; }">&larr; Back</a>
 <div class="page-header">
   <div>
     <h2>{{ issue.title }}</h2>
     {% if issue.description %}<p class="page-sub">{{ issue.description }}</p>{% endif %}
   </div>
-  <span class="status-badge status-{{ issue.status.value }}">{{ issue.status.value.replace('_',' ') }}</span>
+  <div style="display:flex; align-items:center; gap:0.75rem;">
+    {% if issue.project.repo_id %}<a class="text-link" href="/issues/{{ issue.id }}/diff">View diff</a>{% endif %}
+    <span class="status-badge status-{{ issue.status.value }}">{{ issue.status.value.replace('_',' ').title() }}</span>
+  </div>
 </div>
 
 <div class="card">
@@ -16,7 +19,7 @@
       <form class="inline" method="post" action="/issues/{{ issue.id }}/status">
         <select name="status" onchange="this.form.submit()">
           {% for s in statuses %}
-          <option value="{{ s.value }}" {{ 'selected' if s == issue.status }}>{{ s.value.replace('_',' ') }}</option>
+          <option value="{{ s.value }}" {{ 'selected' if s == issue.status }}>{{ s.value.replace('_',' ').title() }}</option>
           {% endfor %}
         </select>
       </form>
@@ -73,10 +76,13 @@
 <h3>Runs</h3>
 {% for r in issue.runs|reverse %}
 <div class="card">
-  <span class="status-badge status-{{ r.status.value }}">{{ r.status.value }}</span>
+  <span class="status-badge status-{{ r.status.value }}">{{ r.status.value.replace('_', ' ').title() }}</span>
   <span class="faint">{{ r.created_at }}</span>
+  {% if r.status.value == 'waiting_approval' %}<p class="approval-notice">Awaiting your approval. No model request or agent tool has run yet.</p><div class="field-row"><form class="inline" method="post" action="/issues/{{ issue.id }}/runs/{{ r.id }}/approve"><button class="primary" type="submit">Approve and run</button></form><form class="inline" method="post" action="/issues/{{ issue.id }}/runs/{{ r.id }}/reject"><button type="submit">Reject</button></form></div>{% endif %}
+  {% if r.input_tokens is not none or r.output_tokens is not none %}<p class='faint'>Provider-reported tokens: {{ r.input_tokens if r.input_tokens is not none else 'n/a' }} input / {{ r.output_tokens if r.output_tokens is not none else 'n/a' }} output</p>{% else %}<p class='faint'>Estimated tokens: {{ r.token_estimate }}; provider usage unavailable</p>{% endif %}
   {% if r.output %}<pre>{{ r.output }}</pre>{% endif %}
   {% if r.error %}<pre style="color:var(--danger)">{{ r.error }}</pre>{% endif %}
+  {% if r.status.value in ['failed', 'cancelled'] %}<form class="inline" method="post" action="/issues/{{ issue.id }}/runs/{{ r.id }}/retry"><button type="submit">Retry with {{ r.agent.name }}</button></form>{% endif %}
 </div>
 {% else %}
 <div class="empty-state">
@@ -90,6 +96,15 @@
 {% for child in children %}<p><a href="/issues/{{ child.id }}">{{ child.title }}</a></p>{% else %}<p class="faint">No sub-issues.</p>{% endfor %}
 
 <h3>Usage</h3>
+{% set usage = namespace(input=0, output=0, runs=0) %}
+{% for r in issue.runs %}
+{% if r.input_tokens is not none or r.output_tokens is not none %}
+{% set usage.input = usage.input + (r.input_tokens or 0) %}
+{% set usage.output = usage.output + (r.output_tokens or 0) %}
+{% set usage.runs = usage.runs + 1 %}
+{% endif %}
+{% endfor %}
+<p class='faint'>Provider-reported usage in {{ usage.runs }} of {{ issue.runs|length }} runs: {{ usage.input }} input / {{ usage.output }} output tokens.</p>
 <p class="faint">Estimated tokens: {{ issue.runs | sum(attribute='token_estimate') }} across {{ issue.runs | length }} runs</p>
 
 <div class="card">

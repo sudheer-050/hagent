@@ -35,6 +35,8 @@ class GeminiCliRuntime(BaseRuntime):
                 cwd=self.config.get("working_directory") or None,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=self.config.get("timeout", 300),
                 check=False,
             )

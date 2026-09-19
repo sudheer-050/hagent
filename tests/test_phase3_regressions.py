@@ -39,21 +39,19 @@ def seed():
         s.add_all([project, runtime]); s.flush()
         agent = Agent(workspace_id=ws.id, runtime_id=runtime.id, name="agent")
         issue = Issue(project_id=project.id, title="secret-issue")
-        chat = ChatThread(workspace_id=ws.id, title="secret-chat")
-        s.add_all([agent, issue, chat]); s.commit()
-        return ws.id, project.id, agent.id, issue.id, chat.id
+        s.add_all([agent, issue]); s.commit()
+        return ws.id, project.id, agent.id, issue.id
 
 
 def test_scoped_reads_and_foreign_key_writes(local_db):
-    ws, project, agent, issue, chat = seed()
+    ws, project, agent, issue = seed()
     with db.get_session() as s:
         assert s.get(Issue, issue) is None
         assert s.scalars(select(Project)).all() == []
-        assert s.scalars(select(ChatThread)).all() == []
         s.add(Comment(issue_id=issue, body="intrusion"))
         with pytest.raises(ScopeError): s.commit()
     runner = CliRunner()
-    for args in (["issue", "search", "secret"], ["chat", "history"], ["project", "list"]):
+    for args in (["issue", "search", "secret"], ["project", "list"]):
         result = runner.invoke(cli, args)
         assert result.exit_code == 0, result.output
         assert "secret" not in result.output
@@ -65,7 +63,7 @@ def test_scoped_reads_and_foreign_key_writes(local_db):
 
 @pytest.mark.parametrize("fail", [False, True])
 def test_cancellation_survives_late_model_result(local_db, monkeypatch, fail):
-    ws, _, agent_id, issue_id, _ = seed()
+    ws, _, agent_id, issue_id = seed()
     def finish(**kwargs):
         with db.get_session(workspace_id=ws) as other:
             cancel_issue(other, other.get(Issue, issue_id))
@@ -122,6 +120,11 @@ def test_real_phase2_database_migration(local_db):
         trigger = legacy.AutopilotTrigger(autopilot_id=ap.id, cron_expression="* * * * *")
         s.add(trigger); s.commit(); trigger_id, ap_id = trigger.id, ap.id
     db.init_db(); db.init_db()
+    run_columns = {column['name'] for column in inspect(local_db).get_columns('runs')}
+    assert {'input_tokens', 'output_tokens'} <= run_columns
+    agent_columns = {column['name'] for column in inspect(local_db).get_columns('agents')}
+    assert 'require_run_approval' in agent_columns
+    assert 'delegation_limit' in agent_columns
     with db.get_session() as s:
         assert s.get(AutopilotTrigger, trigger_id).type == TriggerType.CRON
         s.add(AutopilotTrigger(autopilot_id=ap_id, type=TriggerType.WEBHOOK, webhook_token="new", cron_expression=None))

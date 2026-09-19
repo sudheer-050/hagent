@@ -51,7 +51,7 @@ def test_gemini_cli_uses_headless_json_mode(mocker):
     assert "--yolo" not in args
 
 
-def test_codex_cli_is_ephemeral_and_read_only(mocker):
+def test_codex_cli_is_resumable_json_and_read_only(mocker):
     mocker.patch("hagent.adapters.codex_cli._find_codex", return_value="codex")
     completed = SimpleNamespace(returncode=0, stdout="review complete", stderr="")
     run = mocker.patch("hagent.adapters.codex_cli.subprocess.run", return_value=completed)
@@ -60,7 +60,9 @@ def test_codex_cli_is_ephemeral_and_read_only(mocker):
 
     assert result.output == "review complete"
     args = run.call_args.args[0]
-    assert args[:7] == ["codex", "exec", "--ephemeral", "--sandbox", "read-only", "--color", "never"]
+    assert args[:7] == ["codex", "exec", "--json", "--sandbox", "read-only", "--color", "never"]
+    assert args[-1] == "-"
+    assert run.call_args.kwargs["input"] == "Review this"
     assert "--dangerously-bypass-approvals-and-sandbox" not in args
 
 
@@ -85,11 +87,13 @@ def test_claude_code_uses_print_json_mode(mocker):
 def test_runtime_catalog_includes_descriptions_and_grok():
     gemini = runtime_models("gemini")
     grok = catalog_for("xai")
+    openrouter = runtime_models("openrouter")
 
     assert any(item["id"] == "gemini-3.8-flash" for item in gemini["model_details"])
     assert gemini["provider_info"]["best_for"]
     assert provider_config("xai")["base_url"] == "https://api.x.ai/v1"
     assert any(item["id"] == "grok-4.6" for item in grok["model_details"])
+    assert any(item["id"] == "stealth/union-alpha" for item in openrouter["model_details"])
 
 
 def test_hardware_fit_discourages_oversized_local_models():

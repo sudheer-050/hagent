@@ -11,11 +11,9 @@ dependencies = [
     "click>=8.1",
     "anthropic>=0.40",
     "httpx>=0.27",
-    "pypdf>=5.0",
     "python-multipart>=0.0.9",
-    "pywinpty>=3.0.5; sys_platform == 'win32'",
+    "psutil>=5.9",
     "apscheduler>=3.10",
-    "watchdog>=5.0",
     "mcp>=1.2",
 ]
 
@@ -26,7 +24,7 @@ dev = [
 ]
 
 [project.scripts]
-hagent = "hagent.cli:cli"
+hagent = "hagent.warm:main"
 
 [build-system]
 requires = ["setuptools>=68"]

@@ -1,0 +1,21 @@
+{% macro chat_sidebar(rows, active_agent_id=None) %}
+<aside class="chat-sidebar">
+  <div class="chat-sidebar-head"><h1>Chat</h1></div>
+  <div class="chat-thread-list">
+    {% for row in rows %}
+    <a class="chat-thread-link{% if row.agent.id == active_agent_id %} active{% endif %}{% if row.unread %} unread{% endif %}" href="/chat/{{ row.agent.id }}">
+      <span class="agent-avatar agent-custom-avatar chat-thread-avatar" role="img" aria-label="{{ row.agent.name }} avatar">
+        <img class="agent-avatar-img" src="{{ agent_avatar_url(row.agent.id) }}" alt="" loading="lazy">
+      </span>
+      <span class="chat-thread-info">
+        <span class="chat-thread-name">{{ row.agent.name }}{% if row.unread %}<span class="chat-unread-dot" title="Unread"></span>{% endif %}</span>
+        <small>{% if row.last_message %}{% if row.last_message.role == 'user' %}You: {% endif %}{{ row.last_message.content[:60] }}{% else %}Say hello{% endif %}</small>
+      </span>
+      <span class="chat-thread-time">{% if row.last_message %}{{ row.last_message.created_at.strftime('%b %d') }}{% endif %}</span>
+    </a>
+    {% else %}
+    <p class="chat-sidebar-empty">No agents yet.</p>
+    {% endfor %}
+  </div>
+</aside>
+{% endmacro %}

@@ -23,11 +23,13 @@ PARENTS = {
     m.SquadMember: ("squad_id", m.Squad),
     m.SquadActivity: ("squad_id", m.Squad),
     m.SkillFile: ("skill_id", m.Skill),
-    m.KnowledgeFolder: ("knowledge_base_id", m.KnowledgeBase),
     m.AutopilotTrigger: ("autopilot_id", m.Autopilot),
     m.AutopilotRun: ("autopilot_id", m.Autopilot),
-    m.ChatMessage: ("thread_id", m.ChatThread),
     m.Attachment: ("issue_id", m.Issue),
+    m.ProjectResource: ("project_id", m.Project),
+    m.IssuePullRequest: ("issue_id", m.Issue),
+    m.MemoryRevision: ("memory_id", m.Memory),
+    m.MemoryEvent: ("session_id", m.MemorySession),
 }
 MODELS = {mapper.local_table.name: mapper.class_ for mapper in m.Base.registry.mappers}
 
@@ -41,14 +43,27 @@ def criterion(model, workspace_id):
     return None
 
 
+_read_scope_options: dict[str, tuple] = {}
+
+
+def _read_options(ws):
+    """Loader criteria for every scoped model, built once per workspace id."""
+    options = _read_scope_options.get(ws)
+    if options is None:
+        options = tuple(
+            with_loader_criteria(model, clause, include_aliases=True)
+            for model in MODELS.values()
+            if (clause := criterion(model, ws)) is not None
+        )
+        _read_scope_options[ws] = options
+    return options
+
+
 @event.listens_for(Session, "do_orm_execute")
 def scope_reads(state):
     ws = state.session.info.get("workspace_id")
     if ws and state.is_select:
-        for model in MODELS.values():
-            clause = criterion(model, ws)
-            if clause is not None:
-                state.statement = state.statement.options(with_loader_criteria(model, clause, include_aliases=True))
+        state.statement = state.statement.options(*_read_options(ws))
 
 
 @event.listens_for(Session, "before_flush")
@@ -91,6 +106,10 @@ def scope_writes(session, *_):
 
 class WorkspaceSession(Session):
     def get(self, entity, ident, **kwargs):
+        if entity is m.Issue and isinstance(ident, str):
+            from hagent.keys import resolve_issue_ref
+
+            ident = resolve_issue_ref(self, ident)
         obj = super().get(entity, ident, **kwargs)
         ws = self.info.get("workspace_id")
         clause = criterion(entity, ws) if ws else None

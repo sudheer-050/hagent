@@ -1,36 +1,46 @@
 {% extends "base.html" %}
-{% block title %}{{ agent.name }} &middot; Hagent{% endblock %}
+{% block title %}{{ agent.name }} &middot; {{ site.app_name }}{% endblock %}
 {% block content %}
 <a class="crumb" href="/agents">&larr; Agents</a>
 <div class="agent-profile-header">
-  <div class="agent-avatar agent-avatar-large">{{ agent.name[0]|upper }}</div>
-  <div><div class="eyebrow">Agent</div><h2>{{ agent.name }}</h2><div class="agent-runtime"><span class="ready-dot"></span>Ready &middot; {{ agent.runtime.name }} / {{ agent.runtime.model }}</div></div>
-  <a class="button-link" href="/chat">Open chat</a>
+  <div class="agent-avatar agent-avatar-large agent-custom-avatar agent-state-{{ agent_state }}" role="img" aria-label="{{ agent.name }} avatar, {{ agent_state }}"><img class="agent-avatar-img" src="{{ agent_avatar_url(agent.id, 96, agent_state) }}" alt=""></div>
+  <div><div class="eyebrow">Agent{% if agent.designation %} &middot; {{ agent.designation }}{% endif %}</div><h2>{{ agent.name }}</h2><div class="agent-runtime"><span class="ready-dot {{ 'is-working' if is_running }}{{ ' is-thinking' if agent_state == 'thinking' }}"></span>{{ 'Working' if is_running else ('Thinking' if agent_state == 'thinking' else 'Ready') }} &middot; {{ agent.runtime.name }} / {{ agent.runtime.model }}</div></div>
+  <div class="agent-profile-actions"><button class="primary" type="submit" form="agent-config-form">Save changes</button></div>
 </div>
 <div class="agent-detail-layout">
   <main class="agent-detail-main">
     <section class="detail-section">
       <div class="section-heading"><div><h3>Configuration</h3><p>Define who this agent is and how it should work.</p></div></div>
-      <form method="post" action="/agents/{{ agent.id }}" class="stack agent-config-form">
+      <form id="agent-config-form" method="post" action="/agents/{{ agent.id }}" class="stack agent-config-form">
         <div class="form-grid">
-          <div><label class="field-label">Name</label><input name="name" value="{{ agent.name }}" required></div><div><label class="field-label">Description</label><input name="description" value="{{ agent.description }}" placeholder="Short agent summary"></div>
+          <div><label class="field-label">Name</label><input name="name" value="{{ agent.name }}" required></div><div><label class="field-label">Designation <span>Optional</span></label><input name="designation" value="{{ agent.designation }}" placeholder="e.g. Backend Engineer"></div><div><label class="field-label">Description</label><input name="description" value="{{ agent.description }}" placeholder="Short agent summary"></div>
           <div><label class="field-label">Runtime</label><select name="runtime_id" required>{% for runtime in runtimes %}<option value="{{ runtime.id }}" {{ 'selected' if runtime.id == agent.runtime_id else '' }}>{{ runtime.name }} &middot; {{ runtime.model }}</option>{% endfor %}</select></div><div><label class="field-label">Backup runtime <span>Optional</span></label><select name="backup_runtime_id"><option value="">No automatic backup</option>{% for runtime in runtimes %}<option value="{{ runtime.id }}" {{ 'selected' if runtime.id == agent.backup_runtime_id else '' }}>{{ runtime.name }} &middot; {{ runtime.model }}</option>{% endfor %}</select><div class="field-help">Used immediately if the primary provider fails, rejects the request, or runs out of quota.</div></div>
         </div>
         <div><label class="field-label">Instructions</label><textarea name="instructions" rows="8">{{ agent.instructions }}</textarea><div class="field-help">Include the role, boundaries, priorities, and expected output.</div></div>
-        <div><div class="field-label">Skills</div>{% if skills %}<div class="check-grid">{% for skill in skills %}<label class="check-card"><input type="checkbox" name="skill_ids" value="{{ skill.id }}" {{ 'checked' if skill in agent.skills else '' }}><span><strong>{{ skill.name }}</strong><small>{{ skill.description or "Reusable instruction bundle" }}</small></span></label>{% endfor %}</div>{% else %}<div class="inline-empty">No skills available. <a href="/skills">Create a skill</a>.</div>{% endif %}</div>
-        <div><div class="field-label">MCP tool servers</div>{% if mcp_servers %}<div class="check-grid">{% for server in mcp_servers %}<label class="check-card"><input type="checkbox" name="mcp_server_ids" value="{{ server.id }}" {{ 'checked' if server in agent.mcp_servers else '' }}><span><strong>{{ server.name }}</strong><small>{{ server.transport }}{% if server.url %} &middot; {{ server.url }}{% endif %}</small></span></label>{% endfor %}</div>{% else %}<div class="inline-empty">No MCP servers are registered yet. Add one with the Hagent CLI.</div>{% endif %}</div>
-        <div class="terminal-permission"><label class="check-card terminal-access-card"><input type="checkbox" name="terminal_enabled" value="1" {{ 'checked' if agent.terminal_enabled else '' }}><span><strong>Allow terminal commands</strong><small>Gives this agent the terminal_execute tool. Commands run with your Windows account and are recorded in the issue timeline. CLI assistants also run without approval prompts when this is enabled.</small></span></label><label class="field-label">Terminal starting directory</label><input name="terminal_working_directory" value="{{ agent.terminal_working_directory or '' }}" placeholder="e.g. C:/Projects/my-app"><div class="field-help">Required when terminal access is enabled. The agent can run arbitrary commands from this directory.</div></div>
-        <div><label class="field-label">Environment variables (JSON)</label><textarea class="code-input" name="environment_json" rows="5" spellcheck="false">{{ agent_environment }}</textarea><div class="field-help">Agent-specific values only. Keep secrets in the runtime provider key or your operating-system environment when possible.</div></div>
-        <div class="form-actions"><button class="primary" type="submit">Save changes</button></div>
+        <details class="agent-advanced">
+          <summary>Skills <span class="section-count">{{ agent.skills|length }}</span></summary>
+          {% if skills %}<div class="check-grid">{% for skill in skills %}<label class="check-card"><input type="checkbox" name="skill_ids" value="{{ skill.id }}" {{ 'checked' if skill in agent.skills else '' }}><span><strong>{{ skill.name }}</strong><small>{{ skill.description or "Reusable instruction bundle" }}</small></span></label>{% endfor %}</div>{% else %}<div class="inline-empty">No skills available. <a href="/skills">Create a skill</a>.</div>{% endif %}
+        </details>
+        <details class="agent-advanced">
+          <summary>MCP tool servers <span class="section-count">{{ agent.mcp_servers|length }}</span></summary>
+          {% if mcp_servers %}<div class="check-grid">{% for server in mcp_servers %}<label class="check-card"><input type="checkbox" name="mcp_server_ids" value="{{ server.id }}" {{ 'checked' if server in agent.mcp_servers else '' }}><span><strong>{{ server.name }}</strong><small>{{ server.transport }}{% if server.url %} &middot; {{ server.url }}{% endif %}</small></span></label>{% endfor %}</div>{% else %}<div class="inline-empty">No MCP servers are registered yet. Add one with the Hagent CLI.</div>{% endif %}
+        </details>
+        <details class="agent-advanced">
+          <summary>Advanced settings</summary>
+          <div><label class="field-label">Delegation calls per run</label><input type="number" name="delegation_limit" min="0" max="50" value="{{ agent.delegation_limit }}"><div class="field-help">Maximum total specialist calls, including nested agents. Set to 0 to disable squad delegation; maximum 50.</div></div>
+          <div class="terminal-permission"><label class="check-card terminal-access-card"><input type="checkbox" name="terminal_enabled" value="1" {{ 'checked' if agent.terminal_enabled else '' }}><span><strong>Allow terminal commands</strong><small>Gives this agent the terminal_execute tool. Commands run with your Windows account and are recorded in the issue timeline. CLI assistants also run without approval prompts when this is enabled.</small></span></label><label class="field-label">Terminal starting directory</label><input name="terminal_working_directory" value="{{ agent.terminal_working_directory or '' }}" placeholder="e.g. C:/Projects/my-app"><div class="field-help">Required when terminal access is enabled. The agent can run arbitrary commands from this directory.</div></div>
+          <label class="check-card"><input type="checkbox" name="require_run_approval" value="1" {{ 'checked' if agent.require_run_approval else '' }}><span><strong>Require approval before every run</strong><small>The agent will not contact its AI provider or execute tools until you approve the queued run from its issue page. Rejections are recorded.</small></span></label>
+          <div><label class="field-label">Environment variables (JSON)</label><textarea class="code-input" name="environment_json" rows="5" spellcheck="false">{{ agent_environment }}</textarea><div class="field-help">Agent-specific values only. Keep secrets in the runtime provider key or your operating-system environment when possible.</div></div>
+        </details>
       </form>
     </section>
     <section class="detail-section">
       <div class="section-heading"><div><h3>Assigned work</h3><p>Issues currently owned by this agent.</p></div><span class="section-count">{{ assigned_issues|length }}</span></div>
-      {% if assigned_issues %}<div class="activity-list">{% for issue in assigned_issues %}<a href="/issues/{{ issue.id }}" class="activity-row"><span class="activity-main"><strong>{{ issue.title }}</strong><small>{{ issue.project.name }}</small></span><span class="status-badge status-{{ issue.status.value }}">{{ issue.status.value.replace('_', ' ') }}</span></a>{% endfor %}</div>{% else %}<div class="inline-empty">Nothing assigned right now.</div>{% endif %}
+      {% if assigned_issues %}<div class="activity-list activity-list-scroll">{% for issue in assigned_issues %}<a href="/issues/{{ issue.id }}" class="activity-row"><span class="activity-main"><strong>{{ issue.title }}</strong><small>{{ issue.project.name }}</small></span><span class="status-badge status-{{ issue.status.value }}">{{ issue.status.value.replace('_', ' ').title() }}</span></a>{% endfor %}</div>{% else %}<div class="inline-empty">Nothing assigned right now.</div>{% endif %}
     </section>
     <section class="detail-section">
       <div class="section-heading"><div><h3>Recent runs</h3><p>Latest execution history.</p></div><span class="section-count">{{ runs|length }}</span></div>
-      {% if runs %}<div class="activity-list">{% for run in runs %}<a href="/issues/{{ run.issue_id }}" class="activity-row"><span class="activity-main"><strong>{{ run.issue.title }}</strong><small>{{ run.created_at.strftime('%b %d, %Y') }} &middot; {{ run.token_estimate }} tokens</small></span><span class="status-badge status-{{ run.status.value }}">{{ run.status.value }}</span></a>{% endfor %}</div>{% else %}<div class="inline-empty">No runs yet.</div>{% endif %}
+      {% if runs %}<div class="activity-list activity-list-scroll">{% for run in runs %}<a href="/issues/{{ run.issue_id }}" class="activity-row"><span class="activity-main"><strong>{{ run.issue.title }}</strong><small>{{ run.created_at.strftime('%b %d, %Y') }} &middot; {{ run.token_estimate }} tokens</small></span><span class="status-badge status-{{ run.status.value }}">{{ run.status.value.replace('_', ' ').title() }}</span></a>{% endfor %}</div>{% else %}<div class="inline-empty">No runs yet.</div>{% endif %}
     </section>
   </main>
   <aside class="agent-detail-aside">

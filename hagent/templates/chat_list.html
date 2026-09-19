@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% from "_chat_sidebar.html" import chat_sidebar %}
+{% block title %}Chat &middot; {{ site.app_name }}{% endblock %}
+{% block body_class %}chat-page{% endblock %}
+{% block content %}
+<div class="chat-workspace">
+  {{ chat_sidebar(rows) }}
+  <div class="chat-conversation">
+    <div class="chat-empty-state">
+      <h4>Select a conversation</h4>
+      <p>Pick an agent on the left to see your messages with them.</p>
+    </div>
+  </div>
+</div>
+{% endblock %}
