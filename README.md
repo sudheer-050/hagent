@@ -2,6 +2,8 @@
 
 A self-hosted multi-agent orchestration platform: projects with **issues** (a kanban tracker), **agents** bound to pluggable **runtimes** (major cloud APIs, local Ollama/LM Studio, and installed AI CLIs), **squads** and **skills**, and **autopilots** that run agents against matching issues on a schedule — from a CLI or a web dashboard.
 
+**Website and visual guides:** [myhai.org](https://myhai.org) · **Source and downloads:** [GitHub](https://github.com/sudheer-050/hagent)
+
 > Current release: **0.2.1**. Hagent is under active development and is best suited to local use and trusted small-team deployments. Read the security notes before enabling terminal access or exposing the server beyond localhost.
 
 Hagent is a from-scratch reimplementation of the core ideas behind commercial multi-agent orchestration tools (Multica and similar): a workspace holding projects, issues, agents, and runtimes, with a clean adapter boundary so any AI backend can be plugged in without touching the rest of the system.

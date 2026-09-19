@@ -7,6 +7,7 @@
 - Skill-level learning memory records redacted lessons from relevant run failures and verifier rejections.
 - Agents sharing a skill can retrieve its recent lessons on demand through `recall_lessons` without adding the full history to every prompt.
 - Skill lesson history is visible in the Skills UI and exportable to workspace-scoped Markdown snapshots.
+- The public download site now includes real screenshots, OS-specific setup instructions, a first-project walkthrough, practical use cases, a detailed FAQ, and an honest release-readiness assessment.
 
 ### Safety and reliability
 
