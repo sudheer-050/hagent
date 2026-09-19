@@ -259,8 +259,8 @@ Current limitations:
 - The terminal starting directory is not a hard containment boundary; use OS- or container-level isolation for untrusted autonomous work.
 - Webhook endpoints are not publicly exposed automatically; use a trusted tunnel or reverse proxy when required.
 - Marketplace-wide skill discovery is out of scope; local archives and supported direct URLs can be imported.
-- The current test snapshot passes 286 tests, with 6 remaining failures in pre-existing agent/skill presentation markup. Core orchestration, authentication, memory, routing, recovery, worker, provider, and skill-lesson tests pass.
-- Automated CI and packaged container deployment are not yet included.
+- The current test snapshot passes all 293 tests. GitHub Actions also builds and installs the wheel in a clean environment before verifying the installed dashboard.
+- Packaged container deployment is not yet included.
 
 See [CHANGELOG.md](CHANGELOG.md) for release details and [HANDOFF.md](HANDOFF.md) for contributor notes.
 

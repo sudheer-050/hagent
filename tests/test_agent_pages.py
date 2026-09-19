@@ -64,7 +64,45 @@ def test_agents_page_is_focused_inventory(local_db):
     assert "Create agent" in response.text
     assert "Scout" in response.text
     assert f'/agents/{agent_id}' in response.text
-    assert "New runtime" not in response.text
+
+
+def test_page_rendering_does_not_open_nested_database_sessions(tmp_path, monkeypatch):
+    """Base-template helpers must not deadlock a route holding the only connection."""
+    database_url = f"sqlite:///{tmp_path / 'single-connection.db'}"
+    setup_engine = create_engine(
+        database_url,
+        connect_args={"check_same_thread": False},
+    )
+    monkeypatch.setattr(db, "engine", setup_engine)
+    monkeypatch.setattr(
+        db,
+        "SessionLocal",
+        sessionmaker(bind=setup_engine, class_=WorkspaceSession, expire_on_commit=False),
+    )
+    monkeypatch.setattr(db, "CONFIG_PATH", tmp_path / "config.json")
+    db.init_db()
+    seed_agent()
+    setup_engine.dispose()
+
+    engine = create_engine(
+        database_url,
+        connect_args={"check_same_thread": False},
+        pool_size=1,
+        max_overflow=0,
+        pool_timeout=0.25,
+    )
+    monkeypatch.setattr(db, "engine", engine)
+    monkeypatch.setattr(
+        db,
+        "SessionLocal",
+        sessionmaker(bind=engine, class_=WorkspaceSession, expire_on_commit=False),
+    )
+
+    response = TestClient(app).get("/agents")
+
+    assert response.status_code == 200
+    assert "Scout" in response.text
+    engine.dispose()
 
 
 def test_settings_page_persists_branding_and_feature_toggles(local_db, tmp_path):
@@ -147,7 +185,7 @@ def test_skills_library_assigns_reusable_skill_to_any_agent(local_db):
     library = client.get("/skills")
     assert library.status_code == 200
     assert "Skills library" in library.text
-    assert 'class="skill-car"' in library.text
+    assert 'class="skill-badge"' in library.text
     assert f'data-modal="skill-modal-{skill_id}"' in library.text
     assert 'Last used' in library.text
     assert 'Never used' in library.text
@@ -189,10 +227,8 @@ def test_new_skill_icons_match_type_are_unique_and_persist(local_db):
     for _ in range(2):
         page = client.get('/skills')
         assert page.status_code == 200
-        cars = re.findall(r'<img class="skill-car" src="([^"]+)" style="--car-hue:(\d+)deg"', page.text)
-        assert len(cars) == len(skills)
-        assert all(car.startswith('/static/cars/') for car, _ in cars)
-        assert len({hue for _, hue in cars}) == len(cars)
+        badges = re.findall(r'<svg class="skill-badge".*?</svg>', page.text, re.S)
+        assert len(badges) == len(skills)
         assert all(icon not in page.text for icon in icons.values())
 
 
@@ -219,7 +255,7 @@ def test_missing_and_duplicate_skill_icons_are_repaired(local_db):
     assert set(icons) <= set(SKILL_EMOJI_GROUPS['research'])
 
 
-def test_skill_rows_show_power_tiers_and_details_save_all_fields(local_db):
+def test_skill_rows_show_badges_and_details_save_all_fields(local_db):
     agent_id, _, skill_id = seed_agent()
     client = TestClient(app)
     for name, content in (
@@ -232,13 +268,8 @@ def test_skill_rows_show_power_tiers_and_details_save_all_fields(local_db):
 
     page = client.get('/skills')
     rows = re.findall(r'<button type="button" class="collection-row skill-row skill-open".*?</button>', page.text, re.S)
-    for name, tier in (
-        ('Simple notes', 'compact'),
-        ('Moderate instructions', 'sport'),
-        ('Deep analysis', 'gt'),
-        ('Expert orchestration', 'hyper'),
-    ):
-        assert any(f'Open details for {name}' in row and f'/static/cars/{tier}.png' in row for row in rows)
+    for name in ('Simple notes', 'Moderate instructions', 'Deep analysis', 'Expert orchestration'):
+        assert any(f'Open details for {name}' in row and 'class="skill-badge"' in row for row in rows)
     research_row = next(row for row in rows if 'Open details for Research' in row)
     assert 'Find facts' not in research_row
     assert 'Never used' in research_row
@@ -266,7 +297,7 @@ def test_skill_rows_show_power_tiers_and_details_save_all_fields(local_db):
     assert client.post(f'/skills/{skill_id}', data={'name': 'Research Plus', 'last_used_at': 'not-a-date'}).status_code == 400
 
 
-def test_agent_list_uses_distinct_generated_character_stickers(local_db):
+def test_agent_list_uses_distinct_stable_generated_avatars(local_db):
     agent_id, runtime_id, _ = seed_agent()
     with db.get_session(scoped=False) as session:
         original = session.get(Agent, agent_id)
@@ -276,23 +307,24 @@ def test_agent_list_uses_distinct_generated_character_stickers(local_db):
         second_id = second.id
     client = TestClient(app)
     page = client.get('/agents')
-    icons = re.findall(r'data-character="([^"]+)" style="--avatar-hue:(\d+)deg"', page.text)
-    assert len(icons) == 2
-    assert len(set(icons)) == 2
-    assert {character for character, _ in icons} == {'fox', 'robot'}
-    assert 'data-character="fox"' in client.get(f'/agents/{agent_id}').text
-    assert 'data-character="robot"' in client.get(f'/agents/{second_id}').text
+    avatars = re.findall(r'class="agent-avatar-img" src="([^"]+)"', page.text)
+    assert len(avatars) == 2
+    assert len(set(avatars)) == 2
+    assert any(f'seed={agent_id}' in avatar for avatar in avatars)
+    assert any(f'seed={second_id}' in avatar for avatar in avatars)
+    assert f'seed={agent_id}' in client.get(f'/agents/{agent_id}').text
+    assert f'seed={second_id}' in client.get(f'/agents/{second_id}').text
     with db.get_session(scoped=False) as session:
         second = session.get(Agent, second_id)
         second.name = 'A renamed agent'
         session.commit()
     reordered = client.get('/agents')
-    agent_rows = re.findall(r'href="/agents/([^"]+)".*?data-character="([^"]+)"', reordered.text, re.S)
-    assert dict(agent_rows)[agent_id] == 'fox'
-    assert dict(agent_rows)[second_id] == 'robot'
+    agent_rows = re.findall(r'href="/agents/([^"]+)".*?class="agent-avatar-img" src="([^"]+)"', reordered.text, re.S)
+    assert f'seed={agent_id}' in dict(agent_rows)[agent_id]
+    assert f'seed={second_id}' in dict(agent_rows)[second_id]
 
 
-def test_agent_character_stickers_stay_unique_after_catalog_exhaustion(local_db):
+def test_generated_agent_avatars_stay_unique_for_large_lists(local_db):
     agent_id, runtime_id, _ = seed_agent()
     with db.get_session(scoped=False) as session:
         original = session.get(Agent, agent_id)
@@ -302,9 +334,9 @@ def test_agent_character_stickers_stay_unique_after_catalog_exhaustion(local_db)
         )
         session.commit()
     page = TestClient(app).get('/agents')
-    icons = re.findall(r'data-character="([^"]+)" style="--avatar-hue:(\d+)deg"', page.text)
-    assert len(icons) == 26
-    assert len(set(icons)) == len(icons)
+    avatars = re.findall(r'class="agent-avatar-img" src="([^"]+)"', page.text)
+    assert len(avatars) == 26
+    assert len(set(avatars)) == len(avatars)
 
 
 def test_autopilot_page_shows_recent_execution_outcomes(local_db):

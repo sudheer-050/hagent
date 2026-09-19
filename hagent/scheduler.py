@@ -206,6 +206,18 @@ def get_scheduler() -> BackgroundScheduler | None:
     return _scheduler
 
 
+def stop_scheduler(*, wait: bool = False) -> None:
+    """Stop scheduled jobs and the dispatcher threads owned by this process."""
+    global _scheduler
+    scheduler = _scheduler
+    _scheduler = None
+    if scheduler is not None and scheduler.running:
+        scheduler.shutdown(wait=wait)
+    from hagent.dispatcher import shutdown_dispatcher
+
+    shutdown_dispatcher(wait=wait)
+
+
 def resume_pending_runs() -> int:
     """Schedule persisted runs queued but not started before shutdown.
 

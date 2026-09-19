@@ -189,6 +189,17 @@ def stop_dispatch_loop() -> None:
     _loop_thread = None
 
 
+def shutdown_dispatcher(*, wait: bool = False) -> None:
+    """Stop accepting queued work and release the process-owned executor."""
+    global _executor
+    stop_dispatch_loop()
+    with _lock:
+        executor = _executor
+        _executor = None
+    if executor is not None:
+        executor.shutdown(wait=wait, cancel_futures=True)
+
+
 # --- "why is my run waiting?" ----------------------------------------------------------------
 
 def explain_queue(session, now: datetime | None = None) -> dict:

@@ -9,13 +9,21 @@
 - Skill lesson history is visible in the Skills UI and exportable to workspace-scoped Markdown snapshots.
 - The public download site now includes real screenshots, OS-specific setup instructions, a first-project walkthrough, practical use cases, a detailed FAQ, and an honest release-readiness assessment.
 - Restored the complete HAI application portal, added Hagent as a fifth app with its own detail page, linked every app to its GitHub source or source repository, and replaced the full screenshot set with fresh captures from the current interface.
+- GitHub Actions now runs the complete test suite, builds the wheel, installs it in a clean environment, and verifies that the installed dashboard loads.
+
+### Fixed
+
+- Built wheels now include all dashboard templates and static assets.
+- Base-template data is preloaded through one request-scoped database session, preventing connection-pool starvation under concurrent page requests.
+- FastAPI lifespan handling now starts and cleanly stops the scheduler, dispatcher loop, and run executor.
+- Agent and skill presentation tests now validate the current generated-avatar and inline-badge interface.
 
 ### Safety and reliability
 
 - Infrastructure, cancellation, authentication, capacity, network, and timeout failures are excluded from skill learning.
 - Lesson persistence is synchronous for reliable CLI operation, deduplicated, tenant-scoped, and mirrored only after the database commit succeeds.
 - Generated lesson notes and exports are excluded from Git.
-- Release validation: 286 tests pass; the 6 known agent/skill presentation failures remain unchanged from 0.2.0.
+- Release validation: all 293 tests pass, and a clean wheel contains all 27 templates and 12 static files.
 
 ## 0.2.0 - 2026-09-19
 

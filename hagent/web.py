@@ -3,6 +3,7 @@
 from pathlib import Path
 from urllib.parse import quote, urlparse
 from datetime import datetime, timezone
+from contextlib import asynccontextmanager
 import asyncio
 import json
 import os
@@ -26,6 +27,8 @@ from hagent.agent_avatars import agent_avatar_url
 from hagent.adapters import get_runtime_class
 from fastapi.responses import RedirectResponse, JSONResponse, HTMLResponse, FileResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
+from jinja2 import pass_context
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -62,7 +65,7 @@ from hagent.models import (
     UserProfile,
     AppSetting,
 )
-from hagent.scheduler import find_webhook_trigger, resume_pending_runs, run_autopilot_once, start_scheduler, sync_scheduler_jobs
+from hagent.scheduler import find_webhook_trigger, resume_pending_runs, run_autopilot_once, start_scheduler, stop_scheduler, sync_scheduler_jobs
 from hagent.runtime_catalog import PROVIDERS, catalog_for, provider_config, provider_options
 from hagent.skill_icons import choose_skill_emoji
 from hagent.skill_badges import skill_badge_svg
@@ -73,18 +76,43 @@ from hagent.models import RoutingDecision
 
 get_or_create_default_workspace = get_active_workspace
 
-app = FastAPI(title="Hagent")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Own Hagent's background services for exactly one web-process lifetime."""
+    init_db()
+    start_scheduler()
+    resume_pending_runs()
+    try:
+        yield
+    finally:
+        stop_scheduler(wait=False)
+
+app = FastAPI(title="Hagent", lifespan=lifespan)
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 templates.env.globals["skill_badge_svg"] = skill_badge_svg
 templates.env.globals["agent_avatar_url"] = agent_avatar_url
 
 
-def chat_unread_count() -> int:
-    with get_session() as s:
-        return s.scalar(select(func.count()).select_from(ChatThread).where(ChatThread.unread.is_(True))) or 0
+def chat_unread_count(session=None) -> int:
+    if session is None:
+        with get_session() as active_session:
+            return chat_unread_count(active_session)
+    return session.scalar(select(func.count()).select_from(ChatThread).where(ChatThread.unread.is_(True))) or 0
 
 
-templates.env.globals["chat_unread_count"] = chat_unread_count
+def _template_request_values(context) -> dict:
+    request = context.get("request")
+    return getattr(getattr(request, "state", None), "template_values", {})
+
+
+@pass_context
+def template_chat_unread_count(context) -> int:
+    values = _template_request_values(context)
+    return values["chat_unread_count"] if values else chat_unread_count()
+
+
+templates.env.globals["chat_unread_count"] = template_chat_unread_count
 
 
 def skill_lessons(skill, limit: int = 20) -> list:
@@ -118,24 +146,32 @@ def runtime_models(provider: str):
     return catalog_for(provider, installed)
 
 
-def quickcreate_data():
+def quickcreate_data(session=None):
     """Lightweight lists (projects, agents) that the quick-create modals in base.html
     need regardless of which page they're rendered on. Kept intentionally small --
     just id/name pairs -- since this runs on every page render."""
-    with get_session() as s:
-        projects = s.scalars(select(Project)).all()
-        agents = s.scalars(select(Agent)).all()
-        runtimes = s.scalars(select(Runtime)).all()
-        skills = s.scalars(select(Skill).order_by(Skill.name)).all()
-        return {
-            "projects": [{"id": p.id, "name": p.name} for p in projects],
-            "agents": [{"id": a.id, "name": a.name} for a in agents],
-            "runtimes": [{"id": r.id, "name": r.name, "type": r.type.value, "model": r.model} for r in runtimes],
-            "skills": [{"id": skill.id, "name": skill.name, "description": skill.description} for skill in skills],
-        }
+    if session is None:
+        with get_session() as active_session:
+            return quickcreate_data(active_session)
+    projects = session.scalars(select(Project)).all()
+    agents = session.scalars(select(Agent)).all()
+    runtimes = session.scalars(select(Runtime)).all()
+    skills = session.scalars(select(Skill).order_by(Skill.name)).all()
+    return {
+        "projects": [{"id": p.id, "name": p.name} for p in projects],
+        "agents": [{"id": a.id, "name": a.name} for a in agents],
+        "runtimes": [{"id": r.id, "name": r.name, "type": r.type.value, "model": r.model} for r in runtimes],
+        "skills": [{"id": skill.id, "name": skill.name, "description": skill.description} for skill in skills],
+    }
 
 
-templates.env.globals["quickcreate_data"] = quickcreate_data
+@pass_context
+def template_quickcreate_data(context) -> dict:
+    values = _template_request_values(context)
+    return values["quickcreate_data"] if values else quickcreate_data()
+
+
+templates.env.globals["quickcreate_data"] = template_quickcreate_data
 
 
 APP_SETTING_DEFAULTS = {
@@ -152,10 +188,12 @@ APP_SETTING_DEFAULTS = {
 }
 
 
-def get_app_settings() -> dict:
+def get_app_settings(session=None) -> dict:
+    if session is None:
+        with get_session(scoped=False) as active_session:
+            return get_app_settings(active_session)
     values = dict(APP_SETTING_DEFAULTS)
-    with get_session(scoped=False) as session:
-        values.update({item.key: item.value for item in session.scalars(select(AppSetting)).all()})
+    values.update({item.key: item.value for item in session.scalars(select(AppSetting)).all()})
     values["show_starfield"] = values["show_starfield"].lower() == "true"
     values["default_agent_require_approval"] = values["default_agent_require_approval"].lower() == "true"
     values["default_agent_terminal_enabled"] = values["default_agent_terminal_enabled"].lower() == "true"
@@ -168,7 +206,31 @@ def get_app_settings() -> dict:
     return values
 
 
-templates.env.globals["app_settings"] = get_app_settings
+@pass_context
+def template_app_settings(context) -> dict:
+    values = _template_request_values(context)
+    return values["app_settings"] if values else get_app_settings()
+
+
+templates.env.globals["app_settings"] = template_app_settings
+
+
+def _load_template_values() -> dict:
+    """Resolve base-template data before a route checks out its own DB connection."""
+    with get_session() as session:
+        return {
+            "app_settings": get_app_settings(session),
+            "quickcreate_data": quickcreate_data(session),
+            "chat_unread_count": chat_unread_count(session),
+        }
+
+
+@app.middleware("http")
+async def preload_template_values(request: Request, call_next):
+    path = request.url.path
+    if request.method == "GET" and not path.startswith(("/api/", "/static/", "/attachments/")):
+        request.state.template_values = await run_in_threadpool(_load_template_values)
+    return await call_next(request)
 
 
 def _save_app_settings(values: dict[str, str]) -> None:
@@ -550,18 +612,6 @@ def download_attachment(attachment_id: str):
         item = require(s, Attachment, attachment_id)
         if not Path(item.path).is_file(): raise HTTPException(404, "Attachment file missing")
         return FileResponse(item.path, filename=item.filename)
-
-
-@app.on_event("startup")
-def _startup():
-    init_db()
-    start_scheduler()
-    resume_pending_runs()
-
-
-@app.on_event("shutdown")
-def _shutdown():
-    pass
 
 
 @app.get("/approvals")
