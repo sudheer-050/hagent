@@ -228,7 +228,7 @@ def _load_template_values() -> dict:
 @app.middleware("http")
 async def preload_template_values(request: Request, call_next):
     path = request.url.path
-    if request.method == "GET" and not path.startswith(("/api/", "/static/", "/attachments/")):
+    if request.method == "GET" and path != "/healthz" and not path.startswith(("/api/", "/static/", "/attachments/")):
         request.state.template_values = await run_in_threadpool(_load_template_values)
     return await call_next(request)
 

@@ -6,9 +6,11 @@ on:
 
 jobs:
   test-and-package:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
@@ -26,7 +28,12 @@ jobs:
         run: python -m build
       - name: Verify clean wheel installation
         run: |
-          python -m venv /tmp/hagent-wheel-test
-          /tmp/hagent-wheel-test/bin/pip install dist/*.whl
-          cd /tmp
-          HAGENT_DB_PATH=/tmp/hagent-wheel-test.db /tmp/hagent-wheel-test/bin/python -c "from pathlib import Path; import hagent; from hagent import db; root=Path(hagent.__file__).parent; assert (root/'templates'/'base.html').is_file(); assert (root/'static'/'style.css').is_file(); db.init_db(); from fastapi.testclient import TestClient; from hagent.web import app; response=TestClient(app).get('/'); assert response.status_code == 200"
+          $wheelVenv = Join-Path $env:RUNNER_TEMP 'hagent-wheel-test'
+          $database = Join-Path $env:RUNNER_TEMP 'hagent-wheel-test.db'
+          python -m venv $wheelVenv
+          $wheel = (Get-ChildItem -LiteralPath dist -Filter '*.whl' | Select-Object -First 1).FullName
+          & "$wheelVenv\Scripts\python.exe" -m pip install $wheel
+          Push-Location $env:RUNNER_TEMP
+          $env:HAGENT_DB_PATH = $database
+          & "$wheelVenv\Scripts\python.exe" -c "from pathlib import Path; import hagent; from hagent import db; root=Path(hagent.__file__).parent; assert (root/'templates'/'base.html').is_file(); assert (root/'static'/'style.css').is_file(); db.init_db(); from fastapi.testclient import TestClient; from hagent.web import app; response=TestClient(app).get('/'); assert response.status_code == 200"
+          Pop-Location
