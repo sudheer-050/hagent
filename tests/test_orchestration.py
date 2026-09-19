@@ -378,6 +378,7 @@ def test_existing_databases_gain_the_new_columns_numbers_and_indexes(tmp_path, m
         "issues": ["priority", "start_date", "due_date", "stage", "number"], "agents": ["max_concurrent_tasks"],
         "workspaces": ["issue_prefix"], "comments": ["parent_comment_id", "resolved"],
         "autopilots": ["mode", "description", "issue_title_template"], "autopilot_triggers": ["timezone", "label"],
+        "skills": ["lessons_json", "improvement_count", "improved_at"],
     }
     with engine.begin() as connection:
         connection.execute(text("DROP INDEX IF EXISTS ix_runs_status"))

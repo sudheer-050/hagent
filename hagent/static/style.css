@@ -1843,6 +1843,11 @@ a.collection-row:hover { background: var(--glass-panel-hover); }
 .skills-list .skill-row:hover, .skills-list .skill-row:focus-visible { background:var(--glass-panel-hover); }
 .skill-row-primary { display:flex; align-items:center; gap:10px; min-width:0; }
 .skill-row-primary strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.skill-improved-badge { flex:none; font-size:.68rem; font-weight:700; color:var(--accent-strong); background:var(--accent-tint); padding:1px 7px; border-radius:999px; }
+
+.skill-lessons-list { display:flex; flex-direction:column; gap:6px; margin:0; padding:0; list-style:none; }
+.skill-lessons-list li { display:flex; justify-content:space-between; gap:var(--space-3); padding:8px 10px; border-radius:var(--radius-sm); background:var(--glass-panel-hover); font-size:.82rem; }
+.skill-lesson-date { flex:none; color:var(--text-faint); font-size:.72rem; align-self:flex-start; }
 .skill-badge { display:block; flex:none; width:36px; height:36px; }
 .skill-list-agents, .skill-list-last-used { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-muted); font-size:.82rem; font-weight:500; }
 .skill-row-chevron { color:var(--accent); font-size:1.4rem; font-weight:400; line-height:1; text-align:right; }

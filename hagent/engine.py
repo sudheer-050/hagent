@@ -2,24 +2,26 @@
 
 import json
 import logging
+import os
 import re
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session, object_session
 
 from hagent.adapters import get_runtime_class
 from hagent.adapters.base import ResumableError
-from hagent.models import Agent, ChatMessage, ChatThread, Comment, Issue, IssueStatus, Project, ProjectStatus, Repo, RoutingDecision, Run, RunStatus, Runtime, UserProfile
+from hagent.models import Agent, ChatMessage, ChatThread, Comment, Issue, IssueStatus, Project, ProjectStatus, Repo, RoutingDecision, Run, RunStatus, Runtime, Skill, SkillLesson, UserProfile
 from hagent.models import TimelineEvent
 from hagent.mcp_client import call_tool_sync, list_tools_sync
-from hagent.provider_health import handle_capacity_failure
+from hagent.provider_health import handle_capacity_failure, is_capacity_error
 from hagent.terminal import run_agent_command
 from hagent.live_activity import start_delegation, end_delegation
 from hagent.worktrees import ensure_worktree
-from hagent.memory import MemoryScope, MemoryService, context_as_prompt
+from hagent.memory import MemoryScope, MemoryService, context_as_prompt, redact_sensitive
 from hagent.router import ModelRouter
 
 _queue_lock = threading.Lock()
@@ -207,6 +209,10 @@ def _finish(session, run, issue, result=None, error=None, checkpoint_session_id=
     session.commit()
     session.refresh(run)
     session.refresh(issue)
+    if changed and error:
+        agent = session.get(Agent, run.agent_id)
+        if agent and agent.skills:
+            _learn_from_mistake([s.id for s in agent.skills], f'On "{issue.title}": {error}', issue_id=issue.id, source="run_failure")
     if changed and not error:
         from hagent.orchestration import after_issue_finished
 
@@ -282,12 +288,19 @@ def _run_verifier_pass(session: Session, run: Run, issue: Issue, output: str) ->
         event_type="verification_passed" if passed else "verification_failed",
         detail=verdict[:500] if verdict else "Verifier produced no output",
     ))
+    lesson_skill_ids = []
+    lesson_text = ""
     if not passed:
         session.execute(
             update(Issue).where(Issue.id == issue.id).values(status=IssueStatus.IN_PROGRESS),
             execution_options={"synchronize_session": False},
         )
+        if agent.skills:
+            lesson_skill_ids = [s.id for s in agent.skills]
+            lesson_text = f'On "{issue.title}", a reviewer found: {verdict}'
     session.commit()
+    if lesson_skill_ids:
+        _learn_from_mistake(lesson_skill_ids, lesson_text, issue_id=issue.id, source="verifier_reject")
 
 
 def cancel_issue(session, issue):
@@ -308,6 +321,107 @@ def mark_agent_skills_used(session: Session, agent: Agent) -> None:
             raise ValueError("Skill crosses workspaces")
         skill.last_used_at = used_at
     session.commit()
+
+
+# How many of a skill's most recent lessons a recall_lessons() tool call returns.
+# This bounds a single tool result, not storage. Lessons remain attached to the
+# skill until that skill is deleted and can be exported in full at any time.
+MAX_LESSONS_PER_SKILL = 30
+
+# Lessons are also mirrored to one plain-text file per skill, named after the
+# skill in a workspace-specific directory - a durable, human-readable copy
+# outside the database. The agent never has this stuffed into its prompt;
+# every skill's context only carries a one-line pointer ("N lessons on file"), and
+# the model reads the file itself via the recall_lessons tool only when it decides
+# a task looks like something that's failed before. That keeps normal runs exactly
+# as cheap as a skill with no history at all. Lessons are retained with the skill.
+SKILL_NOTES_DIR = Path(os.environ.get("HAGENT_SKILL_NOTES_DIR", "skill-notes"))
+
+
+def _skill_notes_slug(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "_", name.strip().lower()).strip("_")
+    return slug or "skill"
+
+
+def _skill_notes_path(skill: Skill) -> Path:
+    # Include workspace and immutable id so equal/renamed skill names never mix
+    # histories or leak notes across tenants.
+    return SKILL_NOTES_DIR / skill.workspace_id / f"{_skill_notes_slug(skill.name)}-{skill.id[:8]}.md"
+
+
+def _append_skill_note_file(skill: Skill, source: str, text: str, now: datetime) -> None:
+    path = _skill_notes_path(skill)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            path.write_text(
+                f"# {skill.name} — lessons learned\n\n"
+                "Distilled notes from real run failures and reviewer rejections. Not injected into "
+                "every prompt - the agent reads this on demand (recall_lessons tool) only when it "
+                "judges a task is similar to something that's gone wrong before.\n\n",
+                encoding="utf-8",
+            )
+        with path.open("a", encoding="utf-8") as f:
+            f.write(f"## {now.strftime('%Y-%m-%d %H:%M UTC')} ({source})\n{text}\n\n")
+    except OSError:
+        log.warning("Could not write skill notes file %s", path, exc_info=True)
+
+
+_NON_LEARNABLE_FAILURE = re.compile(
+    r"cancel|timed? ?out|timeout|network|connection|offline|unavailable|"
+    r"unauthori[sz]ed|forbidden|authentication|credential|not installed|"
+    r"missing executable|context (?:window )?(?:overflow|exceeded)", re.I
+)
+
+
+def _learn_from_mistake(skill_ids: list[str], lesson_text: str, *, issue_id: str | None = None,
+                        source: str = "run_failure") -> int:
+    """Synchronously record a short, redacted, deduplicated skill lesson.
+
+    Infrastructure, cancellation, authentication, capacity and timeout failures
+    are not skill lessons. Synchronous persistence prevents a short-lived CLI
+    process from exiting while a daemon thread still owns the only copy.
+    """
+    raw = lesson_text.strip()
+    if source == "run_failure" and (is_capacity_error(raw) or _NON_LEARNABLE_FAILURE.search(raw)):
+        return 0
+    text, _redactions = redact_sensitive(raw)
+    if not skill_ids or not text:
+        return 0
+    text = text[:400]
+    from hagent.db import get_session
+
+    notes, recorded = [], 0
+    try:
+        with get_session(scoped=False) as session:
+            now = datetime.now(timezone.utc)
+            for skill_id in dict.fromkeys(skill_ids):
+                skill = session.get(Skill, skill_id)
+                if not skill:
+                    continue
+                already = session.scalar(
+                    select(SkillLesson).where(SkillLesson.skill_id == skill_id, SkillLesson.text == text)
+                )
+                if already:
+                    continue
+                session.add(SkillLesson(skill_id=skill_id, issue_id=issue_id, source=source,
+                                        text=text, created_at=now))
+                session.execute(
+                    update(Skill).where(Skill.id == skill_id)
+                    .values(improvement_count=Skill.improvement_count + 1, improved_at=now),
+                    execution_options={"synchronize_session": False},
+                )
+                notes.append((skill, source, text, now))
+                recorded += 1
+            session.commit()
+        # The database is canonical. Mirror files are written only after commit,
+        # so a failed transaction can never leave a phantom lesson on disk.
+        for skill, note_source, note_text, created_at in notes:
+            _append_skill_note_file(skill, note_source, note_text, created_at)
+        return recorded
+    except Exception:
+        log.warning("Skill lesson recording failed", exc_info=True)
+        return 0
 
 
 def execute_agent(
@@ -562,6 +676,30 @@ def _execute_with_runtime(agent, runtime, prompt, cancelled, record_tool, delega
         tools.append({"type": "function", "function": {"name": "message_user", "description": message_user_description, "parameters": message_user_schema}})
     executors["message_user"] = None
 
+    # Full lesson history per skill lives on disk (see _skill_notes_path), not in
+    # this prompt - each skill's context above only carries a one-line pointer when
+    # it has any. Only expose the tool, and only list skills that actually have a
+    # file, so an agent whose skills have no history yet pays nothing extra at all.
+    skills_with_lessons = [s for s in agent.skills if s.improvement_count]
+    if skills_with_lessons:
+        recall_schema = {
+            "type": "object",
+            "properties": {
+                "skill_name": {"type": "string", "enum": [s.name for s in skills_with_lessons], "description": "Which of your skills to check past mistakes for"},
+            },
+            "required": ["skill_name"],
+        }
+        recall_description = (
+            "Read the full history of lessons learned from real past mistakes for one of your skills. Call this "
+            "before relying on a skill for a task that looks similar to something that has failed before - not on "
+            "every task."
+        )
+        if str(runtime.type.value) in _CLAUDE_SHAPED_RUNTIMES:
+            tools.append({"name": "recall_lessons", "description": recall_description, "input_schema": recall_schema})
+        else:
+            tools.append({"type": "function", "function": {"name": "recall_lessons", "description": recall_description, "parameters": recall_schema}})
+        executors["recall_lessons"] = None
+
     # A squad is an executable team: expose each eligible colleague as a
     # focused delegation tool to tool-calling runtimes. Keep a clean context
     # boundary by passing only the delegated task, not the supervisor's trace.
@@ -667,6 +805,31 @@ def _execute_with_runtime(agent, runtime, prompt, cancelled, record_tool, delega
             if record_tool:
                 record_tool(name, arguments, result)
             return result
+        if name == "recall_lessons":
+            skill_name = str(arguments.get("skill_name", "")).strip()
+            match = next((s for s in agent.skills if s.name == skill_name), None)
+            if not match:
+                result = f'No skill named "{skill_name}" on this agent.'
+            else:
+                # The full history is retained with the skill (DB row + mirror file for
+                # export/browsing), but a single tool call only returns the most recent
+                # MAX_LESSONS_PER_SKILL - bounded token cost even for a skill with a
+                # long history, same guarantee as the old always-on injection had.
+                sess = object_session(agent)
+                recent = sess.scalars(
+                    select(SkillLesson).where(SkillLesson.skill_id == match.id)
+                    .order_by(SkillLesson.created_at.desc()).limit(MAX_LESSONS_PER_SKILL)
+                ).all() if sess else []
+                if not recent:
+                    result = "No lessons on file for this skill yet."
+                else:
+                    lines = [f"- ({lesson.created_at.strftime('%Y-%m-%d')}) {lesson.text}" for lesson in reversed(recent)]
+                    total = match.improvement_count
+                    header = f"Most recent {len(recent)} of {total} lesson(s) on file:\n" if total > len(recent) else ""
+                    result = header + "\n".join(lines)
+            if record_tool:
+                record_tool(name, arguments, result[:2000])
+            return result
         if name in delegates:
             teammate = delegates[name]
             task = str(arguments.get("task", "")).strip()
@@ -751,6 +914,12 @@ def _execute_with_runtime(agent, runtime, prompt, cancelled, record_tool, delega
         if skill.workspace_id != agent.workspace_id:
             raise ValueError("Skill crosses workspaces")
         context += f"\n\nSkill: {skill.name}\n{skill.content}"
+        if skill.improvement_count:
+            context += (
+                f"\n{skill.improvement_count} lesson(s) learned from real past mistakes with this skill are on "
+                f'file - if this task looks like something that has gone wrong before, call recall_lessons("{skill.name}") '
+                "before proceeding."
+            )
         for file in skill.files:
             context += f"\n--- {file.filename} ---\n{file.content}"
     return adapter.run(

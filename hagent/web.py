@@ -54,6 +54,7 @@ from hagent.models import (
     RunStatus,
     Runtime,
     Skill,
+    SkillLesson,
     Squad,
     SquadMember,
     TimelineEvent,
@@ -84,6 +85,16 @@ def chat_unread_count() -> int:
 
 
 templates.env.globals["chat_unread_count"] = chat_unread_count
+
+
+def skill_lessons(skill, limit: int = 20) -> list:
+    """Most recent lessons for display - the skill keeps all of its lessons
+    (see SkillLesson); this only limits how many the Skills page
+    renders at once, same as any other paginated list."""
+    return list(reversed(skill.lessons[-limit:]))
+
+
+templates.env.globals["skill_lessons"] = skill_lessons
 app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
 @app.get("/api/runtime-models")
 def runtime_models(provider: str):
@@ -1555,7 +1566,7 @@ def add_squad_member(squad_id: str, agent_id: str = Form(...), role: str = Form(
 @app.get("/skills")
 def skills_page(request: Request):
     with get_session() as s:
-        skills = s.scalars(select(Skill).options(selectinload(Skill.agents), selectinload(Skill.files)).order_by(Skill.name)).all()
+        skills = s.scalars(select(Skill).options(selectinload(Skill.agents), selectinload(Skill.files), selectinload(Skill.lessons)).order_by(Skill.name)).all()
         agents = s.scalars(select(Agent).options(joinedload(Agent.runtime)).order_by(Agent.name)).all()
         return templates.TemplateResponse(request, "skills.html", {"skills": skills, "agents": agents, "skill_editor_ready": True, "active": "skills"})
 

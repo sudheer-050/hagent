@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.1 - 2026-09-19
+
+### Added
+
+- Skill-level learning memory records redacted lessons from relevant run failures and verifier rejections.
+- Agents sharing a skill can retrieve its recent lessons on demand through `recall_lessons` without adding the full history to every prompt.
+- Skill lesson history is visible in the Skills UI and exportable to workspace-scoped Markdown snapshots.
+
+### Safety and reliability
+
+- Infrastructure, cancellation, authentication, capacity, network, and timeout failures are excluded from skill learning.
+- Lesson persistence is synchronous for reliable CLI operation, deduplicated, tenant-scoped, and mirrored only after the database commit succeeds.
+- Generated lesson notes and exports are excluded from Git.
+- Release validation: 286 tests pass; the 6 known agent/skill presentation failures remain unchanged from 0.2.0.
+
 ## 0.2.0 - 2026-09-19
 
 This release expands Hagent from a local issue runner into a broader self-hosted agent control plane.

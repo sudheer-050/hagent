@@ -23,6 +23,7 @@ PARENTS = {
     m.SquadMember: ("squad_id", m.Squad),
     m.SquadActivity: ("squad_id", m.Squad),
     m.SkillFile: ("skill_id", m.Skill),
+    m.SkillLesson: ("skill_id", m.Skill),
     m.AutopilotTrigger: ("autopilot_id", m.Autopilot),
     m.AutopilotRun: ("autopilot_id", m.Autopilot),
     m.Attachment: ("issue_id", m.Issue),

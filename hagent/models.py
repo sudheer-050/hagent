@@ -548,10 +548,36 @@ class Skill(Base):
     content: Mapped[str] = mapped_column(Text, default="")
     source_url: Mapped[str | None] = mapped_column(String, nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Deprecated: an earlier revision of this feature kept a capped rolling list of
+    # lessons here. Superseded by the SkillLesson table below. Kept only so any
+    # already-migrated rows aren't lost; no longer written to.
+    lessons_json: Mapped[str] = mapped_column(Text, default="[]")
+    improvement_count: Mapped[int] = mapped_column(Integer, default=0)
+    improved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     agents: Mapped[list["Agent"]] = relationship(secondary=agent_skills, back_populates="skills")
     files: Mapped[list["SkillFile"]] = relationship(back_populates="skill", cascade="all, delete-orphan")
     labels: Mapped[list["Label"]] = relationship(secondary=skill_labels, back_populates="skills")
+    lessons: Mapped[list["SkillLesson"]] = relationship(back_populates="skill", cascade="all, delete-orphan", order_by="SkillLesson.created_at")
+
+
+class SkillLesson(Base):
+    """A single distilled lesson from a real run failure or verifier rejection,
+    retained with the skill until that skill is deleted. execute_agent only
+    reads the most recent handful back into the prompt (a retrieval limit, not
+    a storage one) to keep per-run token cost bounded while the full history
+    stays available with the skill for review or export (e.g. into graphify)."""
+
+    __tablename__ = "skill_lessons"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    skill_id: Mapped[str] = mapped_column(ForeignKey("skills.id"), nullable=False, index=True)
+    issue_id: Mapped[str | None] = mapped_column(ForeignKey("issues.id"), nullable=True)
+    source: Mapped[str] = mapped_column(String, default="run_failure")  # "run_failure" | "verifier_reject"
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    skill: Mapped["Skill"] = relationship(back_populates="lessons")
 
 
 class SkillFile(Base):

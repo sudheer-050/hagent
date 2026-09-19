@@ -4,7 +4,7 @@ This file contains repository-level development notes. It deliberately excludes 
 
 ## Current release
 
-- Version: 0.2.0
+- Version: 0.2.1
 - Python: 3.10 or newer
 - Application: FastAPI, SQLAlchemy, SQLite, Jinja2, Click, APScheduler, MCP
 - Primary tested host: Windows
@@ -82,7 +82,7 @@ Before publishing a release:
 6. Review README security and installation instructions.
 7. Update `CHANGELOG.md` and the version in `pyproject.toml`.
 
-The 0.2.0 snapshot has 282 passing tests and 6 failures confined to agent/skill presentation markup. Treat a fully green suite as the next release gate.
+The 0.2.1 snapshot has 286 passing tests and 6 pre-existing failures confined to agent/skill presentation markup. Treat a fully green suite as the next release gate.
 
 ## Known development gaps
 

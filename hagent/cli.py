@@ -3031,6 +3031,47 @@ def version_cmd():
     click.echo(f"hagent {__version__}")
 
 
+@cli.command("export-lessons")
+@click.argument("directory", type=click.Path(file_okay=False), default="lessons-export")
+def export_lessons_cmd(directory):
+    """Write every skill's retained lessons to markdown files, one per
+    skill. Hagent already keeps a live copy of these next to the app (one file per
+    skill under skill-notes/, updated as mistakes happen - see the recall_lessons
+    tool in engine.py); this command regenerates a full, self-contained snapshot
+    anywhere you choose, including issue references, so it can be browsed as plain
+    text or fed to an external tool - e.g. run `/graphify <directory>` afterward to
+    explore how mistakes across skills, issues, and agents connect. Manual and
+    on-demand only - it never runs automatically, so it has no effect on live app
+    performance."""
+    from pathlib import Path
+    from hagent.db import get_session
+    from hagent.models import Skill
+
+    out = Path(directory)
+    out.mkdir(parents=True, exist_ok=True)
+    with get_session() as session:
+        skills = session.query(Skill).all()
+        written = 0
+        for skill in skills:
+            if not skill.lessons:
+                continue
+            lines = [f"# {skill.name} - lessons learned", "", skill.description or "", ""]
+            for lesson in skill.lessons:
+                lines.append(f"## {lesson.created_at.strftime('%Y-%m-%d %H:%M UTC')} ({lesson.source})")
+                if lesson.issue_id:
+                    lines.append(f"Issue: {lesson.issue_id}")
+                lines.append("")
+                lines.append(lesson.text)
+                lines.append("")
+            safe_name = "".join(c if c.isalnum() or c in " -_" else "_" for c in skill.name).strip() or "skill"
+            safe_name = f"{safe_name}-{skill.id[:8]}"
+            (out / f"{safe_name}.md").write_text("\n".join(lines), encoding="utf-8")
+            written += 1
+    click.echo(f"Wrote {written} skill lesson file(s) to {out.resolve()}")
+    if written:
+        click.echo(f"Try: /graphify {out.resolve()}")
+
+
 
 # --- queue visibility ---
 

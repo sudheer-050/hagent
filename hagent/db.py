@@ -96,7 +96,14 @@ def _ensure_schema() -> None:
             "transcript_json": "TEXT NOT NULL DEFAULT '{}'",
             "session_id": "VARCHAR",
         },
-        "skills": {"source_url": "VARCHAR", "emoji": "VARCHAR NOT NULL DEFAULT ''", "last_used_at": "DATETIME"},
+        "skills": {
+            "source_url": "VARCHAR",
+            "emoji": "VARCHAR NOT NULL DEFAULT ''",
+            "last_used_at": "DATETIME",
+            "lessons_json": "TEXT NOT NULL DEFAULT '[]'",
+            "improvement_count": "INTEGER NOT NULL DEFAULT 0",
+            "improved_at": "DATETIME",
+        },
         "autopilot_triggers": {
             "enabled": "BOOLEAN NOT NULL DEFAULT 1",
             "type": "VARCHAR NOT NULL DEFAULT 'CRON'",

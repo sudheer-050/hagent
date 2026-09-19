@@ -2,7 +2,7 @@
 
 A self-hosted multi-agent orchestration platform: projects with **issues** (a kanban tracker), **agents** bound to pluggable **runtimes** (major cloud APIs, local Ollama/LM Studio, and installed AI CLIs), **squads** and **skills**, and **autopilots** that run agents against matching issues on a schedule — from a CLI or a web dashboard.
 
-> Current release: **0.2.0**. Hagent is under active development and is best suited to local use and trusted small-team deployments. Read the security notes before enabling terminal access or exposing the server beyond localhost.
+> Current release: **0.2.1**. Hagent is under active development and is best suited to local use and trusted small-team deployments. Read the security notes before enabling terminal access or exposing the server beyond localhost.
 
 Hagent is a from-scratch reimplementation of the core ideas behind commercial multi-agent orchestration tools (Multica and similar): a workspace holding projects, issues, agents, and runtimes, with a clean adapter boundary so any AI backend can be plugged in without touching the rest of the system.
 
@@ -40,6 +40,8 @@ Hagent also includes a canonical provider-neutral memory service shared by
 internal agents, Codex CLI, Claude Code, and MCP-compatible clients, plus an
 auditable adaptive model router. See
 [Unified memory and adaptive model routing](docs/unified-memory.md).
+
+Skills can also accumulate redacted lessons from relevant failed runs and verifier rejections. Those lessons are shared by every agent using the skill and retrieved on demand through `recall_lessons`, rather than being injected wholesale into every prompt.
 
 ## Setup
 
@@ -247,7 +249,7 @@ pytest
 
 ## Release status and known limitations
 
-Version 0.2.0 includes authenticated remote access, worker devices, provider failover and recovery, provider-neutral memory, adaptive model routing, worktree isolation, approvals, usage tracking, multi-file skills, squad delegation, and scheduled or webhook-driven Autopilots. Existing databases are upgraded additively on startup.
+Version 0.2.1 includes authenticated remote access, worker devices, provider failover and recovery, provider-neutral memory, adaptive model routing, skill-level lesson memory, worktree isolation, approvals, usage tracking, multi-file skills, squad delegation, and scheduled or webhook-driven Autopilots. Existing databases are upgraded additively on startup.
 
 Current limitations:
 
@@ -255,7 +257,7 @@ Current limitations:
 - The terminal starting directory is not a hard containment boundary; use OS- or container-level isolation for untrusted autonomous work.
 - Webhook endpoints are not publicly exposed automatically; use a trusted tunnel or reverse proxy when required.
 - Marketplace-wide skill discovery is out of scope; local archives and supported direct URLs can be imported.
-- The current test snapshot passes 282 tests, with 6 remaining failures in agent/skill presentation markup. Core orchestration, authentication, memory, routing, recovery, worker, and provider tests pass.
+- The current test snapshot passes 286 tests, with 6 remaining failures in pre-existing agent/skill presentation markup. Core orchestration, authentication, memory, routing, recovery, worker, provider, and skill-lesson tests pass.
 - Automated CI and packaged container deployment are not yet included.
 
 See [CHANGELOG.md](CHANGELOG.md) for release details and [HANDOFF.md](HANDOFF.md) for contributor notes.

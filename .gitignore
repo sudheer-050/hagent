@@ -10,6 +10,8 @@ venv/
 *.egg-info/
 build/
 dist/
+skill-notes/
+lessons-export/
 .claude/worktrees/
 hagent/voice/holly_history.json
 hagent/voice/holly_voice_history.json
