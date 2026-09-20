@@ -1225,6 +1225,18 @@ pre {
   padding: 0.3rem 0.5rem;
 }
 
+.status-review-actions {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: var(--space-2);
+}
+.status-review-actions form { flex: 1; }
+.status-review-actions button {
+  width: 100%;
+  font-size: 0.76rem;
+  padding: 0.3rem 0.5rem;
+}
+
 .column-empty {
   border: 1px dashed var(--border-soft);
   border-radius: var(--radius-md);

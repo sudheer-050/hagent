@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 import threading
 import time
 from datetime import datetime, timezone
@@ -618,6 +619,16 @@ def _execute_with_runtime(agent, runtime, prompt, cancelled, record_tool, delega
         config["terminal_enabled"] = True
         if effective_working_directory:
             config["working_directory"] = effective_working_directory
+    else:
+        # Agents without terminal access must never inherit this process's own
+        # cwd - in production that's wherever `hagent serve` was launched from,
+        # e.g. the application's own source checkout. Give them an isolated,
+        # disposable scratch directory instead. This is defense-in-depth on top
+        # of the adapter-level sandbox/permission restrictions (see
+        # adapters/claude_code.py and adapters/codex_cli.py): even if a future
+        # adapter change re-widens tool permissions, there is nothing of value
+        # in this directory to read or overwrite.
+        config["working_directory"] = tempfile.mkdtemp(prefix="hagent-sandbox-")
     if resume_session_id:
         config["resume_session_id"] = resume_session_id
     route_config = route_config or {}
@@ -675,6 +686,35 @@ def _execute_with_runtime(agent, runtime, prompt, cancelled, record_tool, delega
     else:
         tools.append({"type": "function", "function": {"name": "message_user", "description": message_user_description, "parameters": message_user_schema}})
     executors["message_user"] = None
+
+    # Every agent can save a durable fact straight into the same memory store
+    # execute_agent() already reads from on every future conversation (see
+    # hagent/memory.py). Without this, memory only ever accumulates an automatic
+    # one-line summary of each run's raw output (category "session_summary") -
+    # never anything that actually reads back as "the assistant knows me", like a
+    # name, a preference, or a running project decision.
+    remember_schema = {
+        "type": "object",
+        "properties": {
+            "content": {"type": "string", "description": "The durable fact to remember, written plainly - e.g. 'Prefers Python over JS' or 'Is building a project called Hagent'."},
+            "category": {
+                "type": "string",
+                "enum": ["user_profile", "preference", "project_fact", "decision"],
+                "description": "user_profile: who they are. preference: how they like things done. project_fact: a fact about a project. decision: a decision they made.",
+            },
+        },
+        "required": ["content"],
+    }
+    remember_description = (
+        "Save a durable fact about the workspace owner (or their projects, preferences, decisions) so any "
+        "future conversation with any agent can recall it - not just this one. Use it for things actually "
+        "worth remembering long-term, not routine task output. Overusing this defeats the point."
+    )
+    if str(runtime.type.value) in _CLAUDE_SHAPED_RUNTIMES:
+        tools.append({"name": "remember_about_user", "description": remember_description, "input_schema": remember_schema})
+    else:
+        tools.append({"type": "function", "function": {"name": "remember_about_user", "description": remember_description, "parameters": remember_schema}})
+    executors["remember_about_user"] = None
 
     # Full lesson history per skill lives on disk (see _skill_notes_path), not in
     # this prompt - each skill's context above only carries a one-line pointer when
@@ -802,6 +842,31 @@ def _execute_with_runtime(agent, runtime, prompt, cancelled, record_tool, delega
                 sess.commit()
             else:
                 result = "Could not deliver the message - no active database session."
+            if record_tool:
+                record_tool(name, arguments, result)
+            return result
+        if name == "remember_about_user":
+            text = str(arguments.get("content", "")).strip()
+            if not text:
+                raise ValueError("Fact to remember cannot be empty")
+            category = arguments.get("category")
+            if category not in {"user_profile", "preference", "project_fact", "decision"}:
+                category = "user_profile"
+            sess = object_session(agent)
+            if sess is None:
+                result = "Could not save this - no active database session."
+            else:
+                profile = sess.scalar(select(UserProfile))
+                owner_id = profile.id if profile else "local-user"
+                try:
+                    memory = MemoryService(sess, MemoryScope(
+                        workspace_id=agent.workspace_id, user_id=owner_id,
+                        agent_id=agent.id, provider=str(runtime.type.value)))
+                    memory.remember(text, category=category, origin_type="user_stated",
+                        verification_status="user_stated", confidence=0.85, source_agent=agent.name)
+                    result = "Remembered."
+                except Exception as exc:
+                    result = f"Could not save this memory: {exc}"
             if record_tool:
                 record_tool(name, arguments, result)
             return result

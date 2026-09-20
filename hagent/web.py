@@ -124,6 +124,16 @@ def skill_lessons(skill, limit: int = 20) -> list:
 
 templates.env.globals["skill_lessons"] = skill_lessons
 app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
+
+
+@app.get("/api/chat/unread-count")
+def chat_unread_count_api():
+    """Polled from the sidebar nav on every page (see base.html) so the Chat
+    badge - e.g. Holly messaging you unprompted via message_user - shows up
+    without waiting for you to navigate anywhere or reload."""
+    return {"unread": chat_unread_count()}
+
+
 @app.get("/api/runtime-models")
 def runtime_models(provider: str):
     if provider not in PROVIDERS:
@@ -788,14 +798,33 @@ def create_project(name: str = Form(...), description: str = Form("")):
     return RedirectResponse(url="/projects", status_code=303)
 
 
+CANCELLED_FADE_SECONDS = 300  # low/no-priority cancelled cards clear themselves off the board this long after landing there
+CANCELLED_FADE_PRIORITIES = {"none", "low"}
+
+
+def _as_utc(moment: datetime) -> datetime:
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def _still_shown_on_board(issue: Issue, now: datetime) -> bool:
+    """A cancelled issue nobody marked as important clutters the board forever otherwise -
+    let it clear itself out CANCELLED_FADE_SECONDS after the cancellation, instead of a human
+    having to notice and delete it. Anything actually prioritized stays until acted on."""
+    if issue.status != IssueStatus.CANCELLED or issue.priority not in CANCELLED_FADE_PRIORITIES:
+        return True
+    return (now - _as_utc(issue.updated_at)).total_seconds() < CANCELLED_FADE_SECONDS
+
+
 @app.get("/projects/{project_id}")
 def project_board(request: Request, project_id: str):
     with get_session() as s:
         project = require(s, Project, project_id)
         agents = s.scalars(select(Agent)).all()
+        now = datetime.now(timezone.utc)
         issues_by_status = {status: [] for status in ISSUE_STATUS_ORDER}
         for i in sorted(project.issues, key=lambda i: (i.position, i.created_at)):
-            issues_by_status[i.status].append(i)
+            if _still_shown_on_board(i, now):
+                issues_by_status[i.status].append(i)
         return templates.TemplateResponse(
             request,
             "project_board.html",
@@ -889,8 +918,54 @@ def issue_diff_page(request: Request, issue_id: str):
 def issue_set_status(issue_id: str, status: str = Form(...)):
     with get_session() as s:
         i = require(s, Issue, issue_id)
-        i.status = IssueStatus(status)
+        new_status = IssueStatus(status)
+        # In Review is a decision point, not a free move: the automatic verifier already tries to
+        # approve or bounce it, and when that doesn't resolve it, a human decides via the dedicated
+        # approve/send-back buttons below - not by picking an arbitrary status off this dropdown.
+        if i.status == IssueStatus.IN_REVIEW or new_status == IssueStatus.IN_REVIEW:
+            raise HTTPException(400, "In Review can only be left via Approve or Send back")
+        i.status = new_status
         s.add(TimelineEvent(issue_id=i.id, event_type="status_changed", detail=status))
+        s.commit()
+        project_id = i.project_id
+    return RedirectResponse(url=f"/projects/{project_id}", status_code=303)
+
+
+@app.post("/issues/{issue_id}/review/approve")
+def issue_review_approve(issue_id: str):
+    from hagent.orchestration import after_issue_finished
+
+    with get_session() as s:
+        i = require(s, Issue, issue_id)
+        if i.status != IssueStatus.IN_REVIEW:
+            raise HTTPException(400, "Only an issue in review can be approved")
+        i.status = IssueStatus.DONE
+        s.add(TimelineEvent(issue_id=i.id, event_type="status_changed", detail="done (approved on review)"))
+        s.commit()
+        after_issue_finished(s, i)  # wakes a parent whose stage barrier this just cleared
+        s.commit()
+        project_id = i.project_id
+    return RedirectResponse(url=f"/projects/{project_id}", status_code=303)
+
+
+@app.post("/issues/{issue_id}/review/reject")
+def issue_review_reject(issue_id: str, note: str = Form("")):
+    from hagent.orchestration import start_agent_run
+
+    with get_session() as s:
+        i = require(s, Issue, issue_id)
+        if i.status != IssueStatus.IN_REVIEW:
+            raise HTTPException(400, "Only an issue in review can be sent back")
+        i.status = IssueStatus.IN_PROGRESS
+        note_text = note.strip()
+        s.add(TimelineEvent(issue_id=i.id, event_type="status_changed", detail="in_progress (sent back from review)" + (f": {note_text}" if note_text else "")))
+        prompt = None
+        if i.assignee_agent_id:
+            base = i.description or i.title
+            prompt = f"{base}\n\n[Sent back from review]{': ' + note_text if note_text else ''} Revise the work and resubmit."
+        run = start_agent_run(s, i, prompt=prompt)
+        if run is not None:
+            s.add(TimelineEvent(issue_id=i.id, event_type="run_requeued", detail="Sent back from review; requeued for the assigned agent."))
         s.commit()
         project_id = i.project_id
     return RedirectResponse(url=f"/projects/{project_id}", status_code=303)

@@ -85,15 +85,19 @@ def test_claude_code_uses_print_json_mode(mocker):
 
 
 def test_runtime_catalog_includes_descriptions_and_grok():
-    gemini = runtime_models("gemini")
-    grok = catalog_for("xai")
-    openrouter = runtime_models("openrouter")
+    # "gemini" and "xai" were pruned from PROVIDERS (see test_agent_pages.py comments
+    # for why: neither could actually be connected as a runtime in this environment),
+    # so this now exercises the same catalog-description/model-listing behavior
+    # through "openrouter", the surviving gateway provider that still re-exposes
+    # Gemini and Grok models (among others) via one OpenAI-compatible endpoint.
+    openrouter_web = runtime_models("openrouter")
+    openrouter_catalog = catalog_for("openrouter")
 
-    assert any(item["id"] == "gemini-3.8-flash" for item in gemini["model_details"])
-    assert gemini["provider_info"]["best_for"]
-    assert provider_config("xai")["base_url"] == "https://api.x.ai/v1"
-    assert any(item["id"] == "grok-4.6" for item in grok["model_details"])
-    assert any(item["id"] == "stealth/union-alpha" for item in openrouter["model_details"])
+    assert any(item["id"] == "google/gemini-3.8-flash" for item in openrouter_web["model_details"])
+    assert openrouter_web["provider_info"]["best_for"]
+    assert provider_config("openrouter")["base_url"] == "https://openrouter.ai/api/v1"
+    assert any(item["id"] == "x-ai/grok-4.6" for item in openrouter_catalog["model_details"])
+    assert any(item["id"] == "stealth/union-alpha" for item in openrouter_web["model_details"])
 
 
 def test_hardware_fit_discourages_oversized_local_models():
@@ -130,3 +134,32 @@ def test_cli_runtimes_only_bypass_permissions_when_agent_terminal_is_enabled(moc
     ClaudeCodeRuntime("default", {"terminal_enabled": True, "working_directory": str(tmp_path)}).run("work")
     assert "--dangerously-skip-permissions" in claude_run.call_args.args[0]
     assert claude_run.call_args.kwargs["cwd"] == str(tmp_path)
+
+
+def test_cli_runtimes_never_bypass_permissions_for_non_terminal_agents(mocker, tmp_path):
+    # Regression test for the bug where any agent with *some* MCP tool (delegation,
+    # message_user, etc.) got the full sandbox/approval bypass even without
+    # terminal_enabled - because those tools are registered as a separate MCP
+    # server, not one of the CLI's own sandboxed built-in tools, so bypassing for
+    # "has tools" instead of "has terminal_enabled" handed every tool-bearing agent
+    # danger-full-access to this process's own cwd. Only terminal_enabled may grant
+    # the bypass; tools alone must not.
+    tools = [{"name": "message_user", "description": "send a message"}]
+
+    mocker.patch("hagent.adapters.codex_cli._find_codex", return_value="codex")
+    mocker.patch("hagent.adapters.codex_cli.serve_tools").return_value.__enter__.return_value = "http://127.0.0.1:0"
+    codex_run = mocker.patch(
+        "hagent.adapters.codex_cli.subprocess.run",
+        return_value=SimpleNamespace(returncode=0, stdout="done", stderr=""),
+    )
+    CodexCliRuntime("default", {"terminal_enabled": False}).run("work", tools=tools, tool_executor=lambda *a: None)
+    assert "--dangerously-bypass-approvals-and-sandbox" not in codex_run.call_args.args[0]
+
+    mocker.patch("hagent.adapters.claude_code.shutil.which", return_value="claude")
+    mocker.patch("hagent.adapters.claude_code.serve_tools").return_value.__enter__.return_value = "http://127.0.0.1:0"
+    claude_run = mocker.patch(
+        "hagent.adapters.claude_code.subprocess.run",
+        return_value=SimpleNamespace(returncode=0, stdout=json.dumps({"result": "done"}), stderr=""),
+    )
+    ClaudeCodeRuntime("default", {"terminal_enabled": False}).run("work", tools=tools, tool_executor=lambda *a: None)
+    assert "--dangerously-skip-permissions" not in claude_run.call_args.args[0]

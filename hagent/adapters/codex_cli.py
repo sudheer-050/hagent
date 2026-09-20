@@ -82,9 +82,18 @@ class CodexCliRuntime(BaseRuntime):
 
         full_prompt = f"{context}\n\n{prompt}" if context else prompt
         resume_session_id = self.config.get("resume_session_id")
-        # --print/exec mode has no TTY to answer a sandbox/approval prompt from, so
-        # any tool use (terminal or the MCP delegation bridge) has to bypass the gate.
-        needs_bypass = bool(self.config.get("terminal_enabled")) or bool(tools)
+        # 'exec' mode is already non-interactive by design (that's what it's for),
+        # so it doesn't need a bypass just to run without a TTY. The bypass flag
+        # additionally lifts the *sandbox* itself, giving unrestricted filesystem/
+        # command access - that must stay reserved for agents actually granted
+        # terminal access. An agent that only has some other MCP tool (delegation,
+        # message_user, etc.) still gets it: that tool is a separate registered MCP
+        # server (see _mcp_server_args below), not one of Codex's own sandboxed
+        # built-in tools, so it isn't affected by --sandbox read-only. Bypassing for
+        # every tool-bearing agent used to mean any agent, terminal-enabled or not,
+        # got danger-full-access to whatever directory this process happened to be
+        # running in.
+        needs_bypass = bool(self.config.get("terminal_enabled"))
         if resume_session_id:
             # Resuming a prior session: not --ephemeral (that would refuse to persist/
             # find session files in the first place). 'exec resume' also does NOT accept

@@ -52,7 +52,7 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v11H8l-4 4V5z"/></svg>
           Chat
           {% set unread = chat_unread_count() %}
-          {% if unread %}<span class="section-count nav-badge">{{ unread }}</span>{% endif %}
+          <span class="section-count nav-badge" id="chat-nav-unread-badge"{% if not unread %} hidden{% endif %}>{{ unread }}</span>
         </a>
       </nav>
 
@@ -261,6 +261,25 @@
 
   {% if site.show_starfield %}<script src="/static/starfield.js?v=evening-blue-1"></script>{% endif %}
   <script src="/static/app.js?v=agent-builder-1"></script>
+  <script>
+    // Site-wide, on every page: keeps the Chat nav badge current (e.g. Holly
+    // messaging you unprompted via message_user) without needing to be on the
+    // Chat page or reload anything.
+    (function () {
+      var badge = document.getElementById("chat-nav-unread-badge");
+      if (!badge) return;
+      setInterval(function () {
+        fetch("/api/chat/unread-count")
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            var count = data.unread || 0;
+            badge.textContent = count;
+            badge.hidden = !count;
+          })
+          .catch(function () { /* transient network error - next poll retries */ });
+      }, 5000);
+    })();
+  </script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

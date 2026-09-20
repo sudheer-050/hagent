@@ -143,6 +143,7 @@ def sync_scheduler_jobs(scheduler: BackgroundScheduler) -> int:
         monitor_minutes = 15
     from hagent.dispatcher import DISPATCH_INTERVAL_SECONDS, dispatch_pending
     from hagent.recovery import RECOVERY_INTERVAL_SECONDS, recover_interrupted_runs
+    from hagent.orchestration import IDLE_SWEEP_INTERVAL_SECONDS, requeue_idle_issues
 
     scheduler.add_job(
         recover_interrupted_runs,
@@ -172,7 +173,24 @@ def sync_scheduler_jobs(scheduler: BackgroundScheduler) -> int:
         max_instances=1,
         coalesce=True,
     )
+    scheduler.add_job(
+        _sweep_idle_issues,
+        trigger="interval",
+        seconds=IDLE_SWEEP_INTERVAL_SECONDS,
+        id="hagent-idle-issue-sweep",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
     return count
+
+
+def _sweep_idle_issues() -> list[str]:
+    from hagent.orchestration import reconcile_orphaned_issues, requeue_idle_issues
+
+    with get_session(scoped=False) as session:
+        reconcile_orphaned_issues(session)  # first: retire anything whose work was actually cancelled/rejected
+        return requeue_idle_issues(session)
 
 
 def find_webhook_trigger(token: str) -> AutopilotTrigger | None:

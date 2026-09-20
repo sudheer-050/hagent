@@ -17,7 +17,15 @@ from hagent.models import Base, Workspace
 from hagent.skill_icons import choose_skill_emoji
 from hagent.tenancy import WorkspaceSession
 
-DB_PATH = os.environ.get("HAGENT_DB_PATH", "hagent.db")
+# A bare relative default ("hagent.db") resolves against whatever directory the
+# *caller* happens to be in when they invoke the CLI, not this package's own
+# location - so running `hagent` from anywhere other than the repo root created
+# (or tried to create) an unrelated hagent.db there instead, failing outright
+# in a read-only or unwritable directory. Anchor to this package's own
+# checkout instead: for the common case (repo root == cwd) this resolves to
+# the exact same file as before, so it doesn't move or duplicate anyone's
+# existing database.
+DB_PATH = os.environ.get("HAGENT_DB_PATH", str(Path(__file__).resolve().parent.parent / "hagent.db"))
 DEFAULT_WORKSPACE_NAME = "default"
 CONFIG_PATH = Path(os.environ.get("HAGENT_CONFIG_PATH", str(Path.home() / ".hagent" / "config.json")))
 

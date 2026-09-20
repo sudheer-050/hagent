@@ -39,15 +39,74 @@
   (function () {
     var list = document.getElementById("chat-message-list");
     if (list) list.scrollTop = list.scrollHeight;
+
+    // Pulls in whatever the server now has for the message list and sidebar (an agent's
+    // reply, one it sent on its own via message_user, or one sent from another tab/device)
+    // without a full page reload. Never touches the composer, so it can't clobber typing.
+    function refresh() {
+      return fetch(window.location.href)
+        .then(function (r) { return r.text(); })
+        .then(function (html) {
+          var next = new DOMParser().parseFromString(html, "text/html");
+          var currentList = document.getElementById("chat-message-list");
+          var incomingList = next.getElementById("chat-message-list");
+          if (currentList && incomingList && currentList.innerHTML !== incomingList.innerHTML) {
+            var atBottom = currentList.scrollTop + currentList.clientHeight >= currentList.scrollHeight - 20;
+            currentList.innerHTML = incomingList.innerHTML;
+            if (atBottom) currentList.scrollTop = currentList.scrollHeight;
+          }
+          var currentSidebar = document.querySelector(".chat-sidebar");
+          var incomingSidebar = next.querySelector(".chat-sidebar");
+          if (currentSidebar && incomingSidebar && currentSidebar.innerHTML !== incomingSidebar.innerHTML) {
+            currentSidebar.innerHTML = incomingSidebar.innerHTML;
+          }
+        })
+        .catch(function () { /* transient network error - next poll retries */ });
+    }
+
+    // Sending an agent a message runs it synchronously server-side, which can take a while -
+    // a plain form POST would leave the page looking frozen with your typed text still sitting
+    // in the box the whole time. Submit it in the background instead: clear the box and show
+    // your message immediately, then refresh once the agent's turn actually finishes.
+    var composer = document.getElementById("chat-composer");
     var input = document.getElementById("chat-composer-input");
-    if (input) {
+    if (composer && input) {
+      var button = composer.querySelector("button[type=submit]");
+      composer.addEventListener("submit", function (e) {
+        e.preventDefault();
+        var text = input.value.trim();
+        if (!text || (button && button.disabled)) return;
+        input.value = "";
+        var bubble = document.createElement("div");
+        bubble.className = "chat-message from-user";
+        var content = document.createElement("div");
+        content.className = "chat-message-bubble";
+        content.textContent = text;
+        bubble.appendChild(content);
+        if (list) { list.appendChild(bubble); list.scrollTop = list.scrollHeight; }
+        if (button) { button.disabled = true; button.textContent = "Sending..."; }
+        var body = new FormData();
+        body.append("message", text);
+        fetch(composer.action, { method: "POST", body: body })
+          .then(refresh)
+          .catch(function () { /* the next poll will pick it up once it settles */ })
+          .then(function () {
+            if (button) { button.disabled = false; button.textContent = "Send"; }
+          });
+      });
       input.addEventListener("keydown", function (e) {
         if (e.key === "Enter" && !e.shiftKey) {
           e.preventDefault();
-          input.form.requestSubmit();
+          composer.requestSubmit();
         }
       });
     }
+
+    var POLL_MS = 4000;
+    function poll() {
+      refresh().then(function () { setTimeout(poll, POLL_MS); });
+    }
+    setTimeout(poll, POLL_MS);
   })();
 </script>
 {% endblock %}

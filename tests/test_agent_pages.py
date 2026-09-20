@@ -551,12 +551,16 @@ def test_runtimes_have_their_own_page(local_db):
 
 
 def test_runtime_form_saves_api_credentials_without_echoing_them(local_db):
+    # "openai" direct-API used to be a catalog entry; it was removed because it
+    # isn't a connectable provider in this environment (see runtime_catalog.py).
+    # This test now exercises the same credential-save/non-echo behavior through
+    # "openai_compatible", the still-supported generic entry, instead.
     client = TestClient(app)
     response = client.post(
         "/runtimes",
         data={
             "name": "OpenAI Primary",
-            "type": "openai",
+            "type": "openai_compatible",
             "model": "gpt-5.6",
             "api_key": "test-secret-key",
             "base_url": "https://example.test/v1/",
@@ -568,7 +572,7 @@ def test_runtime_form_saves_api_credentials_without_echoing_them(local_db):
         runtime = session.scalar(select(Runtime).where(Runtime.name == "OpenAI Primary"))
         config = json.loads(runtime.config_json)
         assert config == {
-            "provider_id": "openai",
+            "provider_id": "openai_compatible",
             "api_key": "test-secret-key",
             "api_key_env": "OPENAI_API_KEY",
             "base_url": "https://example.test/v1",
@@ -579,11 +583,22 @@ def test_runtime_form_saves_api_credentials_without_echoing_them(local_db):
     assert "API key saved" in page.text
     assert "test-secret-key" not in page.text
 
-def test_grok_provider_maps_to_openai_compatible_runtime(local_db):
+def test_custom_provider_maps_to_openai_compatible_runtime(local_db):
+    # "xai" used to be a dedicated catalog entry that quietly mapped down to the
+    # generic openai_compatible runtime type; it was removed as non-connectable
+    # in this environment. The behavior worth protecting - an arbitrary custom
+    # provider still lands on RuntimeType.OPENAI_COMPATIBLE with its own base
+    # URL and key - is exercised directly through "openai_compatible" here.
     client = TestClient(app)
     response = client.post(
         "/runtimes",
-        data={"name": "Grok", "type": "xai", "model": "grok-4.6", "api_key": "xai-secret"},
+        data={
+            "name": "Grok",
+            "type": "openai_compatible",
+            "model": "grok-4.6",
+            "api_key": "xai-secret",
+            "base_url": "https://api.x.ai/v1",
+        },
         follow_redirects=False,
     )
     assert response.status_code == 303
@@ -592,16 +607,16 @@ def test_grok_provider_maps_to_openai_compatible_runtime(local_db):
         config = json.loads(runtime.config_json)
         assert runtime.type == RuntimeType.OPENAI_COMPATIBLE
         assert runtime.model == "grok-4.6"
-        assert config["provider_id"] == "xai"
+        assert config["provider_id"] == "openai_compatible"
         assert config["base_url"] == "https://api.x.ai/v1"
-        assert config["api_key_env"] == "XAI_API_KEY"
+        assert config["api_key_env"] == "OPENAI_API_KEY"
 
 
 def test_runtime_page_has_scrollable_guided_dialog(local_db):
     response = TestClient(app).get("/runtimes")
 
     assert response.status_code == 200
-    assert "xAI Grok API" in response.text
+    assert "OpenRouter" in response.text
     assert "Codex CLI" in response.text
     assert "Claude Code" in response.text
     assert 'id="runtime-model-info"' in response.text
@@ -611,7 +626,7 @@ def test_runtime_can_be_edited_without_revealing_or_erasing_saved_key(local_db):
     client = TestClient(app)
     client.post(
         "/runtimes",
-        data={"name": "Grok", "type": "xai", "model": "grok-4.6", "api_key": "saved-secret"},
+        data={"name": "Grok", "type": "openai_compatible", "model": "grok-4.6", "api_key": "saved-secret"},
     )
     with db.get_session(scoped=False) as session:
         runtime_id = session.scalar(select(Runtime).where(Runtime.name == "Grok")).id
@@ -625,7 +640,7 @@ def test_runtime_can_be_edited_without_revealing_or_erasing_saved_key(local_db):
         f"/runtimes/{runtime_id}",
         data={
             "name": "Grok Research",
-            "type": "xai",
+            "type": "openai_compatible",
             "model": "grok-4.20-reasoning",
             "api_key": "",
             "base_url": "",
@@ -690,4 +705,31 @@ def test_agent_builder_drafts_instructions_with_selected_runtime(local_db, mocke
     assert response.status_code == 200
     assert response.json()["instructions"] == "You are a careful research assistant."
     assert "Research market trends" in run.call_args.args[0]
+
+
+def test_low_priority_cancelled_issues_fade_off_the_board_after_5_minutes(local_db):
+    from datetime import datetime, timedelta, timezone
+
+    from hagent.models import IssueStatus
+    from hagent.web import CANCELLED_FADE_SECONDS
+
+    with db.get_session(scoped=False) as session:
+        workspace = db.get_or_create_default_workspace(session)
+        project = Project(workspace_id=workspace.id, name="Fade project")
+        session.add(project)
+        session.flush()
+        stale_noise = Issue(project_id=project.id, title="Stale noise", status=IssueStatus.CANCELLED, priority="low")
+        fresh_noise = Issue(project_id=project.id, title="Fresh noise", status=IssueStatus.CANCELLED, priority="none")
+        important = Issue(project_id=project.id, title="Actually important", status=IssueStatus.CANCELLED, priority="high")
+        session.add_all([stale_noise, fresh_noise, important])
+        session.commit()
+        stale_noise.updated_at = datetime.now(timezone.utc) - timedelta(seconds=CANCELLED_FADE_SECONDS + 1)
+        session.commit()
+        project_id = project.id
+
+    page = TestClient(app).get(f"/projects/{project_id}")
+
+    assert "Stale noise" not in page.text
+    assert "Fresh noise" in page.text
+    assert "Actually important" in page.text
 

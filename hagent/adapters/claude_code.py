@@ -64,9 +64,16 @@ class ClaudeCodeRuntime(BaseRuntime):
                 # reliably picks the wrong (built-in) tool over ours. Naming our tools
                 # explicitly here is what makes ToolSearch actually find and load them.
                 args.extend(["--allowedTools", *[f"mcp__hagent__{tool['name']}" for tool in tools]])
-            # --print mode has no TTY to answer a permission prompt from, so any tool
-            # use (terminal or the MCP delegation bridge) has to skip the gate here.
-            if self.config.get("terminal_enabled") or mcp_config_path:
+            # --print mode has no TTY to answer a permission prompt from. Terminal-
+            # enabled agents need the full bypass (they're expected to run shell
+            # commands). Agents WITHOUT terminal access must not get it just because
+            # they were handed some other MCP tool (delegation, message_user, etc.) -
+            # --allowedTools above already pre-approves exactly those named tools
+            # without needing to also unlock Claude Code's own Read/Write/Edit/Bash
+            # tools. Skipping permissions here for every tool-bearing agent used to
+            # mean any agent, terminal-enabled or not, could write to whatever
+            # directory this process happened to be running in.
+            if self.config.get("terminal_enabled"):
                 args.append("--dangerously-skip-permissions")
             try:
                 completed = subprocess.run(

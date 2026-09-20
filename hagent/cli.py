@@ -14,7 +14,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 
 import click
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from hagent.db import get_active_workspace, get_or_create_default_workspace, get_session, init_db, set_active_workspace
 from hagent.engine import run_issue as engine_run_issue
@@ -1051,6 +1051,70 @@ def issue_cancel_task(issue_id):
         from hagent.engine import cancel_issue
         count = cancel_issue(s, item)
         click.echo(f"Cancelled {count} running task(s)")
+
+
+@issue.command("approve")
+@click.argument("issue_id")
+def issue_approve(issue_id):
+    """Approve this issue's run that's waiting on require_run_approval, then execute it
+    now. Mirrors the web UI's Approve button - previously the only way to clear this
+    gate was a manual POST to /issues/{id}/runs/{id}/approve."""
+    with get_session() as s:
+        item = s.get(Issue, issue_id)
+        if not item:
+            raise click.ClickException("Issue not found")
+        run = s.scalar(
+            select(Run)
+            .where(Run.issue_id == issue_id, Run.status == RunStatus.WAITING_APPROVAL)
+            .order_by(Run.created_at.desc())
+        )
+        if not run:
+            raise click.ClickException("No run on this issue is waiting for approval")
+        changed = s.execute(
+            update(Run).where(Run.id == run.id, Run.status == RunStatus.WAITING_APPROVAL).values(status=RunStatus.PENDING),
+            execution_options={"synchronize_session": False},
+        ).rowcount
+        if not changed:
+            raise click.ClickException("This run is no longer waiting for approval")
+        item.status = IssueStatus.IN_PROGRESS
+        s.add(TimelineEvent(issue_id=item.id, event_type="run_approved", detail=f"Run approved for agent {run.agent.name}"))
+        s.commit()
+        s.refresh(run)
+        agent = s.get(Agent, run.agent_id)
+        run = engine_run_issue(s, item, agent, _run=run)
+        click.echo(f"status: {run.status.value}")
+        if run.output:
+            click.echo(f"output: {run.output}")
+        if run.error:
+            click.echo(f"error: {run.error}")
+
+
+@issue.command("reject")
+@click.argument("issue_id")
+def issue_reject(issue_id):
+    """Reject this issue's run that's waiting on require_run_approval."""
+    with get_session() as s:
+        item = s.get(Issue, issue_id)
+        if not item:
+            raise click.ClickException("Issue not found")
+        run = s.scalar(
+            select(Run)
+            .where(Run.issue_id == issue_id, Run.status == RunStatus.WAITING_APPROVAL)
+            .order_by(Run.created_at.desc())
+        )
+        if not run:
+            raise click.ClickException("No run on this issue is waiting for approval")
+        changed = s.execute(
+            update(Run).where(Run.id == run.id, Run.status == RunStatus.WAITING_APPROVAL).values(
+                status=RunStatus.REJECTED, error="rejected by user", finished_at=datetime.now(timezone.utc)
+            ),
+            execution_options={"synchronize_session": False},
+        ).rowcount
+        if not changed:
+            raise click.ClickException("This run is no longer waiting for approval")
+        s.add(TimelineEvent(issue_id=item.id, event_type="run_rejected", detail=f"Run rejected for agent {run.agent.name}"))
+        s.commit()
+        click.echo("rejected")
 
 
 @issue.command("timeline")

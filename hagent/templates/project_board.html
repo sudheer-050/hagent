@@ -21,13 +21,24 @@
         {% for l in i.labels %}<span class="label-chip" style="background:{{ l.color }}">{{ l.name }}</span>{% endfor %}
         {% if i.assignee %}<span class="chip">{{ i.assignee.name }}</span>{% endif %}
       </div>
+      {% if i.status.value == 'in_review' %}
+      <div class="inline status-review-actions">
+        <form method="post" action="/issues/{{ i.id }}/review/approve">
+          <button type="submit" class="primary">Approve</button>
+        </form>
+        <form method="post" action="/issues/{{ i.id }}/review/reject">
+          <button type="submit" class="ghost">Send back</button>
+        </form>
+      </div>
+      {% else %}
       <form class="inline status-form" method="post" action="/issues/{{ i.id }}/status">
         <select name="status" onchange="this.form.submit()">
-          {% for s2 in statuses %}
+          {% for s2 in statuses if s2.value != 'in_review' %}
           <option value="{{ s2.value }}" {{ 'selected' if s2 == i.status }}>{{ s2.value.replace('_',' ').title() }}</option>
           {% endfor %}
         </select>
       </form>
+      {% endif %}
     </div>
     {% else %}
     <div class="column-empty">No issues</div>

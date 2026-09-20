@@ -147,4 +147,29 @@
 
 <h3>Timeline</h3>
 {% for event in issue.timeline %}<p class="faint">{{ event.created_at }} &mdash; <strong>{{ event.event_type }}</strong>: {{ event.detail }}</p>{% else %}<p class="faint">No timeline events yet.</p>{% endfor %}
+
+{% set active_statuses = ['pending', 'running', 'waiting_approval'] %}
+{% if issue.runs | selectattr('status.value', 'in', active_statuses) | list %}
+<script>
+  // A run on this issue is still in flight (pending/running/waiting_approval).
+  // Poll this same page and swap in the refreshed content so status, output,
+  // and the timeline update on their own instead of requiring a manual reload.
+  // Stops automatically once no run is left in an active state (checked again
+  // after every reload, since the condition above is re-evaluated server-side).
+  (function () {
+    var POLL_MS = 4000;
+    setTimeout(function () {
+      fetch(window.location.href)
+        .then(function (r) { return r.text(); })
+        .then(function (html) {
+          var next = new DOMParser().parseFromString(html, "text/html");
+          var current = document.querySelector(".main");
+          var incoming = next.querySelector(".main");
+          if (current && incoming) current.innerHTML = incoming.innerHTML;
+        })
+        .catch(function () { /* transient network error - next poll will retry */ });
+    }, POLL_MS);
+  })();
+</script>
+{% endif %}
 {% endblock %}
