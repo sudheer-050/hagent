@@ -143,7 +143,7 @@ def sync_scheduler_jobs(scheduler: BackgroundScheduler) -> int:
         monitor_minutes = 15
     from hagent.dispatcher import DISPATCH_INTERVAL_SECONDS, dispatch_pending
     from hagent.recovery import RECOVERY_INTERVAL_SECONDS, recover_interrupted_runs
-    from hagent.orchestration import IDLE_SWEEP_INTERVAL_SECONDS, requeue_idle_issues
+    from hagent.orchestration import IDLE_SWEEP_INTERVAL_SECONDS
 
     scheduler.add_job(
         recover_interrupted_runs,

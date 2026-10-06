@@ -1,7 +1,7 @@
 """FastAPI + Jinja2 web dashboard: full kanban issue-tracker UI mirroring Multica's noun set."""
 
 from pathlib import Path
-from urllib.parse import quote, urlparse
+from urllib.parse import quote
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 import asyncio
@@ -10,7 +10,7 @@ import os
 import re
 import shutil
 
-from fastapi import BackgroundTasks, FastAPI, Form, Request, HTTPException, UploadFile, File, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, FastAPI, Form, Request, HTTPException, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 import httpx
 import click
@@ -22,10 +22,10 @@ from hagent.auth import AuthMiddleware, router as auth_router
 from hagent.remote_api import router as remote_api_router
 from hagent.worker_api import router as worker_api_router
 from hagent.triggers import configure as configure_trigger
-from hagent.engine import cancel_issue, execute_agent, mark_agent_skills_used
+from hagent.engine import cancel_issue, execute_agent
 from hagent.agent_avatars import agent_avatar_url
 from hagent.adapters import get_runtime_class
-from fastapi.responses import RedirectResponse, JSONResponse, HTMLResponse, FileResponse, StreamingResponse
+from fastapi.responses import RedirectResponse, JSONResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 from jinja2 import pass_context
 from starlette.concurrency import run_in_threadpool
@@ -38,7 +38,6 @@ from hagent.models import (
     Attachment,
     IssueMetadata,
     IssueSubscriber,
-    SquadActivity,
     Agent,
     Autopilot,
     AutopilotRun,
@@ -57,7 +56,6 @@ from hagent.models import (
     RunStatus,
     Runtime,
     Skill,
-    SkillLesson,
     Squad,
     SquadMember,
     TimelineEvent,
