@@ -530,72 +530,17 @@ def execute_agent(
     """
     original_prompt = prompt
     session = object_session(agent)
-    primary = agent.runtime
-    memory_service = None
-    memory_session_id = None
-    memory_strict = False
-    routing = None
     route_started = time.monotonic()
+    primary, routing = _route_primary_runtime(session, agent, original_prompt, routing_override, routing_run_id, delegation_path, memory_project_id)
+    memory_service, memory_session_id, memory_strict, prompt = (None, None, False, original_prompt)
     if session is not None:
-        try:
-            router = ModelRouter(session, agent.workspace_id, memory_project_id)
-            routing = router.route(original_prompt, default_runtime=agent.runtime,
-                override=routing_override, run_id=routing_run_id,
-                tool_depth=len(delegation_path or ()), persist=True)
-            primary = session.get(Runtime, routing["runtime_id"])
-            if primary is None:
-                raise RuntimeError("Selected routing runtime is unavailable")
-        except Exception as exc:
-            policy = ModelRouter(session, agent.workspace_id, memory_project_id).policy()
-            if policy is not None:
-                raise
-            log.warning("Model routing unavailable; using the agent runtime: %s", type(exc).__name__)
-            primary = agent.runtime
-        try:
-            owner = memory_user_id
-            if not owner:
-                profile = session.scalar(select(UserProfile))
-                owner = profile.id if profile else "local-user"
-            memory_service = MemoryService(session, MemoryScope(
-                workspace_id=agent.workspace_id, user_id=owner,
-                project_id=memory_project_id, agent_id=agent.id,
-                provider=primary.type.value))
-            memory_strict = memory_service.settings().strict_mode
-            started = memory_service.start_session(task=original_prompt, client=memory_client,
-                metadata=memory_task_metadata or {})
-            memory_session_id = started.get("session_id")
-            if routing and memory_session_id:
-                decision_row = session.get(RoutingDecision, routing["id"])
-                if decision_row:
-                    decision_row.memory_session_id = memory_session_id
-                    session.commit()
-            if memory_session_id:
-                memory_service.record_event(memory_session_id, role="user", content=original_prompt)
-            prompt = original_prompt + context_as_prompt(started.get("context") or {})
-        except Exception as exc:
-            log.warning("Memory start/context unavailable; continuing without memory: %s", type(exc).__name__)
-            if memory_strict: raise
-            memory_service = None
-            memory_session_id = None
-            prompt = original_prompt
+        memory_service, memory_session_id, memory_strict, prompt = _start_memory_session(
+            session, agent, memory_user_id, memory_project_id, primary, original_prompt,
+            memory_client, memory_task_metadata, routing)
     delegation_path = delegation_path or (agent.id,)
     if delegation_budget is None:
         delegation_budget = {"limit": max(0, min(50, int(getattr(agent, "delegation_limit", 8)))), "used": 0}
-    if backup_runtime is None and getattr(agent, "backup_runtime_id", None):
-        if session is not None:
-            backup_runtime = session.get(Runtime, agent.backup_runtime_id)
-    failback_runtime = None
-    if getattr(agent, "failback_runtime_id", None) and session is not None:
-        failback_runtime = session.get(Runtime, agent.failback_runtime_id)
-    if routing and session is not None:
-        policy = ModelRouter(session, agent.workspace_id, memory_project_id).policy()
-        if routing.get("fallback"):
-            fallback_runtime = session.get(Runtime, routing["fallback"][0]["runtime_id"])
-            if fallback_runtime is not None:
-                backup_runtime = fallback_runtime
-        elif policy is not None and policy.max_cost_usd is not None:
-            # A configured spend cap forbids an unpriced or more-expensive silent fallback.
-            backup_runtime = None
+    backup_runtime, failback_runtime = _resolve_backup_and_failback(session, agent, backup_runtime, routing, memory_project_id)
     route_config = {
         "model": routing.get("model") if routing else None,
         "effort": routing.get("provider_effort") if routing else None,
@@ -625,6 +570,102 @@ def execute_agent(
             except Exception as exc:
                 log.warning("Memory session finalization failed: %s", type(exc).__name__)
                 if memory_strict: raise
+
+    return _run_with_failover(agent, primary, backup_runtime, failback_runtime, prompt, cancelled, record_tool,
+        delegation_path, resolve_backup_runtime, delegation_budget, record_skill_use,
+        working_directory_override, resume_session_id, route_config, routing, history, images,
+        record_failover, finish_observers)
+
+
+def _route_primary_runtime(session, agent, original_prompt, routing_override, routing_run_id, delegation_path, memory_project_id):
+    """Pick the runtime this turn actually executes on: the router's choice, falling back to
+    the agent's own configured runtime when routing itself is unavailable or unconfigured.
+    """
+    if session is None:
+        return agent.runtime, None
+    try:
+        router = ModelRouter(session, agent.workspace_id, memory_project_id)
+        routing = router.route(original_prompt, default_runtime=agent.runtime,
+            override=routing_override, run_id=routing_run_id,
+            tool_depth=len(delegation_path or ()), persist=True)
+        primary = session.get(Runtime, routing["runtime_id"])
+        if primary is None:
+            raise RuntimeError("Selected routing runtime is unavailable")
+        return primary, routing
+    except Exception as exc:
+        policy = ModelRouter(session, agent.workspace_id, memory_project_id).policy()
+        if policy is not None:
+            raise
+        log.warning("Model routing unavailable; using the agent runtime: %s", type(exc).__name__)
+        return agent.runtime, None
+
+
+def _start_memory_session(session, agent, memory_user_id, memory_project_id, primary, original_prompt,
+                          memory_client, memory_task_metadata, routing):
+    """Start this turn's memory session and return (memory_service, memory_session_id,
+    memory_strict, prompt). Falls back to (None, None, memory_strict, original_prompt) when
+    memory is unavailable, unless strict mode demands the failure propagate instead.
+    """
+    memory_strict = False
+    try:
+        owner = memory_user_id
+        if not owner:
+            profile = session.scalar(select(UserProfile))
+            owner = profile.id if profile else "local-user"
+        memory_service = MemoryService(session, MemoryScope(
+            workspace_id=agent.workspace_id, user_id=owner,
+            project_id=memory_project_id, agent_id=agent.id,
+            provider=primary.type.value))
+        memory_strict = memory_service.settings().strict_mode
+        started = memory_service.start_session(task=original_prompt, client=memory_client,
+            metadata=memory_task_metadata or {})
+        memory_session_id = started.get("session_id")
+        if routing and memory_session_id:
+            decision_row = session.get(RoutingDecision, routing["id"])
+            if decision_row:
+                decision_row.memory_session_id = memory_session_id
+                session.commit()
+        if memory_session_id:
+            memory_service.record_event(memory_session_id, role="user", content=original_prompt)
+        prompt = original_prompt + context_as_prompt(started.get("context") or {})
+        return memory_service, memory_session_id, memory_strict, prompt
+    except Exception as exc:
+        log.warning("Memory start/context unavailable; continuing without memory: %s", type(exc).__name__)
+        if memory_strict: raise
+        return None, None, memory_strict, original_prompt
+
+
+def _resolve_backup_and_failback(session, agent, backup_runtime, routing, memory_project_id):
+    """Return (backup_runtime, failback_runtime) accounting for the agent's configured
+    backup/failback, the router's own fallback choice, and any configured spend cap that
+    forbids an unpriced or more-expensive silent fallback.
+    """
+    if backup_runtime is None and getattr(agent, "backup_runtime_id", None) and session is not None:
+        backup_runtime = session.get(Runtime, agent.backup_runtime_id)
+    failback_runtime = None
+    if getattr(agent, "failback_runtime_id", None) and session is not None:
+        failback_runtime = session.get(Runtime, agent.failback_runtime_id)
+    if routing and session is not None:
+        policy = ModelRouter(session, agent.workspace_id, memory_project_id).policy()
+        if routing.get("fallback"):
+            fallback_runtime = session.get(Runtime, routing["fallback"][0]["runtime_id"])
+            if fallback_runtime is not None:
+                backup_runtime = fallback_runtime
+        elif policy is not None and policy.max_cost_usd is not None:
+            backup_runtime = None
+    return backup_runtime, failback_runtime
+
+
+def _run_with_failover(agent, primary, backup_runtime, failback_runtime, prompt, cancelled, record_tool,
+                       delegation_path, resolve_backup_runtime, delegation_budget, record_skill_use,
+                       working_directory_override, resume_session_id, route_config, routing, history, images,
+                       record_failover, finish_observers):
+    """Execute on the primary runtime, falling back to backup then failback runtimes on error.
+
+    Failover happens only when execution raises an exception. A normal model response, even an
+    imperfect one, is returned without launching a second paid request. Cancellation never
+    starts a backup run.
+    """
     try:
         result = _execute_with_runtime(agent, primary, prompt, cancelled, record_tool,
             delegation_path, resolve_backup_runtime, delegation_budget, record_skill_use,
@@ -646,66 +687,75 @@ def execute_agent(
             raise RuntimeError("Configured backup runtime is archived") from primary_error
         if record_failover:
             record_failover(primary, backup_runtime, primary_error)
-        try:
-            fallback_config = None
-            if routing and routing.get("fallback") and backup_runtime.id == routing["fallback"][0]["runtime_id"]:
-                fallback_route = routing["fallback"][0]
-                fallback_config = {
-                    "model": fallback_route.get("model"),
-                    "effort": fallback_route.get("provider_effort"),
-                    "output_limit": routing.get("output_limit"),
-                    "timeout": routing.get("timeout_seconds"),
-                }
-            result = _execute_with_runtime(agent, backup_runtime, prompt, cancelled, record_tool,
-                delegation_path, resolve_backup_runtime, delegation_budget, record_skill_use,
-                working_directory_override, route_config=fallback_config, history=history, images=images)
-            result.runtime_id = backup_runtime.id
-            if record_skill_use:
-                record_skill_use(agent)
-            finish_observers(result=result, outcome="fallback_completed")
-            return result
-        except Exception as backup_error:
-            # If the primary recovered a resumable session id before failing, don't
-            # lose it just because the backup also failed - a future retry on the
-            # primary runtime can still pick up from that checkpoint.
-            recovered_session_id = getattr(primary_error, "session_id", None)
-            if (
-                failback_runtime
-                and not _is_cancellation(backup_error, cancelled)
-                and failback_runtime.workspace_id == agent.workspace_id
-                and not failback_runtime.archived
-            ):
-                if record_failover:
-                    record_failover(backup_runtime, failback_runtime, backup_error)
-                try:
-                    result = _execute_with_runtime(agent, failback_runtime, prompt, cancelled, record_tool,
-                        delegation_path, resolve_backup_runtime, delegation_budget, record_skill_use,
-                        working_directory_override, history=history, images=images)
-                    result.runtime_id = failback_runtime.id
-                    if record_skill_use:
-                        record_skill_use(agent)
-                    finish_observers(result=result, outcome="failback_completed")
-                    return result
-                except Exception as failback_error:
-                    combined = ResumableError(
-                        f"Primary runtime {primary.name} failed: {primary_error}; "
-                        f"backup runtime {backup_runtime.name} failed: {backup_error}; "
-                        f"failback runtime {failback_runtime.name} failed: {failback_error}",
-                        session_id=recovered_session_id,
-                    )
-                    finish_observers(error=combined)
-                    raise combined from failback_error
-            combined = ResumableError(
-                f"Primary runtime {primary.name} failed: {primary_error}; "
-                f"backup runtime {backup_runtime.name} failed: {backup_error}",
-                session_id=recovered_session_id,
-            )
-            finish_observers(error=combined)
-            raise combined from backup_error
+        return _try_backup_then_failback(agent, primary, primary_error, backup_runtime, failback_runtime, prompt,
+            cancelled, record_tool, delegation_path, resolve_backup_runtime, delegation_budget, record_skill_use,
+            working_directory_override, route_config, routing, history, images, record_failover, finish_observers)
     if record_skill_use:
         record_skill_use(agent)
     finish_observers(result=result)
     return result
+
+
+def _try_backup_then_failback(agent, primary, primary_error, backup_runtime, failback_runtime, prompt, cancelled,
+                              record_tool, delegation_path, resolve_backup_runtime, delegation_budget,
+                              record_skill_use, working_directory_override, route_config, routing, history, images,
+                              record_failover, finish_observers):
+    try:
+        fallback_config = None
+        if routing and routing.get("fallback") and backup_runtime.id == routing["fallback"][0]["runtime_id"]:
+            fallback_route = routing["fallback"][0]
+            fallback_config = {
+                "model": fallback_route.get("model"),
+                "effort": fallback_route.get("provider_effort"),
+                "output_limit": routing.get("output_limit"),
+                "timeout": routing.get("timeout_seconds"),
+            }
+        result = _execute_with_runtime(agent, backup_runtime, prompt, cancelled, record_tool,
+            delegation_path, resolve_backup_runtime, delegation_budget, record_skill_use,
+            working_directory_override, route_config=fallback_config, history=history, images=images)
+        result.runtime_id = backup_runtime.id
+        if record_skill_use:
+            record_skill_use(agent)
+        finish_observers(result=result, outcome="fallback_completed")
+        return result
+    except Exception as backup_error:
+        # If the primary recovered a resumable session id before failing, don't
+        # lose it just because the backup also failed - a future retry on the
+        # primary runtime can still pick up from that checkpoint.
+        recovered_session_id = getattr(primary_error, "session_id", None)
+        if (
+            failback_runtime
+            and not _is_cancellation(backup_error, cancelled)
+            and failback_runtime.workspace_id == agent.workspace_id
+            and not failback_runtime.archived
+        ):
+            if record_failover:
+                record_failover(backup_runtime, failback_runtime, backup_error)
+            try:
+                result = _execute_with_runtime(agent, failback_runtime, prompt, cancelled, record_tool,
+                    delegation_path, resolve_backup_runtime, delegation_budget, record_skill_use,
+                    working_directory_override, history=history, images=images)
+                result.runtime_id = failback_runtime.id
+                if record_skill_use:
+                    record_skill_use(agent)
+                finish_observers(result=result, outcome="failback_completed")
+                return result
+            except Exception as failback_error:
+                combined = ResumableError(
+                    f"Primary runtime {primary.name} failed: {primary_error}; "
+                    f"backup runtime {backup_runtime.name} failed: {backup_error}; "
+                    f"failback runtime {failback_runtime.name} failed: {failback_error}",
+                    session_id=recovered_session_id,
+                )
+                finish_observers(error=combined)
+                raise combined from failback_error
+        combined = ResumableError(
+            f"Primary runtime {primary.name} failed: {primary_error}; "
+            f"backup runtime {backup_runtime.name} failed: {backup_error}",
+            session_id=recovered_session_id,
+        )
+        finish_observers(error=combined)
+        raise combined from backup_error
 
 
 def _is_cancellation(error, cancelled):
@@ -714,10 +764,183 @@ def _is_cancellation(error, cancelled):
     return bool(cancelled and cancelled())
 
 
-def _execute_with_runtime(agent, runtime, prompt, cancelled, record_tool, delegation_path=(), resolve_backup_runtime=None, delegation_budget=None, record_skill_use=None, working_directory_override=None, resume_session_id=None, route_config=None, history=None, images=None):
-    runtime_cls = get_runtime_class(runtime.type)
+def _append_tool(tools, runtime_type, name, description, schema):
+    """Append one tool definition in whichever wire shape this runtime's adapter expects.
+
+    See _CLAUDE_SHAPED_RUNTIMES above for why there are only these two shapes.
+    """
+    if str(runtime_type) in _CLAUDE_SHAPED_RUNTIMES:
+        tools.append({"name": name, "description": description, "input_schema": schema})
+    else:
+        tools.append({"type": "function", "function": {"name": name, "description": description, "parameters": schema}})
+
+
+def _tool_terminal_execute(agent, arguments, effective_working_directory, record_tool):
+    result = run_agent_command(
+        agent,
+        arguments.get("command", ""),
+        arguments.get("timeout", 120),
+        working_directory_override=effective_working_directory,
+    )
+    if record_tool:
+        record_tool("terminal_execute", arguments, result)
+    return result
+
+
+def _tool_message_user(agent, arguments, record_tool):
+    text = str(arguments.get("message", "")).strip()
+    if not text:
+        raise ValueError("Message to the workspace owner cannot be empty")
+    sess = object_session(agent)
+    result = "Message sent to the workspace owner."
+    if sess is not None:
+        thread = sess.scalars(select(ChatThread).where(ChatThread.agent_id == agent.id)).first()
+        if thread is None:
+            thread = ChatThread(workspace_id=agent.workspace_id, agent_id=agent.id)
+            sess.add(thread)
+            sess.flush()
+        sess.add(ChatMessage(thread_id=thread.id, role="agent", content=text))
+        thread.unread = True
+        sess.commit()
+    else:
+        result = "Could not deliver the message - no active database session."
+    if record_tool:
+        record_tool("message_user", arguments, result)
+    return result
+
+
+def _tool_remember_about_user(agent, runtime, arguments, record_tool):
+    text = str(arguments.get("content", "")).strip()
+    if not text:
+        raise ValueError("Fact to remember cannot be empty")
+    category = arguments.get("category")
+    if category not in {"user_profile", "preference", "project_fact", "decision"}:
+        category = "user_profile"
+    sess = object_session(agent)
+    if sess is None:
+        result = "Could not save this - no active database session."
+    else:
+        profile = sess.scalar(select(UserProfile))
+        owner_id = profile.id if profile else "local-user"
+        try:
+            memory = MemoryService(sess, MemoryScope(
+                workspace_id=agent.workspace_id, user_id=owner_id,
+                agent_id=agent.id, provider=str(runtime.type.value)))
+            memory.remember(text, category=category, origin_type="user_stated",
+                verification_status="user_stated", confidence=0.85, source_agent=agent.name)
+            result = "Remembered."
+        except Exception as exc:
+            result = f"Could not save this memory: {exc}"
+    if record_tool:
+        record_tool("remember_about_user", arguments, result)
+    return result
+
+
+def _tool_recall_lessons(agent, arguments, record_tool):
+    skill_name = str(arguments.get("skill_name", "")).strip()
+    match = next((s for s in agent.skills if s.name == skill_name), None)
+    if not match:
+        result = f'No skill named "{skill_name}" on this agent.'
+    else:
+        # The full history is retained with the skill (DB row + mirror file for
+        # export/browsing), but a single tool call only returns the most recent
+        # MAX_LESSONS_PER_SKILL - bounded token cost even for a skill with a
+        # long history, same guarantee as the old always-on injection had.
+        sess = object_session(agent)
+        recent = sess.scalars(
+            select(SkillLesson).where(SkillLesson.skill_id == match.id)
+            .order_by(SkillLesson.created_at.desc()).limit(MAX_LESSONS_PER_SKILL)
+        ).all() if sess else []
+        if not recent:
+            result = "No lessons on file for this skill yet."
+        else:
+            lines = [f"- ({lesson.created_at.strftime('%Y-%m-%d')}) {lesson.text}" for lesson in reversed(recent)]
+            total = match.improvement_count
+            header = f"Most recent {len(recent)} of {total} lesson(s) on file:\n" if total > len(recent) else ""
+            result = header + "\n".join(lines)
+    if record_tool:
+        record_tool("recall_lessons", arguments, result[:2000])
+    return result
+
+
+def _tool_delegate(agent, teammate, arguments, *, cancelled, delegation_budget, resolve_backup_runtime,
+                   record_skill_use, record_tool, delegation_path, effective_working_directory):
+    task = str(arguments.get("task", "")).strip()
+    if not task:
+        raise ValueError("Delegated task cannot be empty")
+    if teammate.require_run_approval:
+        message = f"{teammate.name} requires manual run approval; create an issue assigned to that agent instead of delegating around the approval gate."
+        if record_tool:
+            record_tool(f"delegation_blocked:{teammate.name}", {"task": task}, message)
+        return message
+    if delegation_budget["used"] >= delegation_budget["limit"]:
+        message = f"Delegation limit ({delegation_budget['limit']}) reached; no additional specialist call was started."
+        if record_tool:
+            record_tool(f"delegation_budget_exhausted:{teammate.name}", {"task": task}, message)
+        raise DelegationLimitExceeded(message)
+    delegation_budget["used"] += 1
+    if cancelled and cancelled():
+        raise RuntimeError("Run cancelled")
+    if teammate.runtime.workspace_id != agent.workspace_id:
+        raise ValueError("Squad teammate runtime crosses workspaces")
+    delegated_prompt = f"Delegated by {agent.name}. Complete this focused task and return concise findings or results:\n\n{task}"
+    delegated_backup = resolve_backup_runtime(teammate) if resolve_backup_runtime else None
+    if record_tool:
+        record_tool(f"delegation_started:{teammate.name}", {"task": task}, "")
+    start_delegation(agent.id, teammate.id)
+    try:
+        result = execute_agent(
+            teammate,
+            delegated_prompt,
+            cancelled=cancelled,
+            record_tool=record_tool,
+            backup_runtime=delegated_backup,
+            resolve_backup_runtime=resolve_backup_runtime,
+            delegation_path=(*delegation_path, teammate.id),
+            delegation_budget=delegation_budget,
+            record_skill_use=record_skill_use,
+            working_directory_override=effective_working_directory,
+        )
+    except Exception as exc:
+        if record_tool:
+            record_tool(f"delegation_failed:{teammate.name}", {"task": task}, str(exc))
+        raise
+    finally:
+        end_delegation(agent.id)
+    output = result.output or "The delegated agent returned an empty response."
+    if record_tool:
+        record_tool(f"delegation:{teammate.name}", {"task": task}, output)
+    return output
+
+
+def _tool_status_lookup(agent, teammate, arguments, record_tool):
+    sess = object_session(agent)
+    active_issue = sess.scalars(
+        select(Issue)
+        .where(Issue.assignee_agent_id == teammate.id, Issue.status.in_([IssueStatus.IN_PROGRESS, IssueStatus.IN_REVIEW]))
+        .order_by(Issue.updated_at.desc())
+    ).first()
+    if active_issue:
+        result = f'{teammate.name} is currently on "{active_issue.title}" (status: {active_issue.status.value}).'
+    else:
+        latest_run = sess.scalars(
+            select(Run).where(Run.agent_id == teammate.id).order_by(Run.created_at.desc())
+        ).first()
+        if latest_run:
+            when = latest_run.finished_at or latest_run.started_at or latest_run.created_at
+            result = (
+                f"{teammate.name} has no active issue right now. Most recent run: "
+                f'"{latest_run.issue.title}" ({latest_run.status.value}), {when}.'
+            )
+        else:
+            result = f"{teammate.name} has no recorded work yet."
+    if record_tool:
+        record_tool(f"status_{teammate.id.replace('-', '')}", arguments, result)
+    return result
+
+
+def _build_adapter_config(agent, runtime, effective_working_directory, resume_session_id, route_config):
     config = json.loads(runtime.config_json or "{}")
-    effective_working_directory = working_directory_override or getattr(agent, "terminal_working_directory", None)
     if getattr(agent, "terminal_enabled", False):
         config["terminal_enabled"] = True
         if effective_working_directory:
@@ -734,21 +957,30 @@ def _execute_with_runtime(agent, runtime, prompt, cancelled, record_tool, delega
         config["working_directory"] = tempfile.mkdtemp(prefix="hagent-sandbox-")
     if resume_session_id:
         config["resume_session_id"] = resume_session_id
-    route_config = route_config or {}
     if route_config.get("effort"):
         config["reasoning_effort"] = route_config["effort"]
     if route_config.get("output_limit"):
         config["max_tokens"] = route_config["output_limit"]
     if route_config.get("timeout"):
         config["timeout"] = route_config["timeout"]
+    return config
+
+
+def _build_adapter(runtime, config, route_config):
+    model = route_config.get("model") or runtime.model
     if config.get("worker"):
         # This runtime lives on another device: hand the call to that worker's queue.
         from hagent.adapters.remote_worker import RemoteWorkerRuntime
 
-        adapter = RemoteWorkerRuntime(model=route_config.get("model") or runtime.model, config=config, runtime_type=runtime.type.value)
-    else:
-        adapter = runtime_cls(model=route_config.get("model") or runtime.model, config=config)
+        return RemoteWorkerRuntime(model=model, config=config, runtime_type=runtime.type.value)
+    runtime_cls = get_runtime_class(runtime.type)
+    return runtime_cls(model=model, config=config)
 
+
+def _build_agent_tools(agent, runtime, delegation_path, delegation_budget):
+    """Build the tool definitions (in whichever wire shape this runtime expects) and the
+    lookup tables execute_tool() uses to dispatch a call back to the right handler.
+    """
     tools = []
     executors = {}
     delegates = {}
@@ -763,10 +995,7 @@ def _execute_with_runtime(agent, runtime, prompt, cancelled, record_tool, delega
             "required": ["command"],
         }
         description = "Execute a PowerShell command in this agent's configured working directory. Returns exit code, stdout, and stderr."
-        if str(runtime.type.value) in _CLAUDE_SHAPED_RUNTIMES:
-            tools.append({"name": "terminal_execute", "description": description, "input_schema": schema})
-        else:
-            tools.append({"type": "function", "function": {"name": "terminal_execute", "description": description, "parameters": schema}})
+        _append_tool(tools, runtime.type.value, "terminal_execute", description, schema)
         executors["terminal_execute"] = None
 
     # Every agent can text the workspace owner directly - for a question, a
@@ -784,10 +1013,7 @@ def _execute_with_runtime(agent, runtime, prompt, cancelled, record_tool, delega
         "you're blocked on a decision only the owner can make. Do not use this for run-approval gates; those "
         "are handled separately and automatically."
     )
-    if str(runtime.type.value) in _CLAUDE_SHAPED_RUNTIMES:
-        tools.append({"name": "message_user", "description": message_user_description, "input_schema": message_user_schema})
-    else:
-        tools.append({"type": "function", "function": {"name": "message_user", "description": message_user_description, "parameters": message_user_schema}})
+    _append_tool(tools, runtime.type.value, "message_user", message_user_description, message_user_schema)
     executors["message_user"] = None
 
     # Every agent can save a durable fact straight into the same memory store
@@ -813,10 +1039,7 @@ def _execute_with_runtime(agent, runtime, prompt, cancelled, record_tool, delega
         "future conversation with any agent can recall it - not just this one. Use it for things actually "
         "worth remembering long-term, not routine task output. Overusing this defeats the point."
     )
-    if str(runtime.type.value) in _CLAUDE_SHAPED_RUNTIMES:
-        tools.append({"name": "remember_about_user", "description": remember_description, "input_schema": remember_schema})
-    else:
-        tools.append({"type": "function", "function": {"name": "remember_about_user", "description": remember_description, "parameters": remember_schema}})
+    _append_tool(tools, runtime.type.value, "remember_about_user", remember_description, remember_schema)
     executors["remember_about_user"] = None
 
     # Full lesson history per skill lives on disk (see _skill_notes_path), not in
@@ -837,10 +1060,7 @@ def _execute_with_runtime(agent, runtime, prompt, cancelled, record_tool, delega
             "before relying on a skill for a task that looks similar to something that has failed before - not on "
             "every task."
         )
-        if str(runtime.type.value) in _CLAUDE_SHAPED_RUNTIMES:
-            tools.append({"name": "recall_lessons", "description": recall_description, "input_schema": recall_schema})
-        else:
-            tools.append({"type": "function", "function": {"name": "recall_lessons", "description": recall_description, "parameters": recall_schema}})
+        _append_tool(tools, runtime.type.value, "recall_lessons", recall_description, recall_schema)
         executors["recall_lessons"] = None
 
     # A squad is an executable team: expose each eligible colleague as a
@@ -874,10 +1094,7 @@ def _execute_with_runtime(agent, runtime, prompt, cancelled, record_tool, delega
                 "properties": {"task": {"type": "string", "description": "The complete, focused task for the teammate"}},
                 "required": ["task"],
             }
-            if str(runtime.type.value) in _CLAUDE_SHAPED_RUNTIMES:
-                tools.append({"name": tool_name, "description": description, "input_schema": schema})
-            else:
-                tools.append({"type": "function", "function": {"name": tool_name, "description": description, "parameters": schema}})
+            _append_tool(tools, runtime.type.value, tool_name, description, schema)
             delegates[tool_name] = teammate
 
             # A live read, not a delegation: answers "what is X doing right now" from
@@ -893,10 +1110,7 @@ def _execute_with_runtime(agent, runtime, prompt, cancelled, record_tool, delega
                 "in this same chat may be stale or from before this tool existed."
             )
             status_schema = {"type": "object", "properties": {}}
-            if str(runtime.type.value) in _CLAUDE_SHAPED_RUNTIMES:
-                tools.append({"name": status_tool_name, "description": status_description, "input_schema": status_schema})
-            else:
-                tools.append({"type": "function", "function": {"name": status_tool_name, "description": status_description, "parameters": status_schema}})
+            _append_tool(tools, runtime.type.value, status_tool_name, status_description, status_schema)
             status_lookups[status_tool_name] = teammate
 
     for server in getattr(agent, "mcp_servers", []):
@@ -907,170 +1121,42 @@ def _execute_with_runtime(agent, runtime, prompt, cancelled, record_tool, delega
                 original_name = tool.get("name", "")
                 exposed_name = f"{server.name}__{original_name}"
                 schema = tool.get("inputSchema") or tool.get("input_schema") or {"type": "object", "properties": {}}
-                if str(runtime.type.value) in _CLAUDE_SHAPED_RUNTIMES:
-                    tools.append({"name": exposed_name, "description": tool.get("description", ""), "input_schema": schema})
-                else:
-                    tools.append({"type": "function", "function": {"name": exposed_name, "description": tool.get("description", ""), "parameters": schema}})
+                _append_tool(tools, runtime.type.value, exposed_name, tool.get("description", ""), schema)
                 executors[exposed_name] = (server, original_name)
         except Exception as exc:
             raise RuntimeError(f"MCP discovery failed for {server.name}: {exc}") from exc
+
+    return tools, executors, delegates, status_lookups
+
+
+def _execute_with_runtime(agent, runtime, prompt, cancelled, record_tool, delegation_path=(), resolve_backup_runtime=None, delegation_budget=None, record_skill_use=None, working_directory_override=None, resume_session_id=None, route_config=None, history=None, images=None):
+    effective_working_directory = working_directory_override or getattr(agent, "terminal_working_directory", None)
+    route_config = route_config or {}
+    config = _build_adapter_config(agent, runtime, effective_working_directory, resume_session_id, route_config)
+    adapter = _build_adapter(runtime, config, route_config)
+    tools, executors, delegates, status_lookups = _build_agent_tools(agent, runtime, delegation_path, delegation_budget)
 
     def execute_tool(name, arguments):
         if cancelled and cancelled():
             raise RuntimeError("Run cancelled")
         if name == "terminal_execute":
-            result = run_agent_command(
-                agent,
-                arguments.get("command", ""),
-                arguments.get("timeout", 120),
-                working_directory_override=effective_working_directory,
-            )
-            if record_tool:
-                record_tool(name, arguments, result)
-            return result
+            return _tool_terminal_execute(agent, arguments, effective_working_directory, record_tool)
         if name == "message_user":
-            text = str(arguments.get("message", "")).strip()
-            if not text:
-                raise ValueError("Message to the workspace owner cannot be empty")
-            sess = object_session(agent)
-            result = "Message sent to the workspace owner."
-            if sess is not None:
-                thread = sess.scalars(select(ChatThread).where(ChatThread.agent_id == agent.id)).first()
-                if thread is None:
-                    thread = ChatThread(workspace_id=agent.workspace_id, agent_id=agent.id)
-                    sess.add(thread)
-                    sess.flush()
-                sess.add(ChatMessage(thread_id=thread.id, role="agent", content=text))
-                thread.unread = True
-                sess.commit()
-            else:
-                result = "Could not deliver the message - no active database session."
-            if record_tool:
-                record_tool(name, arguments, result)
-            return result
+            return _tool_message_user(agent, arguments, record_tool)
         if name == "remember_about_user":
-            text = str(arguments.get("content", "")).strip()
-            if not text:
-                raise ValueError("Fact to remember cannot be empty")
-            category = arguments.get("category")
-            if category not in {"user_profile", "preference", "project_fact", "decision"}:
-                category = "user_profile"
-            sess = object_session(agent)
-            if sess is None:
-                result = "Could not save this - no active database session."
-            else:
-                profile = sess.scalar(select(UserProfile))
-                owner_id = profile.id if profile else "local-user"
-                try:
-                    memory = MemoryService(sess, MemoryScope(
-                        workspace_id=agent.workspace_id, user_id=owner_id,
-                        agent_id=agent.id, provider=str(runtime.type.value)))
-                    memory.remember(text, category=category, origin_type="user_stated",
-                        verification_status="user_stated", confidence=0.85, source_agent=agent.name)
-                    result = "Remembered."
-                except Exception as exc:
-                    result = f"Could not save this memory: {exc}"
-            if record_tool:
-                record_tool(name, arguments, result)
-            return result
+            return _tool_remember_about_user(agent, runtime, arguments, record_tool)
         if name == "recall_lessons":
-            skill_name = str(arguments.get("skill_name", "")).strip()
-            match = next((s for s in agent.skills if s.name == skill_name), None)
-            if not match:
-                result = f'No skill named "{skill_name}" on this agent.'
-            else:
-                # The full history is retained with the skill (DB row + mirror file for
-                # export/browsing), but a single tool call only returns the most recent
-                # MAX_LESSONS_PER_SKILL - bounded token cost even for a skill with a
-                # long history, same guarantee as the old always-on injection had.
-                sess = object_session(agent)
-                recent = sess.scalars(
-                    select(SkillLesson).where(SkillLesson.skill_id == match.id)
-                    .order_by(SkillLesson.created_at.desc()).limit(MAX_LESSONS_PER_SKILL)
-                ).all() if sess else []
-                if not recent:
-                    result = "No lessons on file for this skill yet."
-                else:
-                    lines = [f"- ({lesson.created_at.strftime('%Y-%m-%d')}) {lesson.text}" for lesson in reversed(recent)]
-                    total = match.improvement_count
-                    header = f"Most recent {len(recent)} of {total} lesson(s) on file:\n" if total > len(recent) else ""
-                    result = header + "\n".join(lines)
-            if record_tool:
-                record_tool(name, arguments, result[:2000])
-            return result
+            return _tool_recall_lessons(agent, arguments, record_tool)
         if name in delegates:
-            teammate = delegates[name]
-            task = str(arguments.get("task", "")).strip()
-            if not task:
-                raise ValueError("Delegated task cannot be empty")
-            if teammate.require_run_approval:
-                message = f"{teammate.name} requires manual run approval; create an issue assigned to that agent instead of delegating around the approval gate."
-                if record_tool:
-                    record_tool(f"delegation_blocked:{teammate.name}", {"task": task}, message)
-                return message
-            if delegation_budget["used"] >= delegation_budget["limit"]:
-                message = f"Delegation limit ({delegation_budget['limit']}) reached; no additional specialist call was started."
-                if record_tool:
-                    record_tool(f"delegation_budget_exhausted:{teammate.name}", {"task": task}, message)
-                raise DelegationLimitExceeded(message)
-            delegation_budget["used"] += 1
-            if cancelled and cancelled():
-                raise RuntimeError("Run cancelled")
-            if teammate.runtime.workspace_id != agent.workspace_id:
-                raise ValueError("Squad teammate runtime crosses workspaces")
-            delegated_prompt = f"Delegated by {agent.name}. Complete this focused task and return concise findings or results:\n\n{task}"
-            delegated_backup = resolve_backup_runtime(teammate) if resolve_backup_runtime else None
-            if record_tool:
-                record_tool(f"delegation_started:{teammate.name}", {"task": task}, "")
-            start_delegation(agent.id, teammate.id)
-            try:
-                result = execute_agent(
-                    teammate,
-                    delegated_prompt,
-                    cancelled=cancelled,
-                    record_tool=record_tool,
-                    backup_runtime=delegated_backup,
-                    resolve_backup_runtime=resolve_backup_runtime,
-                    delegation_path=(*delegation_path, teammate.id),
-                    delegation_budget=delegation_budget,
-                    record_skill_use=record_skill_use,
-                    working_directory_override=effective_working_directory,
-                )
-            except Exception as exc:
-                if record_tool:
-                    record_tool(f"delegation_failed:{teammate.name}", {"task": task}, str(exc))
-                raise
-            finally:
-                end_delegation(agent.id)
-            output = result.output or "The delegated agent returned an empty response."
-            if record_tool:
-                record_tool(f"delegation:{teammate.name}", {"task": task}, output)
-            return output
+            return _tool_delegate(
+                agent, delegates[name], arguments,
+                cancelled=cancelled, delegation_budget=delegation_budget,
+                resolve_backup_runtime=resolve_backup_runtime, record_skill_use=record_skill_use,
+                record_tool=record_tool, delegation_path=delegation_path,
+                effective_working_directory=effective_working_directory,
+            )
         if name in status_lookups:
-            teammate = status_lookups[name]
-            sess = object_session(agent)
-            active_issue = sess.scalars(
-                select(Issue)
-                .where(Issue.assignee_agent_id == teammate.id, Issue.status.in_([IssueStatus.IN_PROGRESS, IssueStatus.IN_REVIEW]))
-                .order_by(Issue.updated_at.desc())
-            ).first()
-            if active_issue:
-                result = f'{teammate.name} is currently on "{active_issue.title}" (status: {active_issue.status.value}).'
-            else:
-                latest_run = sess.scalars(
-                    select(Run).where(Run.agent_id == teammate.id).order_by(Run.created_at.desc())
-                ).first()
-                if latest_run:
-                    when = latest_run.finished_at or latest_run.started_at or latest_run.created_at
-                    result = (
-                        f"{teammate.name} has no active issue right now. Most recent run: "
-                        f'"{latest_run.issue.title}" ({latest_run.status.value}), {when}.'
-                    )
-                else:
-                    result = f"{teammate.name} has no recorded work yet."
-            if record_tool:
-                record_tool(name, arguments, result)
-            return result
+            return _tool_status_lookup(agent, status_lookups[name], arguments, record_tool)
         server, original_name = executors[name]
         result = call_tool_sync(server, original_name, arguments)
         if record_tool:
