@@ -352,6 +352,28 @@ def memory_create(content: str = Form(...), project_id: str = Form(""),
     return RedirectResponse(f"/memory?project_id={quote(project_id)}", status_code=303)
 
 
+@app.post("/memory/settings")
+def memory_settings(project_id: str = Form(""), enabled: str | None = Form(None),
+                    retain_raw_events: str | None = Form(None),
+                    automatic_extraction: str | None = Form(None),
+                    retrieval_limit: int = Form(8), token_budget: int = Form(1200),
+                    retention_days: int = Form(365), strict_mode: str | None = Form(None),
+                    embedding_provider: str = Form(""), embedding_model: str = Form(""),
+                    embedding_base_url: str = Form("")):
+    """Save memory controls before the dynamic /memory/{memory_id} route can match
+    the literal word ``settings`` as though it were a memory identifier."""
+    with get_session() as session:
+        _memory_service(session, project_id).update_settings(
+            enabled=bool(enabled), retain_raw_events=bool(retain_raw_events),
+            automatic_extraction=bool(automatic_extraction),
+            retrieval_limit=retrieval_limit, token_budget=token_budget,
+            retention_days=retention_days, strict_mode=bool(strict_mode),
+            embedding_provider=embedding_provider.strip(),
+            embedding_model=embedding_model.strip(),
+            embedding_base_url=embedding_base_url.strip())
+    return RedirectResponse(f"/memory?project_id={quote(project_id)}", status_code=303)
+
+
 @app.post("/memory/{memory_id}")
 def memory_correct(memory_id: str, content: str = Form(...), project_id: str = Form(""),
                    category: str = Form("explicit"), verification_status: str = Form("verified"),
@@ -367,26 +389,6 @@ def memory_correct(memory_id: str, content: str = Form(...), project_id: str = F
 def memory_delete(memory_id: str, project_id: str = Form("")):
     with get_session() as session:
         _memory_service(session, project_id).forget(memory_id)
-    return RedirectResponse(f"/memory?project_id={quote(project_id)}", status_code=303)
-
-
-@app.post("/memory/settings")
-def memory_settings(project_id: str = Form(""), enabled: str | None = Form(None),
-                    retain_raw_events: str | None = Form(None),
-                    automatic_extraction: str | None = Form(None),
-                    retrieval_limit: int = Form(8), token_budget: int = Form(1200),
-                    retention_days: int = Form(365), strict_mode: str | None = Form(None),
-                    embedding_provider: str = Form(""), embedding_model: str = Form(""),
-                    embedding_base_url: str = Form("")):
-    with get_session() as session:
-        _memory_service(session, project_id).update_settings(
-            enabled=bool(enabled), retain_raw_events=bool(retain_raw_events),
-            automatic_extraction=bool(automatic_extraction),
-            retrieval_limit=retrieval_limit, token_budget=token_budget,
-            retention_days=retention_days, strict_mode=bool(strict_mode),
-            embedding_provider=embedding_provider.strip(),
-            embedding_model=embedding_model.strip(),
-            embedding_base_url=embedding_base_url.strip())
     return RedirectResponse(f"/memory?project_id={quote(project_id)}", status_code=303)
 
 
@@ -850,6 +852,14 @@ def create_issue(project_id: str = Form(...), title: str = Form(...), descriptio
             description=description,
             assignee_agent_id=assignee_agent_id or None,
         )
+        # An assigned issue is meant to be worked, not left idle in Backlog waiting on a human
+        # to pull it into Todo by hand - so assigning it at creation moves it there directly.
+        # SQLAlchemy applies the mapped BACKLOG default when the row is inserted, so a
+        # freshly constructed issue still has ``status is None`` here. Checking only for
+        # BACKLOG made every issue created with an assignee remain in Backlog despite the
+        # UI promise that assigned work is ready to start.
+        if i.assignee_agent_id and i.status in (None, IssueStatus.BACKLOG):
+            i.status = IssueStatus.TODO
         s.add(i)
         s.commit()
         return RedirectResponse(url=f"/projects/{project_id}", status_code=303)
@@ -885,10 +895,26 @@ def all_issues_board(request: Request):
         issues_by_status = {status: [] for status in visible_statuses}
         for i in sorted(issues, key=lambda i: i.updated_at, reverse=True):
             issues_by_status[i.status].append(i)
+        # A single flat list of every project's work in one column (Done especially) makes it
+        # impossible to tell what any card belongs to at a glance - group each column by project,
+        # in the same recency order the flat list already used, so that's still preserved within
+        # each group.
+        issues_by_status_project = {}
+        for status, status_issues in issues_by_status.items():
+            groups: dict[str, list] = {}
+            for i in status_issues:
+                groups.setdefault(i.project.name, []).append(i)
+            issues_by_status_project[status] = groups
         return templates.TemplateResponse(
             request,
             "all_issues_board.html",
-            {"statuses": visible_statuses, "issues_by_status": issues_by_status, "active": "board", "wide_layout": True},
+            {
+                "statuses": visible_statuses,
+                "issues_by_status": issues_by_status,
+                "issues_by_status_project": issues_by_status_project,
+                "active": "board",
+                "wide_layout": True,
+            },
         )
 
 
@@ -976,6 +1002,10 @@ def issue_assign(issue_id: str, agent_id: str = Form("")):
     with get_session() as s:
         i = require(s, Issue, issue_id)
         i.assignee_agent_id = agent_id or None
+        # Same rule as creation: assigning someone to a Backlog issue means it's ready to be
+        # worked now, so pull it out of Backlog instead of leaving it idle there.
+        if i.assignee_agent_id and i.status == IssueStatus.BACKLOG:
+            i.status = IssueStatus.TODO
         s.add(TimelineEvent(issue_id=i.id, event_type="assigned", detail=agent_id or "unassigned"))
         s.commit()
     return RedirectResponse(url=f"/issues/{issue_id}", status_code=303)
@@ -1085,11 +1115,32 @@ def _agent_activity_state(runs: list) -> str:
     return _agent_activity_state_from_statuses(r.status for r in runs)
 
 
+def _most_active_thread(s, agent_id: str) -> ChatThread | None:
+    """Pick the most recently active of an agent's thread rows, by actual last message time
+    rather than thread.updated_at (see _chat_rows for why that column can't be trusted)."""
+    candidates = s.scalars(select(ChatThread).where(ChatThread.agent_id == agent_id)).all()
+    if not candidates:
+        return None
+    return max(candidates, key=lambda t: t.messages[-1].created_at if t.messages else t.created_at)
+
+
 def _chat_rows(s) -> list[dict]:
     agents = s.scalars(
         select(Agent).where(Agent.archived.is_(False)).order_by(Agent.name)
     ).all()
-    threads = {t.agent_id: t for t in s.scalars(select(ChatThread)).all()}
+    # An agent can end up with more than one thread row (e.g. a race between opening chat
+    # and the agent messaging first) - always prefer the one most recently active. Thread.updated_at
+    # isn't reliable for this: SQLAlchemy's onupdate only fires when the thread row itself is
+    # dirtied, and sending a message that doesn't flip `unread` never touches it - so a thread can
+    # take fresh messages for days while its updated_at sits stale. Go by the actual last message
+    # timestamp instead, falling back to the thread's created_at if it has no messages yet.
+    last_activity: dict[str, datetime] = {}
+    threads: dict[str, ChatThread] = {}
+    for t in s.scalars(select(ChatThread)).all():
+        activity = t.messages[-1].created_at if t.messages else t.created_at
+        if t.agent_id not in last_activity or activity >= last_activity[t.agent_id]:
+            last_activity[t.agent_id] = activity
+            threads[t.agent_id] = t
     last_message = {}
     for thread in threads.values():
         if thread.messages:
@@ -1120,58 +1171,112 @@ def chat_index(request: Request):
 def chat_thread_page(request: Request, agent_id: str):
     with get_session() as s:
         agent = require(s, Agent, agent_id)
-        thread = s.scalars(select(ChatThread).where(ChatThread.agent_id == agent.id)).first()
+        thread = _most_active_thread(s, agent.id)
         if thread and thread.unread:
             thread.unread = False
             s.commit()
         messages = thread.messages if thread else []
+        pending = bool(thread and thread.pending)
         rows = _chat_rows(s)
         return templates.TemplateResponse(
             request,
             "chat_thread.html",
-            {"agent": agent, "messages": messages, "rows": rows, "active": "chat"},
+            {"agent": agent, "messages": messages, "pending": pending, "rows": rows, "active": "chat"},
         )
 
 
-def _run_chat_turn(agent_id: str, message: str, resume_session_id: str | None, user_id: str | None) -> tuple[str, str | None]:
+def _run_chat_turn(
+    agent_id: str, message: str, resume_session_id: str | None, user_id: str | None,
+    runtime_id: str | None, history: list[dict],
+) -> tuple[str, str | None, str | None]:
     """Runs on a worker thread with its own session - execute_agent needs a
-    live session bound to the agent (routing, memory, delegation all read it)."""
+    live session bound to the agent (routing, memory, delegation all read it).
+
+    runtime_id pins the conversation to whichever runtime answered its first turn, so
+    auto-routing can't hand a later message to a different provider mid-conversation and
+    strand resume_session_id/history (see engine.execute_agent's routing_override). history
+    carries the thread's recent turns so API-key providers - which only ever see the current
+    prompt, unlike CLI-backed ones that get real --resume - still know what's being discussed.
+    """
     with get_session() as s:
         agent = require(s, Agent, agent_id)
+        routing_override = {"mode": "manual", "runtime_id": runtime_id} if runtime_id else None
         try:
-            result = execute_agent(agent, message, resume_session_id=resume_session_id, memory_user_id=user_id)
-            return (result.output or "").strip() or "(No response.)", result.session_id
+            try:
+                result = execute_agent(
+                    agent, message, resume_session_id=resume_session_id, memory_user_id=user_id,
+                    history=history, routing_override=routing_override,
+                )
+            except ValueError:
+                if not routing_override:
+                    raise
+                # The pinned runtime is gone (archived/deleted) - fall back to normal
+                # auto-routing for this turn instead of being stuck forever; whatever it
+                # picks re-pins the thread below.
+                result = execute_agent(
+                    agent, message, resume_session_id=None, memory_user_id=user_id, history=history,
+                )
+            reply = (result.output or "").strip() or "(No response.)"
+            return reply, result.session_id, result.runtime_id
         except Exception as exc:
-            return f"Something went wrong reaching {agent.name}: {exc}", None
+            return f"Something went wrong reaching {agent.name}: {exc}", None, None
+
+
+def _complete_chat_turn(
+    thread_id: str, agent_id: str, message: str, resume_session_id: str | None,
+    user_id: str | None, runtime_id: str | None, history: list[dict],
+) -> None:
+    """The actual background half of a chat turn (see chat_send_message) - runs after the
+    HTTP response has already gone back, same pattern as issue_run's background_tasks."""
+    reply, new_session_id, new_runtime_id = _run_chat_turn(
+        agent_id, message, resume_session_id, user_id, runtime_id, history
+    )
+    with get_session() as s:
+        thread = s.get(ChatThread, thread_id)
+        if thread is None:
+            return
+        s.add(ChatMessage(thread_id=thread.id, role="agent", content=reply))
+        if new_session_id:
+            thread.session_id = new_session_id
+        if new_runtime_id:
+            thread.runtime_id = new_runtime_id
+        thread.pending = False
+        s.commit()
+
+
+CHAT_HISTORY_TURNS = 20
 
 
 @app.post("/chat/{agent_id}/messages")
-async def chat_send_message(request: Request, agent_id: str, message: str = Form(...)):
+def chat_send_message(agent_id: str, background_tasks: BackgroundTasks, message: str = Form(...)):
     message = message.strip()
     if not message:
         raise HTTPException(400, "Message cannot be empty")
     with get_session() as s:
         agent = require(s, Agent, agent_id)
         workspace = get_active_workspace(s)
-        thread = s.scalars(select(ChatThread).where(ChatThread.agent_id == agent.id)).first()
+        thread = _most_active_thread(s, agent.id)
         if thread is None:
             thread = ChatThread(workspace_id=workspace.id, agent_id=agent.id)
             s.add(thread)
             s.flush()
+        history = [{"role": m.role, "content": m.content} for m in thread.messages[-CHAT_HISTORY_TURNS:]]
         s.add(ChatMessage(thread_id=thread.id, role="user", content=message))
         thread.unread = False
+        thread.pending = True
         s.commit()
         thread_id = thread.id
         resume_session_id = thread.session_id
+        runtime_id = thread.runtime_id
         profile = s.scalar(select(UserProfile))
         user_id = profile.id if profile else None
-    reply, new_session_id = await asyncio.to_thread(_run_chat_turn, agent_id, message, resume_session_id, user_id)
-    with get_session() as s:
-        thread = require(s, ChatThread, thread_id)
-        s.add(ChatMessage(thread_id=thread.id, role="agent", content=reply))
-        if new_session_id:
-            thread.session_id = new_session_id
-        s.commit()
+    # Return immediately - the agent's actual turn (routing, memory, the model call itself,
+    # any tool use) can easily take tens of seconds and used to block this response the whole
+    # time. The client polls /chat/{agent_id} every few seconds and picks up the reply, with a
+    # "thinking" bubble shown via thread.pending in the meantime.
+    background_tasks.add_task(
+        _complete_chat_turn, thread_id, agent_id, message, resume_session_id, user_id, runtime_id, history
+    )
     return RedirectResponse(f"/chat/{agent_id}", status_code=303)
 
 
@@ -1216,6 +1321,11 @@ def agent_detail(request: Request, agent_id: str):
     with get_session() as s:
         agent = require(s, Agent, agent_id)
         runtimes = s.scalars(select(Runtime).where(Runtime.archived.is_(False)).order_by(Runtime.name)).all()
+        verifier_agents = s.scalars(
+            select(Agent)
+            .where(Agent.archived.is_(False), Agent.id != agent.id)
+            .order_by(Agent.name)
+        ).all()
         skills = s.scalars(select(Skill).order_by(Skill.name)).all()
         mcp_servers = s.scalars(select(McpServer).order_by(McpServer.name)).all()
         runs = s.scalars(
@@ -1243,6 +1353,7 @@ def agent_detail(request: Request, agent_id: str):
             "agent_detail.html",
             {
                 "agent": agent,
+                "verifier_agents": verifier_agents,
                 "is_running": is_running,
                 "agent_state": agent_state,
                 "runtimes": runtimes,
@@ -1267,6 +1378,7 @@ def update_agent(
     description: str = Form(""),
     runtime_id: str = Form(...),
     backup_runtime_id: str = Form(""),
+    verifier_agent_id: str = Form(""),
     instructions: str = Form(""),
     skill_ids: list[str] = Form(default=[]),
     mcp_server_ids: list[str] = Form(default=[]),
@@ -1280,8 +1392,11 @@ def update_agent(
         agent = require(s, Agent, agent_id)
         runtime = require(s, Runtime, runtime_id)
         backup_runtime = require(s, Runtime, backup_runtime_id) if backup_runtime_id else None
+        verifier_agent = require(s, Agent, verifier_agent_id) if verifier_agent_id else None
         if backup_runtime and backup_runtime.id == runtime.id:
             raise HTTPException(400, "Backup runtime must differ from primary runtime")
+        if verifier_agent and verifier_agent.id == agent.id:
+            raise HTTPException(400, "An agent cannot verify its own work")
         selected_skills = [require(s, Skill, skill_id) for skill_id in skill_ids]
         selected_servers = [require(s, McpServer, server_id) for server_id in mcp_server_ids]
         try:
@@ -1299,6 +1414,7 @@ def update_agent(
             raise ValueError("Agent name cannot be empty")
         agent.runtime = runtime
         agent.backup_runtime_id = backup_runtime.id if backup_runtime else None
+        agent.verifier_agent_id = verifier_agent.id if verifier_agent else None
         agent.instructions = instructions.strip()
         agent.skills = selected_skills
         agent.mcp_servers = selected_servers
@@ -1611,6 +1727,7 @@ def create_agent(
     designation: str = Form(""),
     runtime_id: str = Form(...),
     backup_runtime_id: str = Form(""),
+    verifier_agent_id: str = Form(""),
     description: str = Form(""),
     instructions: str = Form(""),
     skill_ids: list[str] = Form(default=[]),
@@ -1628,6 +1745,7 @@ def create_agent(
         ws = get_or_create_default_workspace(s)
         runtime = require(s, Runtime, runtime_id)
         backup_runtime = require(s, Runtime, backup_runtime_id) if backup_runtime_id else None
+        verifier_agent = require(s, Agent, verifier_agent_id) if verifier_agent_id else None
         if backup_runtime and backup_runtime.id == runtime.id:
             raise HTTPException(400, "Backup runtime must differ from primary runtime")
         selected_skills = [require(s, Skill, skill_id) for skill_id in skill_ids]
@@ -1637,6 +1755,7 @@ def create_agent(
             workspace_id=ws.id,
             runtime_id=runtime.id,
             backup_runtime_id=backup_runtime.id if backup_runtime else None,
+            verifier_agent_id=verifier_agent.id if verifier_agent else None,
             name=name.strip(),
             designation=designation.strip(),
             description=description.strip(),

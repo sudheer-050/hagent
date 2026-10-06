@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 from hagent.adapters import get_runtime_class
@@ -60,7 +61,7 @@ def test_codex_cli_is_resumable_json_and_read_only(mocker):
 
     assert result.output == "review complete"
     args = run.call_args.args[0]
-    assert args[:7] == ["codex", "exec", "--json", "--sandbox", "read-only", "--color", "never"]
+    assert args[:8] == ["codex", "exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only", "--color", "never"]
     assert args[-1] == "-"
     assert run.call_args.kwargs["input"] == "Review this"
     assert "--dangerously-bypass-approvals-and-sandbox" not in args
@@ -82,6 +83,33 @@ def test_claude_code_uses_print_json_mode(mocker):
     assert args[:2] == ["claude", "--print"]
     assert "--output-format" in args
     assert "--dangerously-skip-permissions" not in args
+
+
+def test_claude_code_passes_agent_context_as_system_prompt(mocker):
+    mocker.patch("hagent.adapters.claude_code.shutil.which", return_value="claude")
+    captured = {}
+
+    def fake_run(args, **kwargs):
+        index = args.index("--append-system-prompt")
+        captured["context"] = args[index + 1]
+        captured["input"] = kwargs["input"]
+        captured["args"] = args
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"result": "done", "session_id": "abc"}),
+            stderr="",
+        )
+
+    mocker.patch("hagent.adapters.claude_code.subprocess.run", side_effect=fake_run)
+
+    ClaudeCodeRuntime("default", {}).run(
+        "Open the HAI project",
+        context="User-approved Holly workflow",
+    )
+
+    assert captured["input"] == "Open the HAI project"
+    assert captured["context"] == "User-approved Holly workflow"
+    assert "User-approved Holly workflow" not in captured["input"]
 
 
 def test_runtime_catalog_includes_descriptions_and_grok():

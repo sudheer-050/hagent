@@ -145,6 +145,8 @@ def _ensure_schema() -> None:
             "session_id": "VARCHAR",
             "unread": "BOOLEAN NOT NULL DEFAULT 0",
             "updated_at": "DATETIME",
+            "runtime_id": "VARCHAR",
+            "pending": "BOOLEAN NOT NULL DEFAULT 0",
         },
         "chat_messages": {
             "role": "VARCHAR",
@@ -216,11 +218,12 @@ def _ensure_schema() -> None:
             connection.execute(text("UPDATE chat_threads SET updated_at = created_at WHERE updated_at IS NULL"))
             connection.execute(text("""CREATE TABLE chat_threads_new (
                 id VARCHAR PRIMARY KEY, workspace_id VARCHAR NOT NULL REFERENCES workspaces(id),
-                agent_id VARCHAR NOT NULL REFERENCES agents(id), session_id VARCHAR,
+                agent_id VARCHAR NOT NULL REFERENCES agents(id), session_id VARCHAR, runtime_id VARCHAR,
+                pending BOOLEAN NOT NULL DEFAULT 0,
                 unread BOOLEAN NOT NULL DEFAULT 0, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)"""))
             connection.execute(text("""INSERT INTO chat_threads_new
-                (id, workspace_id, agent_id, session_id, unread, created_at, updated_at)
-                SELECT id, workspace_id, agent_id, session_id, unread, created_at, updated_at FROM chat_threads"""))
+                (id, workspace_id, agent_id, session_id, runtime_id, pending, unread, created_at, updated_at)
+                SELECT id, workspace_id, agent_id, session_id, runtime_id, pending, unread, created_at, updated_at FROM chat_threads"""))
             connection.execute(text("DROP TABLE chat_threads"))
             connection.execute(text("ALTER TABLE chat_threads_new RENAME TO chat_threads"))
         if "author" in {c["name"] for c in inspector.get_columns("chat_messages")}:

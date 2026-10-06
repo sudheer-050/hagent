@@ -17,6 +17,7 @@ class RuntimeResult:
     input_tokens: int | None = None
     output_tokens: int | None = None
     session_id: str | None = None
+    runtime_id: str | None = None  # which runtime actually produced this (primary/backup/failback can differ)
 
     def __post_init__(self):
         if not isinstance(self.raw, (dict, list)):

@@ -99,13 +99,17 @@ class CodexCliRuntime(BaseRuntime):
             # find session files in the first place). 'exec resume' also does NOT accept
             # --sandbox or --color at all (unlike plain 'exec') - passing them fails the
             # whole invocation outright, so they're deliberately omitted below.
-            args = [executable, "exec", "resume", resume_session_id, "--json"]
+            args = [executable, "exec", "resume", resume_session_id, "--json", "--skip-git-repo-check"]
             if needs_bypass:
                 args.append("--dangerously-bypass-approvals-and-sandbox")
         else:
             # Not --ephemeral: session files need to persist to disk for a later
             # 'issue continue' to be able to resume this exact conversation.
-            args = [executable, "exec", "--json"]
+            # --skip-git-repo-check: Hagent's working directories aren't always a
+            # git repo Codex already trusts, and there's no TTY here to answer its
+            # trust prompt - without this it fails outright with "Not inside a
+            # trusted directory".
+            args = [executable, "exec", "--json", "--skip-git-repo-check"]
             if needs_bypass:
                 args.append("--dangerously-bypass-approvals-and-sandbox")
             else:

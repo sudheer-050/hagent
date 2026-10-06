@@ -1164,6 +1164,20 @@ pre {
   height: calc(100vh - 130px);
 }
 
+.board-column-stack {
+  flex: 0 0 300px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  height: calc(100vh - 130px);
+}
+
+.board-column-stack .board-column-half {
+  flex: 1 1 50%;
+  min-height: 0;
+  height: auto;
+}
+
 .board-column-body {
   overflow-y: auto;
   flex: 1;
@@ -1189,6 +1203,48 @@ pre {
   border-radius: 999px;
   padding: 0.05rem 0.5rem;
   font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.board-project-group { margin-bottom: var(--space-3); }
+
+.board-project-group-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin-bottom: var(--space-2);
+  padding-bottom: 0.3rem;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+.board-project-group-label::-webkit-details-marker { display: none; }
+
+.board-project-group-label::before {
+  content: '\25be';
+  font-size: 0.7rem;
+  transition: transform 0.12s ease;
+}
+
+.board-project-group:not([open]) .board-project-group-label::before {
+  transform: rotate(-90deg);
+}
+
+.board-project-group-label:hover { color: var(--text); }
+
+.board-project-group .count {
+  margin-left: auto;
+  background: var(--bg-panel-hover);
+  border-radius: 999px;
+  padding: 0.05rem 0.5rem;
+  font-size: 0.62rem;
   font-weight: 700;
 }
 
@@ -1953,6 +2009,8 @@ body.chat-page { height:100dvh; min-height:0; overflow:hidden; }
 .chat-message.from-user .chat-message-bubble { background:var(--glass-panel-hover); }
 .chat-message.from-tool { max-width:92%; }
 .chat-message.from-tool .chat-message-bubble { background:var(--glass-raised); border-color:var(--glass-border); font-size:.84rem; }
+.chat-typing { color:var(--text-muted,currentColor); opacity:.7; font-style:italic; animation:chat-typing-pulse 1.4s ease-in-out infinite; }
+@keyframes chat-typing-pulse { 0%,100% { opacity:.4; } 50% { opacity:.85; } }
 .chat-composer { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:var(--space-3); padding:var(--space-3); border-top:1px solid var(--glass-border); }
 .chat-composer select { max-width:260px; }
 .chat-composer select { grid-column:1 / -1; }

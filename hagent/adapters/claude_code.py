@@ -43,7 +43,6 @@ class ClaudeCodeRuntime(BaseRuntime):
         if not executable:
             raise RuntimeError("Claude Code is not installed or is not on PATH")
 
-        full_prompt = f"{context}\n\n{prompt}" if context else prompt
         # Prompt goes over stdin, not as a CLI argument - a long prompt as an argument
         # can exceed the Windows command-line length limit and fail before Claude Code
         # even starts (seen in practice: "The command line is too long").
@@ -55,6 +54,12 @@ class ClaudeCodeRuntime(BaseRuntime):
         resume_session_id = self.config.get("resume_session_id")
         if resume_session_id:
             args.extend(["--resume", resume_session_id])
+
+        # --append-system-prompt-file and --system-prompt-snapshot no longer exist
+        # in current Claude Code releases; --append-system-prompt only takes the
+        # prompt text inline now, not a file path.
+        if context:
+            args.extend(["--append-system-prompt", context])
 
         with _mcp_config_file(tools, tool_executor) as mcp_config_path:
             if mcp_config_path:
@@ -78,7 +83,7 @@ class ClaudeCodeRuntime(BaseRuntime):
             try:
                 completed = subprocess.run(
                     args,
-                    input=full_prompt,
+                    input=prompt,
                     cwd=self.config.get("working_directory") or None,
                     capture_output=True,
                     text=True,

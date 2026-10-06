@@ -16,13 +16,24 @@
   <div class="field-row">
     <div>
       <label class="field-label">Status</label>
+      {% if issue.status.value == 'in_review' %}
+      <div class="inline status-review-actions">
+        <form method="post" action="/issues/{{ issue.id }}/review/approve">
+          <button type="submit" class="primary">Approve</button>
+        </form>
+        <form method="post" action="/issues/{{ issue.id }}/review/reject">
+          <button type="submit" class="ghost">Rollback</button>
+        </form>
+      </div>
+      {% else %}
       <form class="inline" method="post" action="/issues/{{ issue.id }}/status">
         <select name="status" onchange="this.form.submit()">
-          {% for s in statuses %}
+          {% for s in statuses if s.value != 'in_review' %}
           <option value="{{ s.value }}" {{ 'selected' if s == issue.status }}>{{ s.value.replace('_',' ').title() }}</option>
           {% endfor %}
         </select>
       </form>
+      {% endif %}
     </div>
     <div>
       <label class="field-label">Assignee</label>

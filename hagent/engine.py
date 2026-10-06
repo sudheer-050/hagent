@@ -10,7 +10,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, object_session
 
 from hagent.adapters import get_runtime_class
@@ -27,6 +27,8 @@ from hagent.router import ModelRouter
 
 _queue_lock = threading.Lock()
 log = logging.getLogger(__name__)
+
+JOB_PORTAL_PROJECT_NAME = "Job Portal"
 
 # Runtimes whose adapter hands tools to the model via the Anthropic Messages
 # API shape ({"name", "description", "input_schema"}) - either directly
@@ -205,7 +207,13 @@ def _finish(session, run, issue, result=None, error=None, checkpoint_session_id=
         finished_at=datetime.now(timezone.utc)), execution_options={"synchronize_session": False}).rowcount
     if changed:
         if not error:
-            session.execute(update(Issue).where(Issue.id == issue.id, Issue.status != IssueStatus.CANCELLED).values(status=IssueStatus.IN_REVIEW), execution_options={"synchronize_session": False})
+            # The Job Portal project runs its own independent review as a separate,
+            # externally-orchestrated issue (see job-portal's server.js) and polls
+            # hagent for output as soon as a run finishes - it never waits for this
+            # issue to leave In Review. Gating it here just means nobody, human or
+            # agent, ever clears it, so skip straight to Done instead.
+            next_status = IssueStatus.DONE if issue.project.name == JOB_PORTAL_PROJECT_NAME else IssueStatus.IN_REVIEW
+            session.execute(update(Issue).where(Issue.id == issue.id, Issue.status != IssueStatus.CANCELLED).values(status=next_status), execution_options={"synchronize_session": False})
         session.add(TimelineEvent(issue_id=issue.id, event_type="run_failed" if error else "run_completed", detail=error or f"Estimated {tokens} tokens"))
     session.commit()
     session.refresh(run)
@@ -223,6 +231,7 @@ def _finish(session, run, issue, result=None, error=None, checkpoint_session_id=
 
 
 VERIFICATION_PROJECT_NAME = "Verification Reviews"
+MAX_VERIFIER_RETRIES = 3
 
 
 def _get_or_create_verification_project(session: Session, workspace_id: str) -> Project:
@@ -247,6 +256,8 @@ def _run_verifier_pass(session: Session, run: Run, issue: Issue, output: str) ->
     Never nested - a review issue lives in the Verification Reviews project, and review issues
     are never themselves auto-verified.
     """
+    from hagent.orchestration import after_issue_finished
+
     agent = session.get(Agent, run.agent_id)
     if not agent or not agent.verifier_agent_id or issue.project.name == VERIFICATION_PROJECT_NAME:
         return
@@ -258,11 +269,14 @@ def _run_verifier_pass(session: Session, run: Run, issue: Issue, output: str) ->
         project_id=review_project.id,
         title=f"Verify: {issue.title}",
         description=(
-            f"Independently review the following completed work for correctness, quality, and "
-            f"safety. You did not do this work - {agent.name} did.\n\n"
+            f"Independently verify that the following completed work actually fulfills the "
+            f"original request, works as claimed, and is correct, complete, and safe. You did "
+            f"not do this work - {agent.name} did. Use relevant safe checks available to you "
+            f"when the result can be tested; do not change the delivered work.\n\n"
             f"Original request:\n{run.prompt}\n\n"
             f"Delivered output:\n{output}\n\n"
-            f"Respond starting with exactly the word PASS if the work is correct and safe, or "
+            f"Respond starting with exactly the word PASS only if the work does the requested "
+            f"job and your verification found no real defect, or "
             f"FAIL: <specific reason> if it has a real problem. Be concrete about what's wrong "
             f"if failing - 'looks fine' or 'seems risky' without a specific defect is not a valid "
             f"FAIL."
@@ -274,15 +288,7 @@ def _run_verifier_pass(session: Session, run: Run, issue: Issue, output: str) ->
     session.commit()
     verify_run = run_issue(session, review_issue, verifier)
     verdict = (verify_run.output or "").strip()
-    # Don't require PASS/FAIL as literally the first word - a verifier that adds a
-    # sentence of preamble before the verdict (seen in practice, despite being asked
-    # not to) still has a real, findable answer. FAIL takes priority if both appear,
-    # since the whole point is not to let a hedge slip past a real problem; no
-    # recognizable verdict at all is treated as a failure to surface for review
-    # rather than silently passing unclear output.
-    has_fail = re.search(r"\bFAIL\b", verdict, re.IGNORECASE) is not None
-    has_pass = re.search(r"\bPASS\b", verdict, re.IGNORECASE) is not None
-    passed = has_pass and not has_fail
+    passed = _verifier_verdict_passed(verdict)
     session.add(Comment(issue_id=issue.id, author=f"{verifier.name} (verifier)", body=verdict or "(verifier produced no output)"))
     session.add(TimelineEvent(
         issue_id=issue.id,
@@ -291,17 +297,81 @@ def _run_verifier_pass(session: Session, run: Run, issue: Issue, output: str) ->
     ))
     lesson_skill_ids = []
     lesson_text = ""
-    if not passed:
+    if passed:
+        # An independent verifier already checked this is correct, complete, and
+        # safe - that's the whole point of configuring one. Auto-approve instead
+        # of leaving it stacked in review for a human to re-click, same as the
+        # manual Approve button.
         session.execute(
-            update(Issue).where(Issue.id == issue.id).values(status=IssueStatus.IN_PROGRESS),
+            update(Issue).where(Issue.id == issue.id).values(status=IssueStatus.DONE),
             execution_options={"synchronize_session": False},
         )
+        session.commit()
+        session.refresh(issue)
+        after_issue_finished(session, issue)
+        session.commit()
+    else:
+        prior_rejections = session.scalar(
+            select(func.count()).select_from(TimelineEvent).where(
+                TimelineEvent.issue_id == issue.id, TimelineEvent.event_type == "verification_failed"
+            )
+        )
+        # Stop auto-bouncing after repeated failures on the same issue - a verifier
+        # that keeps rejecting the same work needs a human to look at it, not an
+        # unbounded, unattended retry loop burning runs.
+        give_up = prior_rejections >= MAX_VERIFIER_RETRIES
+        session.execute(
+            update(Issue).where(Issue.id == issue.id).values(
+                status=IssueStatus.IN_REVIEW if give_up else IssueStatus.IN_PROGRESS
+            ),
+            execution_options={"synchronize_session": False},
+        )
+        session.commit()
+        session.refresh(issue)
+        if give_up:
+            session.add(TimelineEvent(
+                issue_id=issue.id,
+                event_type="verification_gave_up",
+                detail=f"Verifier rejected this {prior_rejections + 1} times in a row; left in review for a human.",
+            ))
+            session.commit()
+        else:
+            # Mirror the manual "send back" action: actually requeue a fix run instead
+            # of just flipping the status and leaving the issue inert.
+            rework_prompt = f"{run.prompt}\n\n[Sent back by automatic verifier]: {verdict} Revise the work and resubmit."
+            run_issue(session, issue, agent, prompt=rework_prompt)
         if agent.skills:
             lesson_skill_ids = [s.id for s in agent.skills]
             lesson_text = f'On "{issue.title}", a reviewer found: {verdict}'
+    # The verifier's own bookkeeping issue (the "Verify: ..." check itself) isn't something
+    # anyone needs to separately approve - its only job was to produce the verdict just acted
+    # on above, so close it out instead of leaving it stacked in review with nothing to decide.
+    session.execute(
+        update(Issue).where(Issue.id == review_issue.id).values(status=IssueStatus.DONE),
+        execution_options={"synchronize_session": False},
+    )
     session.commit()
     if lesson_skill_ids:
         _learn_from_mistake(lesson_skill_ids, lesson_text, issue_id=issue.id, source="verifier_reject")
+
+
+def _verifier_verdict_passed(verdict: str) -> bool:
+    """Return whether a verifier gave an explicit PASS verdict.
+
+    Prefer a verdict at the beginning of a line so explanatory prose can safely
+    discuss words such as PASS and FAIL without changing the decision.  Some
+    providers add a short preamble despite the prompt, so fall back to a single
+    unambiguous verdict word anywhere.  Missing or ambiguous verdicts fail closed.
+    """
+    explicit = re.search(
+        r"(?im)^\s*(?:[-*>#]+\s*)?(PASS|FAIL)\b",
+        verdict,
+    )
+    if explicit:
+        return explicit.group(1).upper() == "PASS"
+
+    tokens = {token.upper() for token in re.findall(r"\b(PASS|FAIL)\b", verdict, re.IGNORECASE)}
+    return tokens == {"PASS"}
 
 
 def cancel_issue(session, issue):
@@ -445,6 +515,7 @@ def execute_agent(
     memory_task_metadata=None,
     routing_override=None,
     routing_run_id=None,
+    history=None,
 ):
     """Execute with the agent's primary runtime, then its optional backup.
 
@@ -512,6 +583,9 @@ def execute_agent(
     if backup_runtime is None and getattr(agent, "backup_runtime_id", None):
         if session is not None:
             backup_runtime = session.get(Runtime, agent.backup_runtime_id)
+    failback_runtime = None
+    if getattr(agent, "failback_runtime_id", None) and session is not None:
+        failback_runtime = session.get(Runtime, agent.failback_runtime_id)
     if routing and session is not None:
         policy = ModelRouter(session, agent.workspace_id, memory_project_id).policy()
         if routing.get("fallback"):
@@ -553,7 +627,8 @@ def execute_agent(
     try:
         result = _execute_with_runtime(agent, primary, prompt, cancelled, record_tool,
             delegation_path, resolve_backup_runtime, delegation_budget, record_skill_use,
-            working_directory_override, resume_session_id, route_config)
+            working_directory_override, resume_session_id, route_config, history=history)
+        result.runtime_id = primary.id
     except DelegationLimitExceeded:
         # A configured cost guard is a deliberate stop, not a provider error:
         # do not silently spend on the backup runtime after the budget is used.
@@ -582,7 +657,8 @@ def execute_agent(
                 }
             result = _execute_with_runtime(agent, backup_runtime, prompt, cancelled, record_tool,
                 delegation_path, resolve_backup_runtime, delegation_budget, record_skill_use,
-                working_directory_override, route_config=fallback_config)
+                working_directory_override, route_config=fallback_config, history=history)
+            result.runtime_id = backup_runtime.id
             if record_skill_use:
                 record_skill_use(agent)
             finish_observers(result=result, outcome="fallback_completed")
@@ -592,6 +668,32 @@ def execute_agent(
             # lose it just because the backup also failed - a future retry on the
             # primary runtime can still pick up from that checkpoint.
             recovered_session_id = getattr(primary_error, "session_id", None)
+            if (
+                failback_runtime
+                and not _is_cancellation(backup_error, cancelled)
+                and failback_runtime.workspace_id == agent.workspace_id
+                and not failback_runtime.archived
+            ):
+                if record_failover:
+                    record_failover(backup_runtime, failback_runtime, backup_error)
+                try:
+                    result = _execute_with_runtime(agent, failback_runtime, prompt, cancelled, record_tool,
+                        delegation_path, resolve_backup_runtime, delegation_budget, record_skill_use,
+                        working_directory_override, history=history)
+                    result.runtime_id = failback_runtime.id
+                    if record_skill_use:
+                        record_skill_use(agent)
+                    finish_observers(result=result, outcome="failback_completed")
+                    return result
+                except Exception as failback_error:
+                    combined = ResumableError(
+                        f"Primary runtime {primary.name} failed: {primary_error}; "
+                        f"backup runtime {backup_runtime.name} failed: {backup_error}; "
+                        f"failback runtime {failback_runtime.name} failed: {failback_error}",
+                        session_id=recovered_session_id,
+                    )
+                    finish_observers(error=combined)
+                    raise combined from failback_error
             combined = ResumableError(
                 f"Primary runtime {primary.name} failed: {primary_error}; "
                 f"backup runtime {backup_runtime.name} failed: {backup_error}",
@@ -611,7 +713,7 @@ def _is_cancellation(error, cancelled):
     return bool(cancelled and cancelled())
 
 
-def _execute_with_runtime(agent, runtime, prompt, cancelled, record_tool, delegation_path=(), resolve_backup_runtime=None, delegation_budget=None, record_skill_use=None, working_directory_override=None, resume_session_id=None, route_config=None):
+def _execute_with_runtime(agent, runtime, prompt, cancelled, record_tool, delegation_path=(), resolve_backup_runtime=None, delegation_budget=None, record_skill_use=None, working_directory_override=None, resume_session_id=None, route_config=None, history=None):
     runtime_cls = get_runtime_class(runtime.type)
     config = json.loads(runtime.config_json or "{}")
     effective_working_directory = working_directory_override or getattr(agent, "terminal_working_directory", None)
@@ -975,6 +1077,15 @@ def _execute_with_runtime(agent, runtime, prompt, cancelled, record_tool, delega
         return result
 
     context = agent.instructions
+    if history:
+        # API-key runtimes (claude.py/openai.py/ollama.py) send only the current prompt as the
+        # user message - resume_session_id only reconstructs history for CLI-backed runtimes.
+        # Without this, every turn of an ongoing chat is stateless to those providers and the
+        # model has no idea what "it"/"that" refers to a message later.
+        transcript = "\n".join(
+            f"{'User' if turn.get('role') == 'user' else agent.name}: {turn.get('content', '')}" for turn in history
+        )
+        context = f"Recent conversation so far (most recent last):\n{transcript}\n\n{context}"
     for skill in agent.skills:
         if skill.workspace_id != agent.workspace_id:
             raise ValueError("Skill crosses workspaces")

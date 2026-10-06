@@ -1619,10 +1619,11 @@ def agent_restore(agent_id):
 @click.option("--name", default=None)
 @click.option("--runtime", "runtime_id", default=None)
 @click.option("--backup-runtime", "backup_runtime_id", default=None, help="Runtime ID to fail over to on a primary-runtime error. Pass an empty string to clear it.")
+@click.option("--failback-runtime", "failback_runtime_id", default=None, help="Runtime ID to fail over to if both the primary and backup runtimes error. Pass an empty string to clear it.")
 @click.option("--verifier", "verifier_agent_id", default=None, help="Agent ID that automatically reviews this agent's completed work (PASS/FAIL). Pass an empty string to clear it.")
 @click.option("--sandbox-image", default=None, help="Docker image to run this agent's terminal commands in when working on a git-worktree-isolated issue (e.g. mcr.microsoft.com/powershell). Only activates when a worktree exists; pass an empty string to clear it.")
 @click.option("--instructions", default=None)
-def agent_update(agent_id, name, runtime_id, backup_runtime_id, verifier_agent_id, sandbox_image, instructions):
+def agent_update(agent_id, name, runtime_id, backup_runtime_id, failback_runtime_id, verifier_agent_id, sandbox_image, instructions):
     with get_session() as s:
         item = s.get(Agent, agent_id)
         if not item:
@@ -1640,6 +1641,13 @@ def agent_update(agent_id, name, runtime_id, backup_runtime_id, verifier_agent_i
                 if not s.get(Runtime, backup_runtime_id):
                     raise click.ClickException("Backup runtime not found")
                 item.backup_runtime_id = backup_runtime_id
+        if failback_runtime_id is not None:
+            if failback_runtime_id == "":
+                item.failback_runtime_id = None
+            else:
+                if not s.get(Runtime, failback_runtime_id):
+                    raise click.ClickException("Failback runtime not found")
+                item.failback_runtime_id = failback_runtime_id
         if verifier_agent_id is not None:
             if verifier_agent_id == "":
                 item.verifier_agent_id = None

@@ -281,6 +281,8 @@ class ChatThread(Base):
     workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
     agent_id: Mapped[str] = mapped_column(ForeignKey("agents.id"), nullable=False)
     session_id: Mapped[str | None] = mapped_column(String, nullable=True)  # runtime resume token, continues context turn to turn
+    runtime_id: Mapped[str | None] = mapped_column(String, nullable=True)  # pinned after the first reply so auto-routing can't swap providers mid-conversation and strand session_id/history
+    pending: Mapped[bool] = mapped_column(Boolean, default=False)  # a reply is being generated on a background thread right now
     unread: Mapped[bool] = mapped_column(Boolean, default=False)  # set when the agent messages first, cleared when the owner opens the thread
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
