@@ -1633,35 +1633,34 @@ def agent_update(agent_id, name, runtime_id, backup_runtime_id, failback_runtime
             if not s.get(Runtime, runtime_id):
                 raise click.ClickException("Runtime not found")
             item.runtime_id = runtime_id
-        if backup_runtime_id is not None:
-            if backup_runtime_id == "":
-                item.backup_runtime_id = None
-            else:
-                if not s.get(Runtime, backup_runtime_id):
-                    raise click.ClickException("Backup runtime not found")
-                item.backup_runtime_id = backup_runtime_id
-        if failback_runtime_id is not None:
-            if failback_runtime_id == "":
-                item.failback_runtime_id = None
-            else:
-                if not s.get(Runtime, failback_runtime_id):
-                    raise click.ClickException("Failback runtime not found")
-                item.failback_runtime_id = failback_runtime_id
-        if verifier_agent_id is not None:
-            if verifier_agent_id == "":
-                item.verifier_agent_id = None
-            else:
-                if verifier_agent_id == agent_id:
-                    raise click.ClickException("An agent cannot verify its own work")
-                if not s.get(Agent, verifier_agent_id):
-                    raise click.ClickException("Verifier agent not found")
-                item.verifier_agent_id = verifier_agent_id
+        _apply_nullable_fk(s, item, "backup_runtime_id", backup_runtime_id, Runtime, "Backup runtime")
+        _apply_nullable_fk(s, item, "failback_runtime_id", failback_runtime_id, Runtime, "Failback runtime")
+        _apply_nullable_fk(
+            s, item, "verifier_agent_id", verifier_agent_id, Agent, "Verifier agent",
+            forbid=agent_id, forbid_message="An agent cannot verify its own work",
+        )
         if sandbox_image is not None:
             item.sandbox_image = sandbox_image or None
         if instructions is not None:
             item.instructions = instructions
         s.commit()
         click.echo(item.id)
+
+
+def _apply_nullable_fk(session, item, attr, value, model, label, *, forbid=None, forbid_message=None):
+    """Update a nullable foreign-key field from a CLI option: None leaves it untouched,
+    '' clears it, and any other value must reference an existing row of `model`.
+    """
+    if value is None:
+        return
+    if value == "":
+        setattr(item, attr, None)
+        return
+    if forbid is not None and value == forbid:
+        raise click.ClickException(forbid_message)
+    if not session.get(model, value):
+        raise click.ClickException(f"{label} not found")
+    setattr(item, attr, value)
 
 
 @agent.command("copy")
@@ -2036,19 +2035,13 @@ def issue_update(issue_id, title, description, status, assignee_agent_id, parent
         item = s.get(Issue, issue_id)
         if not item:
             raise click.ClickException("Issue not found")
-        previous_status, reassigned = item.status, False
+        previous_status = item.status
         if title is not None:
             item.title = title
         if description is not None:
             item.description = description
-        if status is not None:
-            item.status = IssueStatus(status)
-            s.add(TimelineEvent(issue_id=item.id, event_type="status_changed", detail=status))
-        if assignee_agent_id is not None:
-            agent_row = _find_agent(s, assignee_agent_id) if assignee_agent_id else None
-            item.assignee_agent_id = agent_row.id if agent_row else None
-            reassigned = agent_row is not None
-            s.add(TimelineEvent(issue_id=item.id, event_type="assigned", detail=agent_row.name if agent_row else "unassigned"))
+        _apply_issue_status(s, item, status)
+        reassigned = _apply_issue_assignee(s, item, assignee_agent_id)
         if parent_issue_id is not None:
             item.parent_issue_id = _issue_id(s, parent_issue_id) if parent_issue_id else None
         if position is not None:
@@ -2059,16 +2052,38 @@ def issue_update(issue_id, title, description, status, assignee_agent_id, parent
             item.start_date = _valid_date(start_date) or None
         if due_date is not None:
             item.due_date = _valid_date(due_date) or None
-        if stage is not None:
-            if stage and not item.parent_issue_id:
-                raise click.ClickException("--stage needs a parent issue")
-            item.stage = stage or None
+        _apply_issue_stage(item, stage)
         s.commit()
         click.echo(item.id)
         run = apply_status_change(s, item, previous_status, start=not no_start)
         if run is None and reassigned and not no_start:
             run = start_agent_run(s, item)
         _report_started(run)
+
+
+def _apply_issue_status(session, item, status):
+    if status is None:
+        return
+    item.status = IssueStatus(status)
+    session.add(TimelineEvent(issue_id=item.id, event_type="status_changed", detail=status))
+
+
+def _apply_issue_assignee(session, item, assignee_agent_id) -> bool:
+    """Reassign (or unassign, for '') an issue; returns whether a new agent was actually assigned."""
+    if assignee_agent_id is None:
+        return False
+    agent_row = _find_agent(session, assignee_agent_id) if assignee_agent_id else None
+    item.assignee_agent_id = agent_row.id if agent_row else None
+    session.add(TimelineEvent(issue_id=item.id, event_type="assigned", detail=agent_row.name if agent_row else "unassigned"))
+    return agent_row is not None
+
+
+def _apply_issue_stage(item, stage):
+    if stage is None:
+        return
+    if stage and not item.parent_issue_id:
+        raise click.ClickException("--stage needs a parent issue")
+    item.stage = stage or None
 
 
 @issue.command("runs")

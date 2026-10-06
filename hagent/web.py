@@ -711,36 +711,36 @@ SEARCH_PAGES = [
 ]
 
 
+def _search_matches(session, query, name_attr, needle, build):
+    results = []
+    for obj in session.scalars(query).all():
+        if needle in getattr(obj, name_attr).casefold():
+            results.extend(build(obj))
+    return results
+
+
 @app.get("/api/search")
 def api_search(q: str = ""):
     needle = q.strip().casefold()
     if not needle:
         return {"results": []}
-    results = []
+    results = [{"type": "page", "title": label, "subtitle": "Page", "url": url} for label, url in SEARCH_PAGES if needle in label.casefold()]
     with get_session() as s:
-        for label, url in SEARCH_PAGES:
-            if needle in label.casefold():
-                results.append({"type": "page", "title": label, "subtitle": "Page", "url": url})
-        for p in s.scalars(select(Project)).all():
-            if needle in p.name.casefold():
-                results.append({"type": "project", "title": p.name, "subtitle": "Project", "url": f"/projects/{p.id}"})
-        for a in s.scalars(select(Agent)).all():
-            if needle in a.name.casefold():
-                results.append({"type": "agent", "title": a.name, "subtitle": "Agent", "url": f"/agents/{a.id}"})
-                results.append({"type": "chat", "title": f"Chat with {a.name}", "subtitle": "Chat", "url": f"/chat/{a.id}"})
-        for i in s.scalars(select(Issue)).all():
-            if needle in i.title.casefold():
-                project_name = i.project.name if i.project else ""
-                results.append({"type": "issue", "title": i.title, "subtitle": f"Issue · {project_name}", "url": f"/issues/{i.id}"})
-        for r in s.scalars(select(Runtime).where(Runtime.archived.is_(False))).all():
-            if needle in r.name.casefold():
-                results.append({"type": "runtime", "title": r.name, "subtitle": "Runtime", "url": f"/runtimes/{r.id}"})
-        for skill in s.scalars(select(Skill)).all():
-            if needle in skill.name.casefold():
-                results.append({"type": "skill", "title": skill.name, "subtitle": "Skill", "url": "/skills"})
-        for squad in s.scalars(select(Squad)).all():
-            if needle in squad.name.casefold():
-                results.append({"type": "squad", "title": squad.name, "subtitle": "Squad", "url": "/squads"})
+        results += _search_matches(s, select(Project), "name", needle,
+            lambda p: [{"type": "project", "title": p.name, "subtitle": "Project", "url": f"/projects/{p.id}"}])
+        results += _search_matches(s, select(Agent), "name", needle,
+            lambda a: [
+                {"type": "agent", "title": a.name, "subtitle": "Agent", "url": f"/agents/{a.id}"},
+                {"type": "chat", "title": f"Chat with {a.name}", "subtitle": "Chat", "url": f"/chat/{a.id}"},
+            ])
+        results += _search_matches(s, select(Issue), "title", needle,
+            lambda i: [{"type": "issue", "title": i.title, "subtitle": f"Issue · {i.project.name if i.project else ''}", "url": f"/issues/{i.id}"}])
+        results += _search_matches(s, select(Runtime).where(Runtime.archived.is_(False)), "name", needle,
+            lambda r: [{"type": "runtime", "title": r.name, "subtitle": "Runtime", "url": f"/runtimes/{r.id}"}])
+        results += _search_matches(s, select(Skill), "name", needle,
+            lambda skill: [{"type": "skill", "title": skill.name, "subtitle": "Skill", "url": "/skills"}])
+        results += _search_matches(s, select(Squad), "name", needle,
+            lambda squad: [{"type": "squad", "title": squad.name, "subtitle": "Squad", "url": "/squads"}])
     return {"results": results[:30]}
 
 
@@ -1541,58 +1541,65 @@ def usage_page(request: Request):
         })
 
 
+def _runtime_credential_status(config, profile, status):
+    """Fill in the part of a runtime's connection status that depends on how it's configured
+    to authenticate: a locally-running service, an installed CLI, or an API key.
+    """
+    environment_name = profile.get("env")
+    kind = profile.get("kind")
+    provider_id = status["provider_id"]
+    if kind in {"local", "local_openai"}:
+        base_url = config.get("base_url") or profile.get("base_url", "")
+        check_url = (
+            f"{base_url.rstrip('/')}/api/tags"
+            if provider_id == "ollama"
+            else f"{base_url.rstrip('/')}/models"
+        )
+        try:
+            response = httpx.get(check_url, timeout=0.5)
+            response.raise_for_status()
+            status.update(label="Local service online", ready=True)
+        except httpx.HTTPError:
+            status.update(label="Local service offline", ready=False)
+    elif kind == "cli":
+        command = config.get("command") or profile.get("command", "")
+        available = bool(shutil.which(command) or Path(command).expanduser().is_file())
+        if provider_id == "codex_cli" and not available:
+            local_app_data = os.environ.get("LOCALAPPDATA", "")
+            available = bool(local_app_data) and (
+                Path(local_app_data) / "Programs" / "OpenAI" / "Codex" / "bin" / "codex.exe"
+            ).is_file()
+        status.update(label="CLI installed" if available else "CLI not found", ready=available)
+    elif config.get("api_key"):
+        status.update(label="API key saved", ready=True)
+    elif environment_name and os.environ.get(environment_name):
+        status.update(label="Environment key", ready=True)
+    elif profile.get("allow_no_key"):
+        status.update(label="No key required", ready=True)
+    else:
+        status.update(label="API key needed", ready=False)
+
+
+def _runtime_connection_status(runtime):
+    config = json.loads(runtime.config_json or "{}")
+    provider_id = config.get("provider_id", runtime.type.value)
+    profile = provider_config(provider_id)
+    status = {"provider_name": profile["name"], "provider_id": provider_id}
+    _runtime_credential_status(config, profile, status)
+    if runtime.health_status == "healthy":
+        status.update(label="Provider responding", ready=True)
+    elif runtime.health_status == "limited":
+        status.update(label="Usage limit reached - backups promoted", ready=False)
+    elif runtime.health_status == "error":
+        status.update(label="Provider check failed", ready=False)
+    return status
+
+
 @app.get("/runtimes")
 def runtimes_page(request: Request):
     with get_session() as s:
         runtimes = s.scalars(select(Runtime).where(Runtime.archived.is_(False)).order_by(Runtime.name)).all()
-        connection_status = {}
-        for runtime in runtimes:
-            config = json.loads(runtime.config_json or "{}")
-            provider_id = config.get("provider_id", runtime.type.value)
-            profile = provider_config(provider_id)
-            environment_name = profile.get("env")
-            kind = profile.get("kind")
-            status = {"provider_name": profile["name"], "provider_id": provider_id}
-            if kind in {"local", "local_openai"}:
-                base_url = config.get("base_url") or profile.get("base_url", "")
-                check_url = (
-                    f"{base_url.rstrip('/')}/api/tags"
-                    if provider_id == "ollama"
-                    else f"{base_url.rstrip('/')}/models"
-                )
-                try:
-                    response = httpx.get(check_url, timeout=0.5)
-                    response.raise_for_status()
-                    status.update(label="Local service online", ready=True)
-                except httpx.HTTPError:
-                    status.update(label="Local service offline", ready=False)
-            elif kind == "cli":
-                command = config.get("command") or profile.get("command", "")
-                available = bool(shutil.which(command) or Path(command).expanduser().is_file())
-                if provider_id == "codex_cli" and not available:
-                    local_app_data = os.environ.get("LOCALAPPDATA", "")
-                    available = bool(local_app_data) and (
-                        Path(local_app_data) / "Programs" / "OpenAI" / "Codex" / "bin" / "codex.exe"
-                    ).is_file()
-                status.update(
-                    label="CLI installed" if available else "CLI not found",
-                    ready=available,
-                )
-            elif config.get("api_key"):
-                status.update(label="API key saved", ready=True)
-            elif environment_name and os.environ.get(environment_name):
-                status.update(label="Environment key", ready=True)
-            elif profile.get("allow_no_key"):
-                status.update(label="No key required", ready=True)
-            else:
-                status.update(label="API key needed", ready=False)
-            if runtime.health_status == "healthy":
-                status.update(label="Provider responding", ready=True)
-            elif runtime.health_status == "limited":
-                status.update(label="Usage limit reached - backups promoted", ready=False)
-            elif runtime.health_status == "error":
-                status.update(label="Provider check failed", ready=False)
-            connection_status[runtime.id] = status
+        connection_status = {runtime.id: _runtime_connection_status(runtime) for runtime in runtimes}
         return templates.TemplateResponse(
             request,
             "runtimes.html",
