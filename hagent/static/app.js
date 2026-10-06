@@ -44,15 +44,15 @@
     });
   }
 
-  document.querySelectorAll("[data-modal]").forEach(function (btn) {
-    btn.addEventListener("click", function () {
+  document.addEventListener("click", function (e) {
+    var modalBtn = e.target.closest ? e.target.closest("[data-modal]") : null;
+    if (modalBtn) {
       closeQcMenu();
-      openModal(btn.getAttribute("data-modal"));
-    });
-  });
-
-  document.querySelectorAll("[data-close]").forEach(function (btn) {
-    btn.addEventListener("click", closeModal);
+      openModal(modalBtn.getAttribute("data-modal"));
+      return;
+    }
+    var closeBtn = e.target.closest ? e.target.closest("[data-close]") : null;
+    if (closeBtn) closeModal();
   });
 
   if (modalOverlay) {
@@ -125,7 +125,8 @@
         updateSelection();
       });
       row.addEventListener("click", function () {
-        window.location.href = r.url;
+        closePalette();
+        window.hagentNavigate(r.url);
       });
       paletteResults.appendChild(row);
     });
@@ -174,7 +175,10 @@
       } else if (e.key === "Enter") {
         e.preventDefault();
         var chosen = currentResults[selectedIndex];
-        if (chosen) window.location.href = chosen.url;
+        if (chosen) {
+          closePalette();
+          window.hagentNavigate(chosen.url);
+        }
       } else if (e.key === "Escape") {
         closePalette();
       }
@@ -203,8 +207,131 @@
   });
 })();
 
-// Focused collection filtering for the Agents page.
+// ---- SPA-style client-side router -----------------------------------
+// Fetches nav/main/modals fragments instead of full pages so navigating
+// around the app never flashes the sidebar or reloads the page.
 (function () {
+  "use strict";
+
+  var mainSlot = document.getElementById("main-slot");
+  var sidebarScroll = document.querySelector(".sidebar-scroll");
+  var modalOverlay = document.getElementById("modal-overlay");
+
+  function execScripts(container) {
+    container.querySelectorAll("script").forEach(function (old) {
+      var fresh = document.createElement("script");
+      for (var i = 0; i < old.attributes.length; i++) {
+        fresh.setAttribute(old.attributes[i].name, old.attributes[i].value);
+      }
+      fresh.textContent = old.textContent;
+      old.parentNode.replaceChild(fresh, old);
+    });
+  }
+
+  function applyFragment(data) {
+    if (data.title) document.title = data.title;
+    if (sidebarScroll) sidebarScroll.innerHTML = data.nav;
+    if (mainSlot) {
+      mainSlot.innerHTML = data.main;
+      execScripts(mainSlot);
+      (window.hagentPageInits || []).forEach(function (fn) { fn(); });
+    }
+    if (modalOverlay) {
+      modalOverlay.hidden = true;
+      document.body.classList.remove("modal-open");
+      modalOverlay.innerHTML = data.modals || "";
+    }
+    window.scrollTo(0, 0);
+  }
+
+  function navigate(url, recordHistory) {
+    return fetch(url, {
+      headers: { "X-Hagent-Nav": "1" },
+      credentials: "same-origin",
+    })
+      .then(function (response) {
+        var contentType = response.headers.get("content-type") || "";
+        if (!response.ok || contentType.indexOf("application/json") === -1) {
+          throw new Error("non-fragment response");
+        }
+        return response.json();
+      })
+      .then(function (data) {
+        applyFragment(data);
+        if (recordHistory !== false) history.pushState({ hagentNav: true }, "", url);
+      })
+      .catch(function () {
+        window.location.href = url;
+      });
+  }
+
+  window.hagentNavigate = navigate;
+
+  function isInternalPlainLink(a) {
+    if (!a.href) return false;
+    if (a.target || a.hasAttribute("download") || a.hasAttribute("data-no-pjax")) return false;
+    var href = a.getAttribute("href") || "";
+    if (!href || href.charAt(0) === "#" || href.indexOf("javascript:") === 0 || href.indexOf("mailto:") === 0) return false;
+    var url = new URL(a.href, window.location.href);
+    return url.origin === window.location.origin;
+  }
+
+  document.addEventListener("click", function (e) {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    var a = e.target.closest ? e.target.closest("a") : null;
+    if (!a || !isInternalPlainLink(a)) return;
+    e.preventDefault();
+    navigate(a.href, true);
+  });
+
+  document.addEventListener("submit", function (e) {
+    if (e.defaultPrevented) return;
+    var form = e.target;
+    if (!(form instanceof HTMLFormElement) || form.hasAttribute("data-no-pjax")) return;
+    var method = (form.getAttribute("method") || "get").toLowerCase();
+
+    if (method === "get") {
+      e.preventDefault();
+      var params = new URLSearchParams(new FormData(form));
+      var action = form.getAttribute("action") || window.location.pathname + window.location.search;
+      var url = action.split("?")[0] + (params.toString() ? "?" + params.toString() : "");
+      navigate(url, true);
+      return;
+    }
+
+    e.preventDefault();
+    var postUrl = form.getAttribute("action") || window.location.href;
+    var finalUrl = postUrl;
+    fetch(postUrl, {
+      method: "POST",
+      body: new FormData(form),
+      headers: { "X-Hagent-Nav": "1" },
+      credentials: "same-origin",
+    })
+      .then(function (response) {
+        finalUrl = response.url || finalUrl;
+        var contentType = response.headers.get("content-type") || "";
+        if (!response.ok || contentType.indexOf("application/json") === -1) {
+          throw new Error("non-fragment response");
+        }
+        return response.json();
+      })
+      .then(function (data) {
+        applyFragment(data);
+        history.pushState({ hagentNav: true }, "", finalUrl);
+      })
+      .catch(function () {
+        form.submit();
+      });
+  });
+
+  window.addEventListener("popstate", function () {
+    navigate(window.location.href, false);
+  });
+})();
+
+// Focused collection filtering for the Agents page.
+function initAgentFilter() {
   "use strict";
   var input = document.getElementById("agent-filter");
   if (!input) return;
@@ -223,9 +350,12 @@
     if (count) count.textContent = String(visible);
     if (empty) empty.hidden = visible !== 0;
   });
-})();
+}
+(window.hagentPageInits = window.hagentPageInits || []).push(initAgentFilter);
+initAgentFilter();
+
 // Provider model catalog, task guidance, and local hardware fit.
-(function () {
+function initRuntimeModelCatalog() {
   "use strict";
   var provider = document.getElementById("runtime-type");
   var model = document.getElementById("runtime-model");
@@ -390,9 +520,12 @@
   provider.addEventListener("change", loadModels);
   model.addEventListener("change", updateModelInfo);
   loadModels();
-})();
+}
+(window.hagentPageInits = window.hagentPageInits || []).push(initRuntimeModelCatalog);
+initRuntimeModelCatalog();
+
 /* Agent creation: guided instruction draft, with explicit user-triggered runtime calls. */
-(function () {
+function initAgentDraftHelper() {
   "use strict";
   var panel = document.getElementById("agent-builder-panel");
   var radios = document.querySelectorAll('input[name="agent-start-mode"]');
@@ -436,4 +569,6 @@
       draftButton.disabled = false;
     });
   });
-})();
+}
+(window.hagentPageInits = window.hagentPageInits || []).push(initAgentDraftHelper);
+initAgentDraftHelper();

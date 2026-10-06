@@ -26,7 +26,7 @@ from hagent.triggers import configure as configure_trigger
 from hagent.engine import cancel_issue, execute_agent
 from hagent.agent_avatars import agent_avatar_url
 from hagent.adapters import get_runtime_class
-from fastapi.responses import RedirectResponse, JSONResponse, FileResponse
+from fastapi.responses import RedirectResponse, JSONResponse, FileResponse, Response
 from fastapi.templating import Jinja2Templates
 from jinja2 import pass_context
 from starlette.concurrency import run_in_threadpool
@@ -91,6 +91,45 @@ app = FastAPI(title="Hagent", lifespan=lifespan)
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 templates.env.globals["skill_badge_svg"] = skill_badge_svg
 templates.env.globals["agent_avatar_url"] = agent_avatar_url
+
+_NAV_SNIPPET = re.compile(r"<!--NAV_START-->(.*?)<!--NAV_END-->", re.DOTALL)
+_MAIN_SNIPPET = re.compile(r"<!--MAIN_START-->(.*?)<!--MAIN_END-->", re.DOTALL)
+_MODALS_SNIPPET = re.compile(r"<!--MODALS_START-->(.*?)<!--MODALS_END-->", re.DOTALL)
+_TITLE_SNIPPET = re.compile(r"<title>(.*?)</title>", re.DOTALL)
+
+
+@app.middleware("http")
+async def spa_navigation_middleware(request: Request, call_next):
+    """Lets the client-side router (static/app.js) fetch a page's nav/main/modals
+    fragments instead of a full HTML document, so navigating feels like an app
+    instead of a website - no sidebar flash, no full-page reload."""
+    response = await call_next(request)
+    if request.headers.get("x-hagent-nav") != "1":
+        return response
+    if not response.headers.get("content-type", "").startswith("text/html"):
+        return response
+
+    body = b""
+    async for chunk in response.body_iterator:
+        body += chunk
+    html = body.decode("utf-8")
+
+    nav_match = _NAV_SNIPPET.search(html)
+    main_match = _MAIN_SNIPPET.search(html)
+    if not nav_match or not main_match:
+        return Response(content=body, status_code=response.status_code, headers=dict(response.headers))
+
+    modals_match = _MODALS_SNIPPET.search(html)
+    title_match = _TITLE_SNIPPET.search(html)
+    return JSONResponse(
+        {
+            "title": title_match.group(1) if title_match else "",
+            "nav": nav_match.group(1),
+            "main": main_match.group(1),
+            "modals": modals_match.group(1) if modals_match else "",
+        },
+        status_code=response.status_code,
+    )
 
 
 def chat_unread_count(session=None) -> int:

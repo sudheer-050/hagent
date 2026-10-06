@@ -95,6 +95,18 @@
 
 * { box-sizing: border-box; }
 
+/* Scrollbars stay functional everywhere but are never drawn, so panes can
+   overflow and scroll without a visible track/thumb cluttering the UI. */
+* {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+*::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
 html, body {
   margin: 0;
   padding: 0;
@@ -154,6 +166,13 @@ body {
 .main {
   position: relative;
   z-index: 1;
+}
+
+/* Keeps #main-slot out of the body flex layout - it exists only so the
+   client-side router has a stable node to swap .main's innerHTML into
+   without touching elements app.js holds persistent references to. */
+#main-slot {
+  display: contents;
 }
 
 .brand {
@@ -1986,7 +2005,8 @@ body.chat-page { height:100dvh; min-height:0; overflow:hidden; }
 .chat-sidebar-head { display:flex; align-items:center; justify-content:space-between; gap:var(--space-2); padding:var(--space-2) var(--space-2) var(--space-3); }
 .chat-sidebar-head h1 { margin:0; font-size:1.05rem; }
 .chat-new-button { padding:.45rem .65rem; font-size:.76rem; }
-.chat-thread-list { min-height:0; overflow-y:auto; overflow-x:hidden; display:flex; flex-direction:column; gap:1px; }
+.chat-thread-list { min-height:0; overflow-y:auto; overflow-x:hidden; display:flex; flex-direction:column; gap:1px; scrollbar-width:none; -ms-overflow-style:none; }
+.chat-thread-list::-webkit-scrollbar { display:none; }
 .chat-sidebar-empty { padding:var(--space-3); color:var(--text-muted); font-size:.85rem; }
 .chat-thread-link {
   position:relative;
@@ -2003,7 +2023,13 @@ body.chat-page { height:100dvh; min-height:0; overflow:hidden; }
   opacity:0; transform:scaleY(.4); transform-origin:center;
   transition:opacity .15s ease, transform .15s ease;
 }
-.chat-thread-link:hover { background:var(--glass-panel-hover); }
+.chat-thread-link::after {
+  content:""; position:absolute; bottom:0;
+  left:var(--space-3); right:var(--space-3);
+  height:1px; background:var(--glass-border);
+}
+.chat-thread-link:last-child::after { display:none; }
+.chat-thread-link:hover, .chat-thread-link:focus { background:var(--glass-panel-hover); text-decoration:none; }
 .chat-thread-link.active { background:var(--accent-tint); }
 .chat-thread-link.active::before { opacity:1; transform:scaleY(1); }
 .chat-thread-avatar { flex:none; width:36px; height:36px; }
@@ -2040,8 +2066,9 @@ body.chat-page { height:100dvh; min-height:0; overflow:hidden; }
 }
 .chat-message.grouped .chat-message-bubble { border-radius:var(--radius-lg) var(--radius-lg) var(--radius-lg) var(--radius-sm); }
 .chat-message.from-user .chat-message-bubble {
-  background:linear-gradient(165deg, rgba(232,168,87,.32), rgba(232,168,87,.2));
-  border-color:rgba(232,168,87,.55);
+  background:rgba(255,255,255,.85);
+  border-color:rgba(255,255,255,.9);
+  color:#15181f;
   border-radius:var(--radius-lg) var(--radius-lg) 4px var(--radius-lg);
 }
 .chat-message.from-user.grouped .chat-message-bubble { border-radius:var(--radius-lg) var(--radius-lg) var(--radius-sm) var(--radius-lg); }
@@ -2188,7 +2215,6 @@ body.chat-page { height:100dvh; min-height:0; overflow:hidden; }
 }
 @media (max-width:760px) {
   body.chat-page { display:flex; flex-direction:column; }
-  .chat-page .sidebar { flex:none; position:relative; }
   .chat-page .main { flex:1; height:auto; min-height:0; }
   .chat-workspace { grid-template-columns:minmax(0,1fr); grid-template-rows:auto minmax(0,1fr); }
   .chat-sidebar { border-right:0; border-bottom:1px solid var(--glass-border); }

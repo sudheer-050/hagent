@@ -8,7 +8,7 @@
   <title>{% block title %}{{ site.app_name }}{% endblock %}</title>
   <link rel="icon" href="{{ site.app_icon_url }}">
   <link rel="apple-touch-icon" href="{{ site.app_icon_url }}">
-  <link rel="stylesheet" href="/static/style.css?v=chat-redesign-2">
+  <link rel="stylesheet" href="/static/style.css?v=no-scrollbars-1">
   {% block head %}{% endblock %}
 </head>
 <body class="{% block body_class %}{% endblock %}">
@@ -35,6 +35,7 @@
       </div>
     </div>
     <div class="sidebar-scroll">
+      <!--NAV_START-->
       <nav>
         <a href="/" class="{{ 'active' if active == 'dashboard' }}">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
@@ -143,15 +144,21 @@
           </a>
         </nav>
       </details>
+      <!--NAV_END-->
     </div>
     <div class="sidebar-footer">{{ site.tagline }}</div>
   </div>
+  <div id="main-slot">
+  <!--MAIN_START-->
   <div class="main{{ ' main-wide' if wide_layout else '' }}">
     {% block content %}{% endblock %}
+  </div>
+  <!--MAIN_END-->
   </div>
 
   {% set qc = quickcreate_data() %}
   <div class="modal-overlay" id="modal-overlay" hidden>
+  <!--MODALS_START-->
     <div class="modal" id="qc-modal-project" hidden>
       <div class="modal-head">
         <h3>New project</h3>
@@ -262,6 +269,7 @@
     </div>
     {% endif %}
     {% block modals %}{% endblock %}
+  <!--MODALS_END-->
   </div>
 
   <div class="palette-overlay" id="palette-overlay" hidden>
@@ -272,15 +280,15 @@
   </div>
 
   {% if site.show_starfield %}<script src="/static/starfield.js?v=evening-blue-1"></script>{% endif %}
-  <script src="/static/app.js?v=agent-builder-1"></script>
+  <script src="/static/app.js?v=spa-router-2"></script>
   <script>
     // Site-wide, on every page: keeps the Chat nav badge current (e.g. Holly
     // messaging you unprompted via message_user) without needing to be on the
     // Chat page or reload anything.
     (function () {
-      var badge = document.getElementById("chat-nav-unread-badge");
-      if (!badge) return;
       setInterval(function () {
+        var badge = document.getElementById("chat-nav-unread-badge");
+        if (!badge) return;
         fetch("/api/chat/unread-count")
           .then(function (r) { return r.json(); })
           .then(function (data) {
