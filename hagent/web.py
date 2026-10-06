@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 import httpx
 import click
 from hagent.tenancy import ScopeError
+from hagent.applications_catalog import APPLICATIONS, get_application
 from hagent.db import request_workspace
 from starlette.middleware.gzip import GZipMiddleware
 
@@ -221,6 +222,7 @@ def template_app_settings(context) -> dict:
 
 
 templates.env.globals["app_settings"] = template_app_settings
+templates.env.globals["applications"] = APPLICATIONS
 
 
 def _load_template_values() -> dict:
@@ -777,6 +779,25 @@ def settings_page(request: Request, saved: str = ""):
         request,
         "settings.html",
         {"settings": get_app_settings(), "active": "settings", "saved": saved == "1"},
+    )
+
+
+@app.get("/applications")
+def applications_list(request: Request):
+    return templates.TemplateResponse(
+        request, "applications_list.html", {"applications": APPLICATIONS, "active": "applications"}
+    )
+
+
+@app.get("/applications/{slug}")
+def application_detail(request: Request, slug: str):
+    application = get_application(slug)
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+    return templates.TemplateResponse(
+        request,
+        "application_detail.html",
+        {"application": application, "active": "applications", "active_slug": slug},
     )
 
 

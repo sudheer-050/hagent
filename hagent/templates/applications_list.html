@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Applications &middot; {{ site.app_name }}{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="eyebrow">Your work</div>
+    <h2>Applications</h2>
+    <p class="page-sub">Everything you've built so far, in one place. Open one to see what it is before you open or check it.</p>
+  </div>
+</div>
+
+<div class="collection-list">
+  {% for app in applications %}
+  <a class="collection-row" href="/applications/{{ app.slug }}">
+    <span class="collection-row-main"><strong>{{ app.name }}</strong><small>{{ app.tagline }}</small></span>
+    <span class="collection-row-designation">{{ 'Live' if app.status == 'live' else 'Code only' }}</span>
+    <svg class="card-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg>
+  </a>
+  {% endfor %}
+</div>
+{% endblock %}
