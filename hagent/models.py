@@ -298,6 +298,8 @@ class ChatMessage(Base):
     thread_id: Mapped[str] = mapped_column(ForeignKey("chat_threads.id"), nullable=False)
     role: Mapped[str] = mapped_column(String, nullable=False)  # "user" | "agent"
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    image_path: Mapped[str | None] = mapped_column(String, nullable=True)  # an uploaded or agent-returned image for this turn
+    image_mime: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     thread: Mapped["ChatThread"] = relationship(back_populates="messages")

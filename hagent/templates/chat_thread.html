@@ -20,7 +20,10 @@
     <div class="chat-message-list" id="chat-message-list">
       {% for m in messages %}
       <div class="chat-message{% if m.role == 'user' %} from-user{% endif %}">
-        <div class="chat-message-bubble">{{ m.content }}</div>
+        <div class="chat-message-bubble">
+          {% if m.image_path %}<img class="chat-message-image" src="/chat/messages/{{ m.id }}/image" alt="">{% endif %}
+          {% if m.content %}{{ m.content }}{% endif %}
+        </div>
       </div>
       {% else %}
       <div class="chat-empty-state">
@@ -34,8 +37,9 @@
       </div>
       {% endif %}
     </div>
-    <form class="chat-composer" id="chat-composer" method="post" action="/chat/{{ agent.id }}/messages">
-      <textarea name="message" id="chat-composer-input" placeholder="Message {{ agent.name }}..." rows="1" required {% if pending %}disabled{% endif %}></textarea>
+    <form class="chat-composer" id="chat-composer" method="post" action="/chat/{{ agent.id }}/messages" enctype="multipart/form-data">
+      <input type="file" name="image" id="chat-composer-image" accept="image/png,image/jpeg,image/webp,image/gif" {% if pending %}disabled{% endif %}>
+      <textarea name="message" id="chat-composer-input" placeholder="Message {{ agent.name }}..." rows="1" {% if pending %}disabled{% endif %}></textarea>
       <button type="submit" class="primary" {% if pending %}disabled{% endif %}>Send</button>
     </form>
   </div>
@@ -50,6 +54,7 @@
     // without a full page reload. Never touches the composer, so it can't clobber typing.
     function setComposerDisabled(disabled) {
       if (input) input.disabled = disabled;
+      if (imageInput) imageInput.disabled = disabled;
       var button = composer && composer.querySelector("button[type=submit]");
       if (button) { button.disabled = disabled; button.textContent = "Send"; }
     }
@@ -85,24 +90,35 @@
     // your message immediately, then refresh once the agent's turn actually finishes.
     var composer = document.getElementById("chat-composer");
     var input = document.getElementById("chat-composer-input");
+    var imageInput = document.getElementById("chat-composer-image");
     if (composer && input) {
       var button = composer.querySelector("button[type=submit]");
       composer.addEventListener("submit", function (e) {
         e.preventDefault();
         var text = input.value.trim();
-        if (!text || (button && button.disabled)) return;
+        var file = imageInput && imageInput.files && imageInput.files[0];
+        if ((!text && !file) || (button && button.disabled)) return;
         input.value = "";
         var bubble = document.createElement("div");
         bubble.className = "chat-message from-user";
         var content = document.createElement("div");
         content.className = "chat-message-bubble";
-        content.textContent = text;
+        if (file) {
+          var preview = document.createElement("img");
+          preview.className = "chat-message-image";
+          preview.src = URL.createObjectURL(file);
+          content.appendChild(preview);
+        }
+        if (text) content.appendChild(document.createTextNode(text));
         bubble.appendChild(content);
         if (list) { list.appendChild(bubble); list.scrollTop = list.scrollHeight; }
         if (button) { button.disabled = true; button.textContent = "Sending..."; }
         if (input) input.disabled = true;
+        if (imageInput) imageInput.disabled = true;
         var body = new FormData();
         body.append("message", text);
+        if (file) body.append("image", file);
+        if (imageInput) imageInput.value = "";
         // The POST now returns as soon as the message is saved - it no longer waits for the
         // agent's reply - so refresh() picking up the "thinking" bubble is what keeps things
         // disabled from here, not this handler re-enabling them.

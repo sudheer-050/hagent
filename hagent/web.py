@@ -1185,10 +1185,21 @@ def chat_thread_page(request: Request, agent_id: str):
         )
 
 
+def _save_chat_image(thread_id: str, workspace_id: str, mime_type: str, data: bytes) -> str:
+    import secrets
+
+    ext = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}.get(mime_type, "")
+    folder = Path("attachments") / "chat" / workspace_id / thread_id
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / f"{secrets.token_hex(16)}{ext}"
+    target.write_bytes(data)
+    return str(target.resolve())
+
+
 def _run_chat_turn(
     agent_id: str, message: str, resume_session_id: str | None, user_id: str | None,
-    runtime_id: str | None, history: list[dict],
-) -> tuple[str, str | None, str | None]:
+    runtime_id: str | None, history: list[dict], image: dict | None,
+) -> tuple[str, str | None, str | None, dict | None]:
     """Runs on a worker thread with its own session - execute_agent needs a
     live session bound to the agent (routing, memory, delegation all read it).
 
@@ -1197,7 +1208,10 @@ def _run_chat_turn(
     strand resume_session_id/history (see engine.execute_agent's routing_override). history
     carries the thread's recent turns so API-key providers - which only ever see the current
     prompt, unlike CLI-backed ones that get real --resume - still know what's being discussed.
+    image, when given, is {"mime_type": str, "data": bytes} for an image attached to this turn
+    (see engine.execute_agent's images param) - only image-capable runtimes (Gemini) use it.
     """
+    images = [image] if image else None
     with get_session() as s:
         agent = require(s, Agent, agent_id)
         routing_override = {"mode": "manual", "runtime_id": runtime_id} if runtime_id else None
@@ -1205,7 +1219,7 @@ def _run_chat_turn(
             try:
                 result = execute_agent(
                     agent, message, resume_session_id=resume_session_id, memory_user_id=user_id,
-                    history=history, routing_override=routing_override,
+                    history=history, routing_override=routing_override, images=images,
                 )
             except ValueError:
                 if not routing_override:
@@ -1214,28 +1228,33 @@ def _run_chat_turn(
                 # auto-routing for this turn instead of being stuck forever; whatever it
                 # picks re-pins the thread below.
                 result = execute_agent(
-                    agent, message, resume_session_id=None, memory_user_id=user_id, history=history,
+                    agent, message, resume_session_id=None, memory_user_id=user_id, history=history, images=images,
                 )
             reply = (result.output or "").strip() or "(No response.)"
-            return reply, result.session_id, result.runtime_id
+            reply_image = result.images[0] if result.images else None
+            return reply, result.session_id, result.runtime_id, reply_image
         except Exception as exc:
-            return f"Something went wrong reaching {agent.name}: {exc}", None, None
+            return f"Something went wrong reaching {agent.name}: {exc}", None, None, None
 
 
 def _complete_chat_turn(
     thread_id: str, agent_id: str, message: str, resume_session_id: str | None,
-    user_id: str | None, runtime_id: str | None, history: list[dict],
+    user_id: str | None, runtime_id: str | None, history: list[dict], image: dict | None,
 ) -> None:
     """The actual background half of a chat turn (see chat_send_message) - runs after the
     HTTP response has already gone back, same pattern as issue_run's background_tasks."""
-    reply, new_session_id, new_runtime_id = _run_chat_turn(
-        agent_id, message, resume_session_id, user_id, runtime_id, history
+    reply, new_session_id, new_runtime_id, reply_image = _run_chat_turn(
+        agent_id, message, resume_session_id, user_id, runtime_id, history, image
     )
     with get_session() as s:
         thread = s.get(ChatThread, thread_id)
         if thread is None:
             return
-        s.add(ChatMessage(thread_id=thread.id, role="agent", content=reply))
+        reply_msg = ChatMessage(thread_id=thread.id, role="agent", content=reply)
+        if reply_image:
+            reply_msg.image_mime = reply_image["mime_type"]
+            reply_msg.image_path = _save_chat_image(thread.id, thread.workspace_id, reply_image["mime_type"], reply_image["data"])
+        s.add(reply_msg)
         if new_session_id:
             thread.session_id = new_session_id
         if new_runtime_id:
@@ -1245,12 +1264,24 @@ def _complete_chat_turn(
 
 
 CHAT_HISTORY_TURNS = 20
+CHAT_IMAGE_MIME_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
 
 
 @app.post("/chat/{agent_id}/messages")
-def chat_send_message(agent_id: str, background_tasks: BackgroundTasks, message: str = Form(...)):
+def chat_send_message(
+    agent_id: str, background_tasks: BackgroundTasks, message: str = Form(""),
+    image: UploadFile | None = File(None),
+):
     message = message.strip()
-    if not message:
+    image_data = None
+    if image is not None and image.filename:
+        if image.content_type not in CHAT_IMAGE_MIME_TYPES:
+            raise HTTPException(400, "Unsupported image type")
+        data = image.file.read(10 * 1024 * 1024 + 1)
+        if len(data) > 10 * 1024 * 1024:
+            raise HTTPException(413, "Image exceeds 10 MiB")
+        image_data = {"mime_type": image.content_type, "data": data}
+    if not message and not image_data:
         raise HTTPException(400, "Message cannot be empty")
     with get_session() as s:
         agent = require(s, Agent, agent_id)
@@ -1261,7 +1292,11 @@ def chat_send_message(agent_id: str, background_tasks: BackgroundTasks, message:
             s.add(thread)
             s.flush()
         history = [{"role": m.role, "content": m.content} for m in thread.messages[-CHAT_HISTORY_TURNS:]]
-        s.add(ChatMessage(thread_id=thread.id, role="user", content=message))
+        user_msg = ChatMessage(thread_id=thread.id, role="user", content=message)
+        if image_data:
+            user_msg.image_mime = image_data["mime_type"]
+            user_msg.image_path = _save_chat_image(thread.id, workspace.id, image_data["mime_type"], image_data["data"])
+        s.add(user_msg)
         thread.unread = False
         thread.pending = True
         s.commit()
@@ -1275,9 +1310,18 @@ def chat_send_message(agent_id: str, background_tasks: BackgroundTasks, message:
     # time. The client polls /chat/{agent_id} every few seconds and picks up the reply, with a
     # "thinking" bubble shown via thread.pending in the meantime.
     background_tasks.add_task(
-        _complete_chat_turn, thread_id, agent_id, message, resume_session_id, user_id, runtime_id, history
+        _complete_chat_turn, thread_id, agent_id, message, resume_session_id, user_id, runtime_id, history, image_data
     )
     return RedirectResponse(f"/chat/{agent_id}", status_code=303)
+
+
+@app.get("/chat/messages/{message_id}/image")
+def chat_message_image(message_id: str):
+    with get_session() as s:
+        item = require(s, ChatMessage, message_id)
+        if not item.image_path or not Path(item.image_path).is_file():
+            raise HTTPException(404, "Image not found")
+        return FileResponse(item.image_path, media_type=item.image_mime or "application/octet-stream")
 
 
 @app.get("/agents")

@@ -75,7 +75,7 @@ def _find_codex(command: str) -> str | None:
 
 
 class CodexCliRuntime(BaseRuntime):
-    def run(self, prompt: str, context: str = "", tools=None, tool_executor=None) -> RuntimeResult:
+    def run(self, prompt: str, context: str = "", tools=None, tool_executor=None, images=None) -> RuntimeResult:
         executable = _find_codex(self.config.get("command", "codex"))
         if not executable:
             raise RuntimeError("Codex CLI is not installed or is not on PATH")

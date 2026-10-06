@@ -15,7 +15,7 @@ DEFAULT_BASE_URL = "https://api.openai.com/v1"
 
 
 class OpenAIRuntime(BaseRuntime):
-    def run(self, prompt: str, context: str = "", tools=None, tool_executor=None) -> RuntimeResult:
+    def run(self, prompt: str, context: str = "", tools=None, tool_executor=None, images=None) -> RuntimeResult:
         env_name = self.config.get("api_key_env", "OPENAI_API_KEY")
         api_key = self.config.get("api_key") or os.environ.get(env_name)
         if not api_key and not self.config.get("allow_no_key"):

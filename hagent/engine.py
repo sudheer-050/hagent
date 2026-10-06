@@ -516,6 +516,7 @@ def execute_agent(
     routing_override=None,
     routing_run_id=None,
     history=None,
+    images=None,
 ):
     """Execute with the agent's primary runtime, then its optional backup.
 
@@ -627,7 +628,7 @@ def execute_agent(
     try:
         result = _execute_with_runtime(agent, primary, prompt, cancelled, record_tool,
             delegation_path, resolve_backup_runtime, delegation_budget, record_skill_use,
-            working_directory_override, resume_session_id, route_config, history=history)
+            working_directory_override, resume_session_id, route_config, history=history, images=images)
         result.runtime_id = primary.id
     except DelegationLimitExceeded:
         # A configured cost guard is a deliberate stop, not a provider error:
@@ -657,7 +658,7 @@ def execute_agent(
                 }
             result = _execute_with_runtime(agent, backup_runtime, prompt, cancelled, record_tool,
                 delegation_path, resolve_backup_runtime, delegation_budget, record_skill_use,
-                working_directory_override, route_config=fallback_config, history=history)
+                working_directory_override, route_config=fallback_config, history=history, images=images)
             result.runtime_id = backup_runtime.id
             if record_skill_use:
                 record_skill_use(agent)
@@ -679,7 +680,7 @@ def execute_agent(
                 try:
                     result = _execute_with_runtime(agent, failback_runtime, prompt, cancelled, record_tool,
                         delegation_path, resolve_backup_runtime, delegation_budget, record_skill_use,
-                        working_directory_override, history=history)
+                        working_directory_override, history=history, images=images)
                     result.runtime_id = failback_runtime.id
                     if record_skill_use:
                         record_skill_use(agent)
@@ -713,7 +714,7 @@ def _is_cancellation(error, cancelled):
     return bool(cancelled and cancelled())
 
 
-def _execute_with_runtime(agent, runtime, prompt, cancelled, record_tool, delegation_path=(), resolve_backup_runtime=None, delegation_budget=None, record_skill_use=None, working_directory_override=None, resume_session_id=None, route_config=None, history=None):
+def _execute_with_runtime(agent, runtime, prompt, cancelled, record_tool, delegation_path=(), resolve_backup_runtime=None, delegation_budget=None, record_skill_use=None, working_directory_override=None, resume_session_id=None, route_config=None, history=None, images=None):
     runtime_cls = get_runtime_class(runtime.type)
     config = json.loads(runtime.config_json or "{}")
     effective_working_directory = working_directory_override or getattr(agent, "terminal_working_directory", None)
@@ -1103,4 +1104,5 @@ def _execute_with_runtime(agent, runtime, prompt, cancelled, record_tool, delega
         context=context,
         tools=tools or None,
         tool_executor=execute_tool if tools else None,
+        images=images,
     )

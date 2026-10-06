@@ -159,7 +159,7 @@ def test_closing_and_reopening_continues_the_work_through_the_real_engine(world,
     """The user's scenario: an agent is mid-task, the app closes, and on the next start it carries on."""
     seen_prompts = []
 
-    def fake_run(self, prompt, context="", tools=None, tool_executor=None):
+    def fake_run(self, prompt, context="", tools=None, tool_executor=None, images=None):
         seen_prompts.append(prompt)
         return RuntimeResult(output="finished the login page")
 

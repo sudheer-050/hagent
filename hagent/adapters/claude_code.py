@@ -36,7 +36,7 @@ def _mcp_config_file(tools, tool_executor):
 
 
 class ClaudeCodeRuntime(BaseRuntime):
-    def run(self, prompt: str, context: str = "", tools=None, tool_executor=None) -> RuntimeResult:
+    def run(self, prompt: str, context: str = "", tools=None, tool_executor=None, images=None) -> RuntimeResult:
         command = self.config.get("command", "claude")
         candidate = Path(command).expanduser()
         executable = str(candidate) if candidate.is_file() else shutil.which(command)

@@ -151,6 +151,8 @@ def _ensure_schema() -> None:
         "chat_messages": {
             "role": "VARCHAR",
             "content": "TEXT",
+            "image_path": "VARCHAR",
+            "image_mime": "VARCHAR",
         },
     }
     additions['runs'].update({'input_tokens': 'INTEGER', 'output_tokens': 'INTEGER', 'owner_pid': 'INTEGER', 'owner_started': 'FLOAT', 'resumed_from': 'VARCHAR'})
@@ -230,7 +232,8 @@ def _ensure_schema() -> None:
             connection.execute(text("UPDATE chat_messages SET role = (CASE WHEN author = 'you' THEN 'user' ELSE 'agent' END), content = body WHERE role IS NULL"))
             connection.execute(text("""CREATE TABLE chat_messages_new (
                 id VARCHAR PRIMARY KEY, thread_id VARCHAR NOT NULL REFERENCES chat_threads(id),
-                role VARCHAR NOT NULL, content TEXT NOT NULL, created_at DATETIME NOT NULL)"""))
+                role VARCHAR NOT NULL, content TEXT NOT NULL, image_path VARCHAR, image_mime VARCHAR,
+                created_at DATETIME NOT NULL)"""))
             connection.execute(text("""INSERT INTO chat_messages_new (id, thread_id, role, content, created_at)
                 SELECT id, thread_id, role, content, created_at FROM chat_messages"""))
             connection.execute(text("DROP TABLE chat_messages"))

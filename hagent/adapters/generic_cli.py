@@ -42,7 +42,7 @@ def _dig(data: dict, dotted_path: str | None):
 
 
 class GenericCliRuntime(BaseRuntime):
-    def run(self, prompt: str, context: str = "", tools=None, tool_executor=None) -> RuntimeResult:
+    def run(self, prompt: str, context: str = "", tools=None, tool_executor=None, images=None) -> RuntimeResult:
         command = self.config.get("command")
         if not command:
             raise RuntimeError("generic_cli runtime requires 'command' in its config")

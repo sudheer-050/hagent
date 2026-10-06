@@ -305,7 +305,7 @@ def test_automation_chat_memory_and_routing(acceptance_db, monkeypatch):
     monkeypatch.setattr("hagent.web.run_autopilot_once", lambda _autopilot_id: Result())
     assert client.post(f"/autopilots/{autopilot_id}/trigger-now", follow_redirects=False).status_code == 303
 
-    monkeypatch.setattr("hagent.web._run_chat_turn", lambda *args: ("Acceptance reply", "session-1", None))
+    monkeypatch.setattr("hagent.web._run_chat_turn", lambda *args: ("Acceptance reply", "session-1", None, None))
     assert client.post(
         f"/chat/{world['agent']}/messages",
         data={"message": "Hello from acceptance"},
