@@ -272,6 +272,10 @@
   <!--MODALS_END-->
   </div>
 
+  <div class="image-lightbox" id="image-lightbox" hidden>
+    <img id="image-lightbox-img" src="" alt="">
+  </div>
+
   <div class="palette-overlay" id="palette-overlay" hidden>
     <div class="palette">
       <input type="text" id="palette-input" placeholder="Search chat, issues, runtimes, settings, everything..." autocomplete="off">
@@ -280,7 +284,7 @@
   </div>
 
   {% if site.show_starfield %}<script src="/static/starfield.js?v=evening-blue-1"></script>{% endif %}
-  <script src="/static/app.js?v=spa-router-2"></script>
+  <script src="/static/app.js?v=spa-router-3"></script>
   <script>
     // Site-wide, on every page: keeps the Chat nav badge current (e.g. Holly
     // messaging you unprompted via message_user) without needing to be on the

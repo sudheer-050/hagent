@@ -96,6 +96,7 @@ _NAV_SNIPPET = re.compile(r"<!--NAV_START-->(.*?)<!--NAV_END-->", re.DOTALL)
 _MAIN_SNIPPET = re.compile(r"<!--MAIN_START-->(.*?)<!--MAIN_END-->", re.DOTALL)
 _MODALS_SNIPPET = re.compile(r"<!--MODALS_START-->(.*?)<!--MODALS_END-->", re.DOTALL)
 _TITLE_SNIPPET = re.compile(r"<title>(.*?)</title>", re.DOTALL)
+_BODY_CLASS_SNIPPET = re.compile(r"<body class=\"([^\"]*)\">", re.DOTALL)
 
 
 @app.middleware("http")
@@ -121,9 +122,11 @@ async def spa_navigation_middleware(request: Request, call_next):
 
     modals_match = _MODALS_SNIPPET.search(html)
     title_match = _TITLE_SNIPPET.search(html)
+    body_class_match = _BODY_CLASS_SNIPPET.search(html)
     return JSONResponse(
         {
             "title": title_match.group(1) if title_match else "",
+            "body_class": body_class_match.group(1) if body_class_match else "",
             "nav": nav_match.group(1),
             "main": main_match.group(1),
             "modals": modals_match.group(1) if modals_match else "",

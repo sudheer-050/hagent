@@ -64,6 +64,28 @@
   var requestedModal = new URLSearchParams(window.location.search).get("add");
   if (requestedModal === "runtime") openModal("page-modal-runtime");
   if (requestedModal === "agent") openModal("page-modal-agent");
+
+  // ---- Image lightbox (agent avatars + chat image attachments) -------
+
+  var lightbox = document.getElementById("image-lightbox");
+  var lightboxImg = document.getElementById("image-lightbox-img");
+
+  if (lightbox && lightboxImg) {
+    document.addEventListener("click", function (e) {
+      var img = e.target.closest ? e.target.closest(".agent-avatar-img, .chat-message-image") : null;
+      if (!img) return;
+      e.preventDefault();
+      lightboxImg.src = img.src;
+      lightboxImg.alt = img.alt || "";
+      lightbox.hidden = false;
+      document.body.classList.add("modal-open");
+    });
+    lightbox.addEventListener("click", function () {
+      lightbox.hidden = true;
+      lightboxImg.src = "";
+      document.body.classList.remove("modal-open");
+    });
+  }
   // ---- Command palette (Ctrl/Cmd+K quick-switch) ---------------------
 
   var paletteOverlay = document.getElementById("palette-overlay");
@@ -230,6 +252,7 @@
 
   function applyFragment(data) {
     if (data.title) document.title = data.title;
+    document.body.className = data.body_class || "";
     if (sidebarScroll) sidebarScroll.innerHTML = data.nav;
     if (mainSlot) {
       mainSlot.innerHTML = data.main;
