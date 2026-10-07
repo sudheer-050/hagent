@@ -1300,28 +1300,50 @@ def _run_chat_turn(
 
 def _complete_chat_turn(
     thread_id: str, agent_id: str, message: str, resume_session_id: str | None,
-    user_id: str | None, runtime_id: str | None, history: list[dict], image: dict | None,
+    user_id: str | None, runtime_id: str | None, history: list[dict], image: dict | None, since_message_id: str,
 ) -> None:
     """The actual background half of a chat turn (see chat_send_message) - runs after the
-    HTTP response has already gone back, same pattern as issue_run's background_tasks."""
-    reply, new_session_id, new_runtime_id, reply_image = _run_chat_turn(
-        agent_id, message, resume_session_id, user_id, runtime_id, history, image
-    )
-    with get_session() as s:
-        thread = s.get(ChatThread, thread_id)
-        if thread is None:
-            return
-        reply_msg = ChatMessage(thread_id=thread.id, role="agent", content=reply)
-        if reply_image:
-            reply_msg.image_mime = reply_image["mime_type"]
-            reply_msg.image_path = _save_chat_image(thread.id, thread.workspace_id, reply_image["mime_type"], reply_image["data"])
-        s.add(reply_msg)
-        if new_session_id:
-            thread.session_id = new_session_id
-        if new_runtime_id:
-            thread.runtime_id = new_runtime_id
-        thread.pending = False
-        s.commit()
+    HTTP response has already gone back, same pattern as issue_run's background_tasks.
+
+    Messages typed while a turn is in flight are saved immediately by chat_send_message
+    (so nothing is lost or delayed on the sender's side) but don't start a turn of their
+    own - the runtime can only have one resume_session_id in flight at a time. Once this
+    turn's reply is in, loop to pick up anything that arrived in the meantime, combined
+    into a single follow-up turn, before finally clearing thread.pending."""
+    while True:
+        reply, new_session_id, new_runtime_id, reply_image = _run_chat_turn(
+            agent_id, message, resume_session_id, user_id, runtime_id, history, image
+        )
+        with get_session() as s:
+            thread = s.get(ChatThread, thread_id)
+            if thread is None:
+                return
+            reply_msg = ChatMessage(thread_id=thread.id, role="agent", content=reply)
+            if reply_image:
+                reply_msg.image_mime = reply_image["mime_type"]
+                reply_msg.image_path = _save_chat_image(thread.id, thread.workspace_id, reply_image["mime_type"], reply_image["data"])
+            s.add(reply_msg)
+            if new_session_id:
+                thread.session_id = new_session_id
+            if new_runtime_id:
+                thread.runtime_id = new_runtime_id
+            s.commit()
+            ordered = thread.messages
+            since_index = next((i for i, m in enumerate(ordered) if m.id == since_message_id), len(ordered) - 1)
+            backlog = [m for m in ordered[since_index + 1 :] if m.role == "user"]
+            if not backlog:
+                thread.pending = False
+                s.commit()
+                return
+            message = "\n\n".join(m.content for m in backlog if m.content)
+            image = None
+            last_with_image = next((m for m in reversed(backlog) if m.image_path), None)
+            if last_with_image:
+                image = {"mime_type": last_with_image.image_mime, "data": Path(last_with_image.image_path).read_bytes()}
+            since_message_id = backlog[-1].id
+            resume_session_id = thread.session_id
+            runtime_id = thread.runtime_id
+            history = [{"role": m.role, "content": m.content} for m in thread.messages[-CHAT_HISTORY_TURNS:]]
 
 
 CHAT_HISTORY_TURNS = 20
@@ -1353,6 +1375,12 @@ def chat_send_message(
             s.add(thread)
             s.flush()
         history = [{"role": m.role, "content": m.content} for m in thread.messages[-CHAT_HISTORY_TURNS:]]
+        # Always save the message right away, even if a turn is already running - the sender
+        # shouldn't have to wait for the in-flight reply just to have their follow-up recorded.
+        # If a turn is already in flight, don't start a second one (the runtime can only have
+        # one resume_session_id active at a time); _complete_chat_turn picks this message up
+        # as soon as the current turn finishes, combined with anything else sent in between.
+        already_pending = thread.pending
         user_msg = ChatMessage(thread_id=thread.id, role="user", content=message)
         if image_data:
             user_msg.image_mime = image_data["mime_type"]
@@ -1362,6 +1390,7 @@ def chat_send_message(
         thread.pending = True
         s.commit()
         thread_id = thread.id
+        since_message_id = user_msg.id
         resume_session_id = thread.session_id
         runtime_id = thread.runtime_id
         profile = s.scalar(select(UserProfile))
@@ -1370,9 +1399,11 @@ def chat_send_message(
     # any tool use) can easily take tens of seconds and used to block this response the whole
     # time. The client polls /chat/{agent_id} every few seconds and picks up the reply, with a
     # "thinking" bubble shown via thread.pending in the meantime.
-    background_tasks.add_task(
-        _complete_chat_turn, thread_id, agent_id, message, resume_session_id, user_id, runtime_id, history, image_data
-    )
+    if not already_pending:
+        background_tasks.add_task(
+            _complete_chat_turn, thread_id, agent_id, message, resume_session_id, user_id, runtime_id, history,
+            image_data, since_message_id,
+        )
     return RedirectResponse(f"/chat/{agent_id}", status_code=303)
 
 

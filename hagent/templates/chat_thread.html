@@ -8,7 +8,7 @@
   <div class="chat-conversation">
     <div class="chat-conversation-head">
       <span class="agent-avatar agent-custom-avatar" role="img" aria-label="{{ agent.name }} avatar">
-        <img class="agent-avatar-img" src="{{ agent_avatar_url(agent.id) }}" alt="" loading="lazy">
+        <img class="agent-avatar-img" src="{{ agent_avatar_url(agent.id, avatar_path=agent.avatar_path) }}" alt="" loading="lazy">
       </span>
       <span class="chat-conversation-head-info">
         <h2>{{ agent.name }}</h2>
@@ -38,11 +38,11 @@
     <form class="chat-composer" id="chat-composer" method="post" action="/chat/{{ agent.id }}/messages" enctype="multipart/form-data">
       <label class="chat-composer-attach icon-btn-round" title="Attach an image" aria-label="Attach an image">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a5 5 0 0 1-7.07-7.07l9.19-9.19a3.5 3.5 0 0 1 4.95 4.95l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
-        <input type="file" name="image" id="chat-composer-image" accept="image/png,image/jpeg,image/webp,image/gif" {% if pending %}disabled{% endif %}>
+        <input type="file" name="image" id="chat-composer-image" accept="image/png,image/jpeg,image/webp,image/gif">
       </label>
       <span class="chat-composer-filename" id="chat-composer-filename"></span>
-      <textarea name="message" id="chat-composer-input" placeholder="Message {{ agent.name }}..." rows="1" {% if pending %}disabled{% endif %}></textarea>
-      <button type="submit" class="chat-composer-send" aria-label="Send message" {% if pending %}disabled{% endif %}>
+      <textarea name="message" id="chat-composer-input" placeholder="Message {{ agent.name }}..." rows="1"></textarea>
+      <button type="submit" class="chat-composer-send" aria-label="Send message">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
       </button>
     </form>
@@ -62,19 +62,51 @@
     }
     requestAnimationFrame(scrollToBottom);
 
-    // Pulls in whatever the server now has for the message list and sidebar (an agent's
-    // reply, one it sent on its own via message_user, or one sent from another tab/device)
-    // without a full page reload. Never touches the composer, so it can't clobber typing.
-    function setComposerDisabled(disabled) {
-      if (input) input.disabled = disabled;
-      if (imageInput) imageInput.disabled = disabled;
-      var button = composer && composer.querySelector("button[type=submit]");
-      if (button) button.disabled = disabled;
+    var composer = document.getElementById("chat-composer");
+    var input = document.getElementById("chat-composer-input");
+    var imageInput = document.getElementById("chat-composer-image");
+    var filenameTag = document.getElementById("chat-composer-filename");
+
+    // Follow-ups typed while the agent is still working on a previous turn are sent to the
+    // server right away (it saves the message immediately and, if a turn is already in
+    // flight, folds it into the next turn once the current one finishes - see
+    // _complete_chat_turn in web.py). The composer is never disabled here; nothing is held
+    // back client-side waiting for a reply.
+    function buildBubble(text, file) {
+      var bubble = document.createElement("div");
+      bubble.className = "chat-message from-user";
+      var content = document.createElement("div");
+      content.className = "chat-message-bubble";
+      if (file) {
+        var preview = document.createElement("img");
+        preview.className = "chat-message-image";
+        preview.src = URL.createObjectURL(file);
+        content.appendChild(preview);
+      }
+      if (text) content.appendChild(document.createTextNode(text));
+      bubble.appendChild(content);
+      var time = document.createElement("span");
+      time.className = "chat-message-time";
+      time.textContent = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+      bubble.appendChild(time);
+      return bubble;
     }
 
-    // Reply generation now runs in the background (see chat_send_message/_complete_chat_turn),
-    // so a "<agent> is thinking..." bubble (driven by thread.pending) is the only sign of
-    // progress between sending a message and the poll that picks up its reply.
+    // Posts a message immediately: optimistic bubble, then POST, then refresh() to pick up
+    // the real persisted copy (and the "thinking" bubble, if this started or extended a turn).
+    function deliver(text, file) {
+      if (list) { list.appendChild(buildBubble(text, file)); list.scrollTop = list.scrollHeight; }
+      var body = new FormData();
+      body.append("message", text);
+      if (file) body.append("image", file);
+      fetch(composer.action, { method: "POST", body: body })
+        .then(refresh)
+        .catch(function () { /* transient network error - next poll retries */ });
+    }
+
+    // Pulls in whatever the server now has for the message list and sidebar (an agent's
+    // reply, one it sent on its own via message_user, or one sent from another tab/device)
+    // without a full page reload.
     function refresh() {
       return fetch(window.location.href)
         .then(function (r) { return r.text(); })
@@ -87,7 +119,6 @@
             currentList.innerHTML = incomingList.innerHTML;
             if (atBottom) currentList.scrollTop = currentList.scrollHeight;
           }
-          setComposerDisabled(!!document.getElementById("chat-message-pending"));
           var currentSidebar = document.querySelector(".chat-sidebar");
           var incomingSidebar = next.querySelector(".chat-sidebar");
           if (currentSidebar && incomingSidebar && currentSidebar.innerHTML !== incomingSidebar.innerHTML) {
@@ -97,14 +128,6 @@
         .catch(function () { /* transient network error - next poll retries */ });
     }
 
-    // Sending an agent a message runs it synchronously server-side, which can take a while -
-    // a plain form POST would leave the page looking frozen with your typed text still sitting
-    // in the box the whole time. Submit it in the background instead: clear the box and show
-    // your message immediately, then refresh once the agent's turn actually finishes.
-    var composer = document.getElementById("chat-composer");
-    var input = document.getElementById("chat-composer-input");
-    var imageInput = document.getElementById("chat-composer-image");
-    var filenameTag = document.getElementById("chat-composer-filename");
     if (imageInput && filenameTag) {
       imageInput.addEventListener("change", function () {
         var file = imageInput.files && imageInput.files[0];
@@ -119,45 +142,16 @@
       });
     }
     if (composer && input) {
-      var button = composer.querySelector("button[type=submit]");
       composer.addEventListener("submit", function (e) {
         e.preventDefault();
         var text = input.value.trim();
         var file = imageInput && imageInput.files && imageInput.files[0];
-        if ((!text && !file) || (button && button.disabled)) return;
+        if (!text && !file) return;
         input.value = "";
-        var bubble = document.createElement("div");
-        bubble.className = "chat-message from-user";
-        var content = document.createElement("div");
-        content.className = "chat-message-bubble";
-        if (file) {
-          var preview = document.createElement("img");
-          preview.className = "chat-message-image";
-          preview.src = URL.createObjectURL(file);
-          content.appendChild(preview);
-        }
-        if (text) content.appendChild(document.createTextNode(text));
-        bubble.appendChild(content);
-        var time = document.createElement("span");
-        time.className = "chat-message-time";
-        time.textContent = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-        bubble.appendChild(time);
-        if (list) { list.appendChild(bubble); list.scrollTop = list.scrollHeight; }
-        if (input) input.style.height = "";
-        if (button) button.disabled = true;
-        if (input) input.disabled = true;
-        if (imageInput) imageInput.disabled = true;
-        var body = new FormData();
-        body.append("message", text);
-        if (file) body.append("image", file);
+        input.style.height = "";
         if (imageInput) imageInput.value = "";
         if (filenameTag) { filenameTag.textContent = ""; filenameTag.classList.remove("visible"); }
-        // The POST now returns as soon as the message is saved - it no longer waits for the
-        // agent's reply - so refresh() picking up the "thinking" bubble is what keeps things
-        // disabled from here, not this handler re-enabling them.
-        fetch(composer.action, { method: "POST", body: body })
-          .then(refresh)
-          .catch(function () { setComposerDisabled(false); /* request failed; let them retry */ });
+        deliver(text, file);
       });
       input.addEventListener("keydown", function (e) {
         if (e.key === "Enter" && !e.shiftKey) {
