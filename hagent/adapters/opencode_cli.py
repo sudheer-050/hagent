@@ -62,7 +62,7 @@ def parse_events(stdout: str) -> tuple[str, dict]:
 
 
 class OpencodeCliRuntime(BaseRuntime):
-    def run(self, prompt: str, context: str = "", tools=None, tool_executor=None) -> RuntimeResult:
+    def run(self, prompt: str, context: str = "", tools=None, tool_executor=None, images=None) -> RuntimeResult:
         executable = _find_opencode(self.config.get("command", "opencode"))
         if not executable:
             raise RuntimeError(

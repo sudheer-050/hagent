@@ -1,7 +1,7 @@
 """FastAPI + Jinja2 web dashboard: full kanban issue-tracker UI mirroring Multica's noun set."""
 
 from pathlib import Path
-from urllib.parse import quote, urlparse
+from urllib.parse import quote
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 import asyncio
@@ -10,11 +10,12 @@ import os
 import re
 import shutil
 
-from fastapi import BackgroundTasks, FastAPI, Form, Request, HTTPException, UploadFile, File, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, FastAPI, Form, Request, HTTPException, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 import httpx
 import click
 from hagent.tenancy import ScopeError
+from hagent.applications_catalog import APPLICATIONS, get_application
 from hagent.db import request_workspace
 from starlette.middleware.gzip import GZipMiddleware
 
@@ -22,10 +23,10 @@ from hagent.auth import AuthMiddleware, router as auth_router
 from hagent.remote_api import router as remote_api_router
 from hagent.worker_api import router as worker_api_router
 from hagent.triggers import configure as configure_trigger
-from hagent.engine import cancel_issue, execute_agent, mark_agent_skills_used
+from hagent.engine import cancel_issue, execute_agent
 from hagent.agent_avatars import agent_avatar_url
 from hagent.adapters import get_runtime_class
-from fastapi.responses import RedirectResponse, JSONResponse, HTMLResponse, FileResponse, StreamingResponse
+from fastapi.responses import RedirectResponse, JSONResponse, FileResponse, Response
 from fastapi.templating import Jinja2Templates
 from jinja2 import pass_context
 from starlette.concurrency import run_in_threadpool
@@ -38,7 +39,6 @@ from hagent.models import (
     Attachment,
     IssueMetadata,
     IssueSubscriber,
-    SquadActivity,
     Agent,
     Autopilot,
     AutopilotRun,
@@ -57,7 +57,6 @@ from hagent.models import (
     RunStatus,
     Runtime,
     Skill,
-    SkillLesson,
     Squad,
     SquadMember,
     TimelineEvent,
@@ -93,6 +92,48 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 templates.env.globals["skill_badge_svg"] = skill_badge_svg
 templates.env.globals["agent_avatar_url"] = agent_avatar_url
 
+_NAV_SNIPPET = re.compile(r"<!--NAV_START-->(.*?)<!--NAV_END-->", re.DOTALL)
+_MAIN_SNIPPET = re.compile(r"<!--MAIN_START-->(.*?)<!--MAIN_END-->", re.DOTALL)
+_MODALS_SNIPPET = re.compile(r"<!--MODALS_START-->(.*?)<!--MODALS_END-->", re.DOTALL)
+_TITLE_SNIPPET = re.compile(r"<title>(.*?)</title>", re.DOTALL)
+_BODY_CLASS_SNIPPET = re.compile(r"<body class=\"([^\"]*)\">", re.DOTALL)
+
+
+@app.middleware("http")
+async def spa_navigation_middleware(request: Request, call_next):
+    """Lets the client-side router (static/app.js) fetch a page's nav/main/modals
+    fragments instead of a full HTML document, so navigating feels like an app
+    instead of a website - no sidebar flash, no full-page reload."""
+    response = await call_next(request)
+    if request.headers.get("x-hagent-nav") != "1":
+        return response
+    if not response.headers.get("content-type", "").startswith("text/html"):
+        return response
+
+    body = b""
+    async for chunk in response.body_iterator:
+        body += chunk
+    html = body.decode("utf-8")
+
+    nav_match = _NAV_SNIPPET.search(html)
+    main_match = _MAIN_SNIPPET.search(html)
+    if not nav_match or not main_match:
+        return Response(content=body, status_code=response.status_code, headers=dict(response.headers))
+
+    modals_match = _MODALS_SNIPPET.search(html)
+    title_match = _TITLE_SNIPPET.search(html)
+    body_class_match = _BODY_CLASS_SNIPPET.search(html)
+    return JSONResponse(
+        {
+            "title": title_match.group(1) if title_match else "",
+            "body_class": body_class_match.group(1) if body_class_match else "",
+            "nav": nav_match.group(1),
+            "main": main_match.group(1),
+            "modals": modals_match.group(1) if modals_match else "",
+        },
+        status_code=response.status_code,
+    )
+
 
 def chat_unread_count(session=None) -> int:
     if session is None:
@@ -124,6 +165,16 @@ def skill_lessons(skill, limit: int = 20) -> list:
 
 templates.env.globals["skill_lessons"] = skill_lessons
 app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
+
+
+@app.get("/api/chat/unread-count")
+def chat_unread_count_api():
+    """Polled from the sidebar nav on every page (see base.html) so the Chat
+    badge - e.g. Holly messaging you unprompted via message_user - shows up
+    without waiting for you to navigate anywhere or reload."""
+    return {"unread": chat_unread_count()}
+
+
 @app.get("/api/runtime-models")
 def runtime_models(provider: str):
     if provider not in PROVIDERS:
@@ -213,6 +264,7 @@ def template_app_settings(context) -> dict:
 
 
 templates.env.globals["app_settings"] = template_app_settings
+templates.env.globals["applications"] = APPLICATIONS
 
 
 def _load_template_values() -> dict:
@@ -342,6 +394,28 @@ def memory_create(content: str = Form(...), project_id: str = Form(""),
     return RedirectResponse(f"/memory?project_id={quote(project_id)}", status_code=303)
 
 
+@app.post("/memory/settings")
+def memory_settings(project_id: str = Form(""), enabled: str | None = Form(None),
+                    retain_raw_events: str | None = Form(None),
+                    automatic_extraction: str | None = Form(None),
+                    retrieval_limit: int = Form(8), token_budget: int = Form(1200),
+                    retention_days: int = Form(365), strict_mode: str | None = Form(None),
+                    embedding_provider: str = Form(""), embedding_model: str = Form(""),
+                    embedding_base_url: str = Form("")):
+    """Save memory controls before the dynamic /memory/{memory_id} route can match
+    the literal word ``settings`` as though it were a memory identifier."""
+    with get_session() as session:
+        _memory_service(session, project_id).update_settings(
+            enabled=bool(enabled), retain_raw_events=bool(retain_raw_events),
+            automatic_extraction=bool(automatic_extraction),
+            retrieval_limit=retrieval_limit, token_budget=token_budget,
+            retention_days=retention_days, strict_mode=bool(strict_mode),
+            embedding_provider=embedding_provider.strip(),
+            embedding_model=embedding_model.strip(),
+            embedding_base_url=embedding_base_url.strip())
+    return RedirectResponse(f"/memory?project_id={quote(project_id)}", status_code=303)
+
+
 @app.post("/memory/{memory_id}")
 def memory_correct(memory_id: str, content: str = Form(...), project_id: str = Form(""),
                    category: str = Form("explicit"), verification_status: str = Form("verified"),
@@ -357,26 +431,6 @@ def memory_correct(memory_id: str, content: str = Form(...), project_id: str = F
 def memory_delete(memory_id: str, project_id: str = Form("")):
     with get_session() as session:
         _memory_service(session, project_id).forget(memory_id)
-    return RedirectResponse(f"/memory?project_id={quote(project_id)}", status_code=303)
-
-
-@app.post("/memory/settings")
-def memory_settings(project_id: str = Form(""), enabled: str | None = Form(None),
-                    retain_raw_events: str | None = Form(None),
-                    automatic_extraction: str | None = Form(None),
-                    retrieval_limit: int = Form(8), token_budget: int = Form(1200),
-                    retention_days: int = Form(365), strict_mode: str | None = Form(None),
-                    embedding_provider: str = Form(""), embedding_model: str = Form(""),
-                    embedding_base_url: str = Form("")):
-    with get_session() as session:
-        _memory_service(session, project_id).update_settings(
-            enabled=bool(enabled), retain_raw_events=bool(retain_raw_events),
-            automatic_extraction=bool(automatic_extraction),
-            retrieval_limit=retrieval_limit, token_budget=token_budget,
-            retention_days=retention_days, strict_mode=bool(strict_mode),
-            embedding_provider=embedding_provider.strip(),
-            embedding_model=embedding_model.strip(),
-            embedding_base_url=embedding_base_url.strip())
     return RedirectResponse(f"/memory?project_id={quote(project_id)}", status_code=303)
 
 
@@ -701,36 +755,36 @@ SEARCH_PAGES = [
 ]
 
 
+def _search_matches(session, query, name_attr, needle, build):
+    results = []
+    for obj in session.scalars(query).all():
+        if needle in getattr(obj, name_attr).casefold():
+            results.extend(build(obj))
+    return results
+
+
 @app.get("/api/search")
 def api_search(q: str = ""):
     needle = q.strip().casefold()
     if not needle:
         return {"results": []}
-    results = []
+    results = [{"type": "page", "title": label, "subtitle": "Page", "url": url} for label, url in SEARCH_PAGES if needle in label.casefold()]
     with get_session() as s:
-        for label, url in SEARCH_PAGES:
-            if needle in label.casefold():
-                results.append({"type": "page", "title": label, "subtitle": "Page", "url": url})
-        for p in s.scalars(select(Project)).all():
-            if needle in p.name.casefold():
-                results.append({"type": "project", "title": p.name, "subtitle": "Project", "url": f"/projects/{p.id}"})
-        for a in s.scalars(select(Agent)).all():
-            if needle in a.name.casefold():
-                results.append({"type": "agent", "title": a.name, "subtitle": "Agent", "url": f"/agents/{a.id}"})
-                results.append({"type": "chat", "title": f"Chat with {a.name}", "subtitle": "Chat", "url": f"/chat/{a.id}"})
-        for i in s.scalars(select(Issue)).all():
-            if needle in i.title.casefold():
-                project_name = i.project.name if i.project else ""
-                results.append({"type": "issue", "title": i.title, "subtitle": f"Issue · {project_name}", "url": f"/issues/{i.id}"})
-        for r in s.scalars(select(Runtime).where(Runtime.archived.is_(False))).all():
-            if needle in r.name.casefold():
-                results.append({"type": "runtime", "title": r.name, "subtitle": "Runtime", "url": f"/runtimes/{r.id}"})
-        for skill in s.scalars(select(Skill)).all():
-            if needle in skill.name.casefold():
-                results.append({"type": "skill", "title": skill.name, "subtitle": "Skill", "url": "/skills"})
-        for squad in s.scalars(select(Squad)).all():
-            if needle in squad.name.casefold():
-                results.append({"type": "squad", "title": squad.name, "subtitle": "Squad", "url": "/squads"})
+        results += _search_matches(s, select(Project), "name", needle,
+            lambda p: [{"type": "project", "title": p.name, "subtitle": "Project", "url": f"/projects/{p.id}"}])
+        results += _search_matches(s, select(Agent), "name", needle,
+            lambda a: [
+                {"type": "agent", "title": a.name, "subtitle": "Agent", "url": f"/agents/{a.id}"},
+                {"type": "chat", "title": f"Chat with {a.name}", "subtitle": "Chat", "url": f"/chat/{a.id}"},
+            ])
+        results += _search_matches(s, select(Issue), "title", needle,
+            lambda i: [{"type": "issue", "title": i.title, "subtitle": f"Issue · {i.project.name if i.project else ''}", "url": f"/issues/{i.id}"}])
+        results += _search_matches(s, select(Runtime).where(Runtime.archived.is_(False)), "name", needle,
+            lambda r: [{"type": "runtime", "title": r.name, "subtitle": "Runtime", "url": f"/runtimes/{r.id}"}])
+        results += _search_matches(s, select(Skill), "name", needle,
+            lambda skill: [{"type": "skill", "title": skill.name, "subtitle": "Skill", "url": "/skills"}])
+        results += _search_matches(s, select(Squad), "name", needle,
+            lambda squad: [{"type": "squad", "title": squad.name, "subtitle": "Squad", "url": "/squads"}])
     return {"results": results[:30]}
 
 
@@ -770,6 +824,25 @@ def settings_page(request: Request, saved: str = ""):
     )
 
 
+@app.get("/applications")
+def applications_list(request: Request):
+    return templates.TemplateResponse(
+        request, "applications_list.html", {"applications": APPLICATIONS, "active": "applications"}
+    )
+
+
+@app.get("/applications/{slug}")
+def application_detail(request: Request, slug: str):
+    application = get_application(slug)
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+    return templates.TemplateResponse(
+        request,
+        "application_detail.html",
+        {"application": application, "active": "applications", "active_slug": slug},
+    )
+
+
 # --- projects ---
 
 @app.get("/projects")
@@ -788,14 +861,33 @@ def create_project(name: str = Form(...), description: str = Form("")):
     return RedirectResponse(url="/projects", status_code=303)
 
 
+CANCELLED_FADE_SECONDS = 300  # low/no-priority cancelled cards clear themselves off the board this long after landing there
+CANCELLED_FADE_PRIORITIES = {"none", "low"}
+
+
+def _as_utc(moment: datetime) -> datetime:
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def _still_shown_on_board(issue: Issue, now: datetime) -> bool:
+    """A cancelled issue nobody marked as important clutters the board forever otherwise -
+    let it clear itself out CANCELLED_FADE_SECONDS after the cancellation, instead of a human
+    having to notice and delete it. Anything actually prioritized stays until acted on."""
+    if issue.status != IssueStatus.CANCELLED or issue.priority not in CANCELLED_FADE_PRIORITIES:
+        return True
+    return (now - _as_utc(issue.updated_at)).total_seconds() < CANCELLED_FADE_SECONDS
+
+
 @app.get("/projects/{project_id}")
 def project_board(request: Request, project_id: str):
     with get_session() as s:
         project = require(s, Project, project_id)
         agents = s.scalars(select(Agent)).all()
+        now = datetime.now(timezone.utc)
         issues_by_status = {status: [] for status in ISSUE_STATUS_ORDER}
         for i in sorted(project.issues, key=lambda i: (i.position, i.created_at)):
-            issues_by_status[i.status].append(i)
+            if _still_shown_on_board(i, now):
+                issues_by_status[i.status].append(i)
         return templates.TemplateResponse(
             request,
             "project_board.html",
@@ -821,6 +913,14 @@ def create_issue(project_id: str = Form(...), title: str = Form(...), descriptio
             description=description,
             assignee_agent_id=assignee_agent_id or None,
         )
+        # An assigned issue is meant to be worked, not left idle in Backlog waiting on a human
+        # to pull it into Todo by hand - so assigning it at creation moves it there directly.
+        # SQLAlchemy applies the mapped BACKLOG default when the row is inserted, so a
+        # freshly constructed issue still has ``status is None`` here. Checking only for
+        # BACKLOG made every issue created with an assignee remain in Backlog despite the
+        # UI promise that assigned work is ready to start.
+        if i.assignee_agent_id and i.status in (None, IssueStatus.BACKLOG):
+            i.status = IssueStatus.TODO
         s.add(i)
         s.commit()
         return RedirectResponse(url=f"/projects/{project_id}", status_code=303)
@@ -856,10 +956,26 @@ def all_issues_board(request: Request):
         issues_by_status = {status: [] for status in visible_statuses}
         for i in sorted(issues, key=lambda i: i.updated_at, reverse=True):
             issues_by_status[i.status].append(i)
+        # A single flat list of every project's work in one column (Done especially) makes it
+        # impossible to tell what any card belongs to at a glance - group each column by project,
+        # in the same recency order the flat list already used, so that's still preserved within
+        # each group.
+        issues_by_status_project = {}
+        for status, status_issues in issues_by_status.items():
+            groups: dict[str, list] = {}
+            for i in status_issues:
+                groups.setdefault(i.project.name, []).append(i)
+            issues_by_status_project[status] = groups
         return templates.TemplateResponse(
             request,
             "all_issues_board.html",
-            {"statuses": visible_statuses, "issues_by_status": issues_by_status, "active": "board", "wide_layout": True},
+            {
+                "statuses": visible_statuses,
+                "issues_by_status": issues_by_status,
+                "issues_by_status_project": issues_by_status_project,
+                "active": "board",
+                "wide_layout": True,
+            },
         )
 
 
@@ -889,8 +1005,54 @@ def issue_diff_page(request: Request, issue_id: str):
 def issue_set_status(issue_id: str, status: str = Form(...)):
     with get_session() as s:
         i = require(s, Issue, issue_id)
-        i.status = IssueStatus(status)
+        new_status = IssueStatus(status)
+        # In Review is a decision point, not a free move: the automatic verifier already tries to
+        # approve or bounce it, and when that doesn't resolve it, a human decides via the dedicated
+        # approve/send-back buttons below - not by picking an arbitrary status off this dropdown.
+        if i.status == IssueStatus.IN_REVIEW or new_status == IssueStatus.IN_REVIEW:
+            raise HTTPException(400, "In Review can only be left via Approve or Send back")
+        i.status = new_status
         s.add(TimelineEvent(issue_id=i.id, event_type="status_changed", detail=status))
+        s.commit()
+        project_id = i.project_id
+    return RedirectResponse(url=f"/projects/{project_id}", status_code=303)
+
+
+@app.post("/issues/{issue_id}/review/approve")
+def issue_review_approve(issue_id: str):
+    from hagent.orchestration import after_issue_finished
+
+    with get_session() as s:
+        i = require(s, Issue, issue_id)
+        if i.status != IssueStatus.IN_REVIEW:
+            raise HTTPException(400, "Only an issue in review can be approved")
+        i.status = IssueStatus.DONE
+        s.add(TimelineEvent(issue_id=i.id, event_type="status_changed", detail="done (approved on review)"))
+        s.commit()
+        after_issue_finished(s, i)  # wakes a parent whose stage barrier this just cleared
+        s.commit()
+        project_id = i.project_id
+    return RedirectResponse(url=f"/projects/{project_id}", status_code=303)
+
+
+@app.post("/issues/{issue_id}/review/reject")
+def issue_review_reject(issue_id: str, note: str = Form("")):
+    from hagent.orchestration import start_agent_run
+
+    with get_session() as s:
+        i = require(s, Issue, issue_id)
+        if i.status != IssueStatus.IN_REVIEW:
+            raise HTTPException(400, "Only an issue in review can be sent back")
+        i.status = IssueStatus.IN_PROGRESS
+        note_text = note.strip()
+        s.add(TimelineEvent(issue_id=i.id, event_type="status_changed", detail="in_progress (sent back from review)" + (f": {note_text}" if note_text else "")))
+        prompt = None
+        if i.assignee_agent_id:
+            base = i.description or i.title
+            prompt = f"{base}\n\n[Sent back from review]{': ' + note_text if note_text else ''} Revise the work and resubmit."
+        run = start_agent_run(s, i, prompt=prompt)
+        if run is not None:
+            s.add(TimelineEvent(issue_id=i.id, event_type="run_requeued", detail="Sent back from review; requeued for the assigned agent."))
         s.commit()
         project_id = i.project_id
     return RedirectResponse(url=f"/projects/{project_id}", status_code=303)
@@ -901,6 +1063,10 @@ def issue_assign(issue_id: str, agent_id: str = Form("")):
     with get_session() as s:
         i = require(s, Issue, issue_id)
         i.assignee_agent_id = agent_id or None
+        # Same rule as creation: assigning someone to a Backlog issue means it's ready to be
+        # worked now, so pull it out of Backlog instead of leaving it idle there.
+        if i.assignee_agent_id and i.status == IssueStatus.BACKLOG:
+            i.status = IssueStatus.TODO
         s.add(TimelineEvent(issue_id=i.id, event_type="assigned", detail=agent_id or "unassigned"))
         s.commit()
     return RedirectResponse(url=f"/issues/{issue_id}", status_code=303)
@@ -1010,11 +1176,32 @@ def _agent_activity_state(runs: list) -> str:
     return _agent_activity_state_from_statuses(r.status for r in runs)
 
 
+def _most_active_thread(s, agent_id: str) -> ChatThread | None:
+    """Pick the most recently active of an agent's thread rows, by actual last message time
+    rather than thread.updated_at (see _chat_rows for why that column can't be trusted)."""
+    candidates = s.scalars(select(ChatThread).where(ChatThread.agent_id == agent_id)).all()
+    if not candidates:
+        return None
+    return max(candidates, key=lambda t: t.messages[-1].created_at if t.messages else t.created_at)
+
+
 def _chat_rows(s) -> list[dict]:
     agents = s.scalars(
         select(Agent).where(Agent.archived.is_(False)).order_by(Agent.name)
     ).all()
-    threads = {t.agent_id: t for t in s.scalars(select(ChatThread)).all()}
+    # An agent can end up with more than one thread row (e.g. a race between opening chat
+    # and the agent messaging first) - always prefer the one most recently active. Thread.updated_at
+    # isn't reliable for this: SQLAlchemy's onupdate only fires when the thread row itself is
+    # dirtied, and sending a message that doesn't flip `unread` never touches it - so a thread can
+    # take fresh messages for days while its updated_at sits stale. Go by the actual last message
+    # timestamp instead, falling back to the thread's created_at if it has no messages yet.
+    last_activity: dict[str, datetime] = {}
+    threads: dict[str, ChatThread] = {}
+    for t in s.scalars(select(ChatThread)).all():
+        activity = t.messages[-1].created_at if t.messages else t.created_at
+        if t.agent_id not in last_activity or activity >= last_activity[t.agent_id]:
+            last_activity[t.agent_id] = activity
+            threads[t.agent_id] = t
     last_message = {}
     for thread in threads.values():
         if thread.messages:
@@ -1045,59 +1232,188 @@ def chat_index(request: Request):
 def chat_thread_page(request: Request, agent_id: str):
     with get_session() as s:
         agent = require(s, Agent, agent_id)
-        thread = s.scalars(select(ChatThread).where(ChatThread.agent_id == agent.id)).first()
+        thread = _most_active_thread(s, agent.id)
         if thread and thread.unread:
             thread.unread = False
             s.commit()
         messages = thread.messages if thread else []
+        pending = bool(thread and thread.pending)
         rows = _chat_rows(s)
         return templates.TemplateResponse(
             request,
             "chat_thread.html",
-            {"agent": agent, "messages": messages, "rows": rows, "active": "chat"},
+            {"agent": agent, "messages": messages, "pending": pending, "rows": rows, "active": "chat"},
         )
 
 
-def _run_chat_turn(agent_id: str, message: str, resume_session_id: str | None, user_id: str | None) -> tuple[str, str | None]:
+def _save_chat_image(thread_id: str, workspace_id: str, mime_type: str, data: bytes) -> str:
+    import secrets
+
+    ext = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}.get(mime_type, "")
+    folder = Path("attachments") / "chat" / workspace_id / thread_id
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / f"{secrets.token_hex(16)}{ext}"
+    target.write_bytes(data)
+    return str(target.resolve())
+
+
+def _run_chat_turn(
+    agent_id: str, message: str, resume_session_id: str | None, user_id: str | None,
+    runtime_id: str | None, history: list[dict], image: dict | None,
+) -> tuple[str, str | None, str | None, dict | None]:
     """Runs on a worker thread with its own session - execute_agent needs a
-    live session bound to the agent (routing, memory, delegation all read it)."""
+    live session bound to the agent (routing, memory, delegation all read it).
+
+    runtime_id pins the conversation to whichever runtime answered its first turn, so
+    auto-routing can't hand a later message to a different provider mid-conversation and
+    strand resume_session_id/history (see engine.execute_agent's routing_override). history
+    carries the thread's recent turns so API-key providers - which only ever see the current
+    prompt, unlike CLI-backed ones that get real --resume - still know what's being discussed.
+    image, when given, is {"mime_type": str, "data": bytes} for an image attached to this turn
+    (see engine.execute_agent's images param) - only image-capable runtimes (Gemini) use it.
+    """
+    images = [image] if image else None
     with get_session() as s:
         agent = require(s, Agent, agent_id)
+        routing_override = {"mode": "manual", "runtime_id": runtime_id} if runtime_id else None
         try:
-            result = execute_agent(agent, message, resume_session_id=resume_session_id, memory_user_id=user_id)
-            return (result.output or "").strip() or "(No response.)", result.session_id
+            try:
+                result = execute_agent(
+                    agent, message, resume_session_id=resume_session_id, memory_user_id=user_id,
+                    history=history, routing_override=routing_override, images=images,
+                )
+            except ValueError:
+                if not routing_override:
+                    raise
+                # The pinned runtime is gone (archived/deleted) - fall back to normal
+                # auto-routing for this turn instead of being stuck forever; whatever it
+                # picks re-pins the thread below.
+                result = execute_agent(
+                    agent, message, resume_session_id=None, memory_user_id=user_id, history=history, images=images,
+                )
+            reply = (result.output or "").strip() or "(No response.)"
+            reply_image = result.images[0] if result.images else None
+            return reply, result.session_id, result.runtime_id, reply_image
         except Exception as exc:
-            return f"Something went wrong reaching {agent.name}: {exc}", None
+            return f"Something went wrong reaching {agent.name}: {exc}", None, None, None
+
+
+def _complete_chat_turn(
+    thread_id: str, agent_id: str, message: str, resume_session_id: str | None,
+    user_id: str | None, runtime_id: str | None, history: list[dict], image: dict | None, since_message_id: str,
+) -> None:
+    """The actual background half of a chat turn (see chat_send_message) - runs after the
+    HTTP response has already gone back, same pattern as issue_run's background_tasks.
+
+    Messages typed while a turn is in flight are saved immediately by chat_send_message
+    (so nothing is lost or delayed on the sender's side) but don't start a turn of their
+    own - the runtime can only have one resume_session_id in flight at a time. Once this
+    turn's reply is in, loop to pick up anything that arrived in the meantime, combined
+    into a single follow-up turn, before finally clearing thread.pending."""
+    while True:
+        reply, new_session_id, new_runtime_id, reply_image = _run_chat_turn(
+            agent_id, message, resume_session_id, user_id, runtime_id, history, image
+        )
+        with get_session() as s:
+            thread = s.get(ChatThread, thread_id)
+            if thread is None:
+                return
+            reply_msg = ChatMessage(thread_id=thread.id, role="agent", content=reply)
+            if reply_image:
+                reply_msg.image_mime = reply_image["mime_type"]
+                reply_msg.image_path = _save_chat_image(thread.id, thread.workspace_id, reply_image["mime_type"], reply_image["data"])
+            s.add(reply_msg)
+            if new_session_id:
+                thread.session_id = new_session_id
+            if new_runtime_id:
+                thread.runtime_id = new_runtime_id
+            s.commit()
+            ordered = thread.messages
+            since_index = next((i for i, m in enumerate(ordered) if m.id == since_message_id), len(ordered) - 1)
+            backlog = [m for m in ordered[since_index + 1 :] if m.role == "user"]
+            if not backlog:
+                thread.pending = False
+                s.commit()
+                return
+            message = "\n\n".join(m.content for m in backlog if m.content)
+            image = None
+            last_with_image = next((m for m in reversed(backlog) if m.image_path), None)
+            if last_with_image:
+                image = {"mime_type": last_with_image.image_mime, "data": Path(last_with_image.image_path).read_bytes()}
+            since_message_id = backlog[-1].id
+            resume_session_id = thread.session_id
+            runtime_id = thread.runtime_id
+            history = [{"role": m.role, "content": m.content} for m in thread.messages[-CHAT_HISTORY_TURNS:]]
+
+
+CHAT_HISTORY_TURNS = 20
+CHAT_IMAGE_MIME_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
 
 
 @app.post("/chat/{agent_id}/messages")
-async def chat_send_message(request: Request, agent_id: str, message: str = Form(...)):
+def chat_send_message(
+    agent_id: str, background_tasks: BackgroundTasks, message: str = Form(""),
+    image: UploadFile | None = File(None),
+):
     message = message.strip()
-    if not message:
+    image_data = None
+    if image is not None and image.filename:
+        if image.content_type not in CHAT_IMAGE_MIME_TYPES:
+            raise HTTPException(400, "Unsupported image type")
+        data = image.file.read(10 * 1024 * 1024 + 1)
+        if len(data) > 10 * 1024 * 1024:
+            raise HTTPException(413, "Image exceeds 10 MiB")
+        image_data = {"mime_type": image.content_type, "data": data}
+    if not message and not image_data:
         raise HTTPException(400, "Message cannot be empty")
     with get_session() as s:
         agent = require(s, Agent, agent_id)
         workspace = get_active_workspace(s)
-        thread = s.scalars(select(ChatThread).where(ChatThread.agent_id == agent.id)).first()
+        thread = _most_active_thread(s, agent.id)
         if thread is None:
             thread = ChatThread(workspace_id=workspace.id, agent_id=agent.id)
             s.add(thread)
             s.flush()
-        s.add(ChatMessage(thread_id=thread.id, role="user", content=message))
+        history = [{"role": m.role, "content": m.content} for m in thread.messages[-CHAT_HISTORY_TURNS:]]
+        # Always save the message right away, even if a turn is already running - the sender
+        # shouldn't have to wait for the in-flight reply just to have their follow-up recorded.
+        # If a turn is already in flight, don't start a second one (the runtime can only have
+        # one resume_session_id active at a time); _complete_chat_turn picks this message up
+        # as soon as the current turn finishes, combined with anything else sent in between.
+        already_pending = thread.pending
+        user_msg = ChatMessage(thread_id=thread.id, role="user", content=message)
+        if image_data:
+            user_msg.image_mime = image_data["mime_type"]
+            user_msg.image_path = _save_chat_image(thread.id, workspace.id, image_data["mime_type"], image_data["data"])
+        s.add(user_msg)
         thread.unread = False
+        thread.pending = True
         s.commit()
         thread_id = thread.id
+        since_message_id = user_msg.id
         resume_session_id = thread.session_id
+        runtime_id = thread.runtime_id
         profile = s.scalar(select(UserProfile))
         user_id = profile.id if profile else None
-    reply, new_session_id = await asyncio.to_thread(_run_chat_turn, agent_id, message, resume_session_id, user_id)
-    with get_session() as s:
-        thread = require(s, ChatThread, thread_id)
-        s.add(ChatMessage(thread_id=thread.id, role="agent", content=reply))
-        if new_session_id:
-            thread.session_id = new_session_id
-        s.commit()
+    # Return immediately - the agent's actual turn (routing, memory, the model call itself,
+    # any tool use) can easily take tens of seconds and used to block this response the whole
+    # time. The client polls /chat/{agent_id} every few seconds and picks up the reply, with a
+    # "thinking" bubble shown via thread.pending in the meantime.
+    if not already_pending:
+        background_tasks.add_task(
+            _complete_chat_turn, thread_id, agent_id, message, resume_session_id, user_id, runtime_id, history,
+            image_data, since_message_id,
+        )
     return RedirectResponse(f"/chat/{agent_id}", status_code=303)
+
+
+@app.get("/chat/messages/{message_id}/image")
+def chat_message_image(message_id: str):
+    with get_session() as s:
+        item = require(s, ChatMessage, message_id)
+        if not item.image_path or not Path(item.image_path).is_file():
+            raise HTTPException(404, "Image not found")
+        return FileResponse(item.image_path, media_type=item.image_mime or "application/octet-stream")
 
 
 @app.get("/agents")
@@ -1141,6 +1457,11 @@ def agent_detail(request: Request, agent_id: str):
     with get_session() as s:
         agent = require(s, Agent, agent_id)
         runtimes = s.scalars(select(Runtime).where(Runtime.archived.is_(False)).order_by(Runtime.name)).all()
+        verifier_agents = s.scalars(
+            select(Agent)
+            .where(Agent.archived.is_(False), Agent.id != agent.id)
+            .order_by(Agent.name)
+        ).all()
         skills = s.scalars(select(Skill).order_by(Skill.name)).all()
         mcp_servers = s.scalars(select(McpServer).order_by(McpServer.name)).all()
         runs = s.scalars(
@@ -1168,6 +1489,7 @@ def agent_detail(request: Request, agent_id: str):
             "agent_detail.html",
             {
                 "agent": agent,
+                "verifier_agents": verifier_agents,
                 "is_running": is_running,
                 "agent_state": agent_state,
                 "runtimes": runtimes,
@@ -1192,6 +1514,7 @@ def update_agent(
     description: str = Form(""),
     runtime_id: str = Form(...),
     backup_runtime_id: str = Form(""),
+    verifier_agent_id: str = Form(""),
     instructions: str = Form(""),
     skill_ids: list[str] = Form(default=[]),
     mcp_server_ids: list[str] = Form(default=[]),
@@ -1205,8 +1528,11 @@ def update_agent(
         agent = require(s, Agent, agent_id)
         runtime = require(s, Runtime, runtime_id)
         backup_runtime = require(s, Runtime, backup_runtime_id) if backup_runtime_id else None
+        verifier_agent = require(s, Agent, verifier_agent_id) if verifier_agent_id else None
         if backup_runtime and backup_runtime.id == runtime.id:
             raise HTTPException(400, "Backup runtime must differ from primary runtime")
+        if verifier_agent and verifier_agent.id == agent.id:
+            raise HTTPException(400, "An agent cannot verify its own work")
         selected_skills = [require(s, Skill, skill_id) for skill_id in skill_ids]
         selected_servers = [require(s, McpServer, server_id) for server_id in mcp_server_ids]
         try:
@@ -1224,6 +1550,7 @@ def update_agent(
             raise ValueError("Agent name cannot be empty")
         agent.runtime = runtime
         agent.backup_runtime_id = backup_runtime.id if backup_runtime else None
+        agent.verifier_agent_id = verifier_agent.id if verifier_agent else None
         agent.instructions = instructions.strip()
         agent.skills = selected_skills
         agent.mcp_servers = selected_servers
@@ -1308,58 +1635,65 @@ def usage_page(request: Request):
         })
 
 
+def _runtime_credential_status(config, profile, status):
+    """Fill in the part of a runtime's connection status that depends on how it's configured
+    to authenticate: a locally-running service, an installed CLI, or an API key.
+    """
+    environment_name = profile.get("env")
+    kind = profile.get("kind")
+    provider_id = status["provider_id"]
+    if kind in {"local", "local_openai"}:
+        base_url = config.get("base_url") or profile.get("base_url", "")
+        check_url = (
+            f"{base_url.rstrip('/')}/api/tags"
+            if provider_id == "ollama"
+            else f"{base_url.rstrip('/')}/models"
+        )
+        try:
+            response = httpx.get(check_url, timeout=0.5)
+            response.raise_for_status()
+            status.update(label="Local service online", ready=True)
+        except httpx.HTTPError:
+            status.update(label="Local service offline", ready=False)
+    elif kind == "cli":
+        command = config.get("command") or profile.get("command", "")
+        available = bool(shutil.which(command) or Path(command).expanduser().is_file())
+        if provider_id == "codex_cli" and not available:
+            local_app_data = os.environ.get("LOCALAPPDATA", "")
+            available = bool(local_app_data) and (
+                Path(local_app_data) / "Programs" / "OpenAI" / "Codex" / "bin" / "codex.exe"
+            ).is_file()
+        status.update(label="CLI installed" if available else "CLI not found", ready=available)
+    elif config.get("api_key"):
+        status.update(label="API key saved", ready=True)
+    elif environment_name and os.environ.get(environment_name):
+        status.update(label="Environment key", ready=True)
+    elif profile.get("allow_no_key"):
+        status.update(label="No key required", ready=True)
+    else:
+        status.update(label="API key needed", ready=False)
+
+
+def _runtime_connection_status(runtime):
+    config = json.loads(runtime.config_json or "{}")
+    provider_id = config.get("provider_id", runtime.type.value)
+    profile = provider_config(provider_id)
+    status = {"provider_name": profile["name"], "provider_id": provider_id}
+    _runtime_credential_status(config, profile, status)
+    if runtime.health_status == "healthy":
+        status.update(label="Provider responding", ready=True)
+    elif runtime.health_status == "limited":
+        status.update(label="Usage limit reached - backups promoted", ready=False)
+    elif runtime.health_status == "error":
+        status.update(label="Provider check failed", ready=False)
+    return status
+
+
 @app.get("/runtimes")
 def runtimes_page(request: Request):
     with get_session() as s:
         runtimes = s.scalars(select(Runtime).where(Runtime.archived.is_(False)).order_by(Runtime.name)).all()
-        connection_status = {}
-        for runtime in runtimes:
-            config = json.loads(runtime.config_json or "{}")
-            provider_id = config.get("provider_id", runtime.type.value)
-            profile = provider_config(provider_id)
-            environment_name = profile.get("env")
-            kind = profile.get("kind")
-            status = {"provider_name": profile["name"], "provider_id": provider_id}
-            if kind in {"local", "local_openai"}:
-                base_url = config.get("base_url") or profile.get("base_url", "")
-                check_url = (
-                    f"{base_url.rstrip('/')}/api/tags"
-                    if provider_id == "ollama"
-                    else f"{base_url.rstrip('/')}/models"
-                )
-                try:
-                    response = httpx.get(check_url, timeout=0.5)
-                    response.raise_for_status()
-                    status.update(label="Local service online", ready=True)
-                except httpx.HTTPError:
-                    status.update(label="Local service offline", ready=False)
-            elif kind == "cli":
-                command = config.get("command") or profile.get("command", "")
-                available = bool(shutil.which(command) or Path(command).expanduser().is_file())
-                if provider_id == "codex_cli" and not available:
-                    local_app_data = os.environ.get("LOCALAPPDATA", "")
-                    available = bool(local_app_data) and (
-                        Path(local_app_data) / "Programs" / "OpenAI" / "Codex" / "bin" / "codex.exe"
-                    ).is_file()
-                status.update(
-                    label="CLI installed" if available else "CLI not found",
-                    ready=available,
-                )
-            elif config.get("api_key"):
-                status.update(label="API key saved", ready=True)
-            elif environment_name and os.environ.get(environment_name):
-                status.update(label="Environment key", ready=True)
-            elif profile.get("allow_no_key"):
-                status.update(label="No key required", ready=True)
-            else:
-                status.update(label="API key needed", ready=False)
-            if runtime.health_status == "healthy":
-                status.update(label="Provider responding", ready=True)
-            elif runtime.health_status == "limited":
-                status.update(label="Usage limit reached - backups promoted", ready=False)
-            elif runtime.health_status == "error":
-                status.update(label="Provider check failed", ready=False)
-            connection_status[runtime.id] = status
+        connection_status = {runtime.id: _runtime_connection_status(runtime) for runtime in runtimes}
         return templates.TemplateResponse(
             request,
             "runtimes.html",
@@ -1536,6 +1870,7 @@ def create_agent(
     designation: str = Form(""),
     runtime_id: str = Form(...),
     backup_runtime_id: str = Form(""),
+    verifier_agent_id: str = Form(""),
     description: str = Form(""),
     instructions: str = Form(""),
     skill_ids: list[str] = Form(default=[]),
@@ -1553,6 +1888,7 @@ def create_agent(
         ws = get_or_create_default_workspace(s)
         runtime = require(s, Runtime, runtime_id)
         backup_runtime = require(s, Runtime, backup_runtime_id) if backup_runtime_id else None
+        verifier_agent = require(s, Agent, verifier_agent_id) if verifier_agent_id else None
         if backup_runtime and backup_runtime.id == runtime.id:
             raise HTTPException(400, "Backup runtime must differ from primary runtime")
         selected_skills = [require(s, Skill, skill_id) for skill_id in skill_ids]
@@ -1562,6 +1898,7 @@ def create_agent(
             workspace_id=ws.id,
             runtime_id=runtime.id,
             backup_runtime_id=backup_runtime.id if backup_runtime else None,
+            verifier_agent_id=verifier_agent.id if verifier_agent else None,
             name=name.strip(),
             designation=designation.strip(),
             description=description.strip(),

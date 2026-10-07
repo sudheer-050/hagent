@@ -1,6 +1,6 @@
 [project]
 name = "hagent"
-version = "0.2.1"
+version = "0.2.2"
 description = "Self-hosted multi-agent orchestration platform (CLI + web dashboard) supporting pluggable AI runtimes."
 readme = "README.md"
 license = { file = "LICENSE" }

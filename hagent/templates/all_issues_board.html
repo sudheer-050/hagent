@@ -6,8 +6,35 @@
   </div>
 </div>
 
+{% macro grouped_section(status) %}
+<h3>{{ status.value.replace('_', ' ').title() }} <span class="count">{{ issues_by_status[status]|length }}</span></h3>
+<div class="board-column-body">
+{% for project_name, project_issues in issues_by_status_project[status].items() %}
+<details class="board-project-group" open>
+  <summary class="board-project-group-label">{{ project_name }} <span class="count">{{ project_issues|length }}</span></summary>
+  {% for i in project_issues %}
+  <div class="issue-card">
+    <a href="/issues/{{ i.id }}">{{ i.title }}</a>
+    <div class="meta">
+      {% if i.assignee %}<span class="chip">{{ i.assignee.name }}</span>{% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</details>
+{% else %}
+<div class="column-empty">No issues</div>
+{% endfor %}
+</div>
+{% endmacro %}
+
 <div class="board board-fill">
   {% for status in statuses %}
+  {% if status.value == 'blocked' %}
+  <div class="board-column-stack">
+    <div class="board-column board-column-half">{{ grouped_section(statuses[statuses.index(status) + 1]) }}</div>
+    <div class="board-column board-column-half">{{ grouped_section(status) }}</div>
+  </div>
+  {% elif status.value != 'done' %}
   <div class="board-column">
     <h3>{{ status.value.replace('_', ' ').title() }} <span class="count">{{ issues_by_status[status]|length }}</span></h3>
     <div class="board-column-body">
@@ -24,6 +51,7 @@
     {% endfor %}
     </div>
   </div>
+  {% endif %}
   {% endfor %}
 </div>
 {% endblock %}

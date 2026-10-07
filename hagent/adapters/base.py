@@ -17,6 +17,8 @@ class RuntimeResult:
     input_tokens: int | None = None
     output_tokens: int | None = None
     session_id: str | None = None
+    runtime_id: str | None = None  # which runtime actually produced this (primary/backup/failback can differ)
+    images: list[dict] | None = None  # [{"mime_type": str, "data": bytes}, ...] - only image-capable runtimes populate this
 
     def __post_init__(self):
         if not isinstance(self.raw, (dict, list)):
@@ -107,8 +109,12 @@ class BaseRuntime(ABC):
         context: str = "",
         tools: list[dict] | None = None,
         tool_executor: Callable[[str, dict], dict | str] | None = None,
+        images: list[dict] | None = None,
     ) -> RuntimeResult:
         """Execute a prompt (with optional agent instructions as context) and return the result.
+
+        images, when given, is [{"mime_type": str, "data": bytes}, ...] of input images attached
+        to this turn - runtimes that can't take image input (most of them) should just ignore it.
 
         Raises RuntimeError (or a subclass) on failure — callers persist that as the
         Task's error and mark it FAILED rather than letting exceptions propagate raw.

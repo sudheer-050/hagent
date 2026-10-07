@@ -285,7 +285,26 @@ def _alive(state: dict) -> bool:
         return False
 
 
+def _use_utf8_console() -> None:
+    """Windows' console defaults stdout/stderr to the system codepage (often
+    cp1252), which can't represent characters an agent's own output may
+    legitimately contain (arrows, smart quotes, em-dashes, etc.). Without this,
+    any CLI command that echoes agent output - `issue rerun` in particular -
+    raises UnicodeEncodeError and loses the report even though the underlying
+    run completed and persisted successfully. errors="replace" is a deliberate
+    fallback for the rare character neither UTF-8 output encoding nor the
+    terminal font can render, so a display quirk never turns into a crash."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                pass
+
+
 def main(argv: list[str] | None = None) -> None:
+    _use_utf8_console()
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv[:1] == ["warm"]:
         raise SystemExit(_warm_command(argv[1] if len(argv) > 1 else ""))

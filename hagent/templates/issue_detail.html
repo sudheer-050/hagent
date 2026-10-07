@@ -4,7 +4,6 @@
 <div class="page-header">
   <div>
     <h2>{{ issue.title }}</h2>
-    {% if issue.description %}<p class="page-sub">{{ issue.description }}</p>{% endif %}
   </div>
   <div style="display:flex; align-items:center; gap:0.75rem;">
     {% if issue.project.repo_id %}<a class="text-link" href="/issues/{{ issue.id }}/diff">View diff</a>{% endif %}
@@ -12,17 +11,34 @@
   </div>
 </div>
 
+{% if issue.description %}
+<div class="card">
+  <p class="page-sub" style="max-width:none">{{ issue.description }}</p>
+</div>
+{% endif %}
+
 <div class="card">
   <div class="field-row">
     <div>
       <label class="field-label">Status</label>
+      {% if issue.status.value == 'in_review' %}
+      <div class="inline status-review-actions">
+        <form method="post" action="/issues/{{ issue.id }}/review/approve">
+          <button type="submit" class="primary">Approve</button>
+        </form>
+        <form method="post" action="/issues/{{ issue.id }}/review/reject">
+          <button type="submit" class="ghost">Rollback</button>
+        </form>
+      </div>
+      {% else %}
       <form class="inline" method="post" action="/issues/{{ issue.id }}/status">
         <select name="status" onchange="this.form.submit()">
-          {% for s in statuses %}
+          {% for s in statuses if s.value != 'in_review' %}
           <option value="{{ s.value }}" {{ 'selected' if s == issue.status }}>{{ s.value.replace('_',' ').title() }}</option>
           {% endfor %}
         </select>
       </form>
+      {% endif %}
     </div>
     <div>
       <label class="field-label">Assignee</label>
@@ -147,4 +163,29 @@
 
 <h3>Timeline</h3>
 {% for event in issue.timeline %}<p class="faint">{{ event.created_at }} &mdash; <strong>{{ event.event_type }}</strong>: {{ event.detail }}</p>{% else %}<p class="faint">No timeline events yet.</p>{% endfor %}
+
+{% set active_statuses = ['pending', 'running', 'waiting_approval'] %}
+{% if issue.runs | selectattr('status.value', 'in', active_statuses) | list %}
+<script>
+  // A run on this issue is still in flight (pending/running/waiting_approval).
+  // Poll this same page and swap in the refreshed content so status, output,
+  // and the timeline update on their own instead of requiring a manual reload.
+  // Stops automatically once no run is left in an active state (checked again
+  // after every reload, since the condition above is re-evaluated server-side).
+  (function () {
+    var POLL_MS = 4000;
+    setTimeout(function () {
+      fetch(window.location.href)
+        .then(function (r) { return r.text(); })
+        .then(function (html) {
+          var next = new DOMParser().parseFromString(html, "text/html");
+          var current = document.querySelector(".main");
+          var incoming = next.querySelector(".main");
+          if (current && incoming) current.innerHTML = incoming.innerHTML;
+        })
+        .catch(function () { /* transient network error - next poll will retry */ });
+    }, POLL_MS);
+  })();
+</script>
+{% endif %}
 {% endblock %}

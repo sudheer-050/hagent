@@ -75,28 +75,41 @@ def _find_codex(command: str) -> str | None:
 
 
 class CodexCliRuntime(BaseRuntime):
-    def run(self, prompt: str, context: str = "", tools=None, tool_executor=None) -> RuntimeResult:
+    def run(self, prompt: str, context: str = "", tools=None, tool_executor=None, images=None) -> RuntimeResult:
         executable = _find_codex(self.config.get("command", "codex"))
         if not executable:
             raise RuntimeError("Codex CLI is not installed or is not on PATH")
 
         full_prompt = f"{context}\n\n{prompt}" if context else prompt
         resume_session_id = self.config.get("resume_session_id")
-        # --print/exec mode has no TTY to answer a sandbox/approval prompt from, so
-        # any tool use (terminal or the MCP delegation bridge) has to bypass the gate.
-        needs_bypass = bool(self.config.get("terminal_enabled")) or bool(tools)
+        # 'exec' mode is already non-interactive by design (that's what it's for),
+        # so it doesn't need a bypass just to run without a TTY. The bypass flag
+        # additionally lifts the *sandbox* itself, giving unrestricted filesystem/
+        # command access - that must stay reserved for agents actually granted
+        # terminal access. An agent that only has some other MCP tool (delegation,
+        # message_user, etc.) still gets it: that tool is a separate registered MCP
+        # server (see _mcp_server_args below), not one of Codex's own sandboxed
+        # built-in tools, so it isn't affected by --sandbox read-only. Bypassing for
+        # every tool-bearing agent used to mean any agent, terminal-enabled or not,
+        # got danger-full-access to whatever directory this process happened to be
+        # running in.
+        needs_bypass = bool(self.config.get("terminal_enabled"))
         if resume_session_id:
             # Resuming a prior session: not --ephemeral (that would refuse to persist/
             # find session files in the first place). 'exec resume' also does NOT accept
             # --sandbox or --color at all (unlike plain 'exec') - passing them fails the
             # whole invocation outright, so they're deliberately omitted below.
-            args = [executable, "exec", "resume", resume_session_id, "--json"]
+            args = [executable, "exec", "resume", resume_session_id, "--json", "--skip-git-repo-check"]
             if needs_bypass:
                 args.append("--dangerously-bypass-approvals-and-sandbox")
         else:
             # Not --ephemeral: session files need to persist to disk for a later
             # 'issue continue' to be able to resume this exact conversation.
-            args = [executable, "exec", "--json"]
+            # --skip-git-repo-check: Hagent's working directories aren't always a
+            # git repo Codex already trusts, and there's no TTY here to answer its
+            # trust prompt - without this it fails outright with "Not inside a
+            # trusted directory".
+            args = [executable, "exec", "--json", "--skip-git-repo-check"]
             if needs_bypass:
                 args.append("--dangerously-bypass-approvals-and-sandbox")
             else:

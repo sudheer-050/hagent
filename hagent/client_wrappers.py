@@ -1,6 +1,6 @@
 """Supported-flag launch helpers for independent Codex and Claude CLI sessions."""
 from __future__ import annotations
-import json, sys
+import sys
 
 
 def build_codex_args(command, route, scope, prompt=None):

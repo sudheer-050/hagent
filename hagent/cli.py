@@ -9,12 +9,11 @@ import secrets
 import shutil
 import subprocess
 import tempfile
-import zipfile
 from pathlib import Path
 from datetime import datetime, timezone
 
 import click
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from hagent.db import get_active_workspace, get_or_create_default_workspace, get_session, init_db, set_active_workspace
 from hagent.engine import run_issue as engine_run_issue
@@ -1053,6 +1052,70 @@ def issue_cancel_task(issue_id):
         click.echo(f"Cancelled {count} running task(s)")
 
 
+@issue.command("approve")
+@click.argument("issue_id")
+def issue_approve(issue_id):
+    """Approve this issue's run that's waiting on require_run_approval, then execute it
+    now. Mirrors the web UI's Approve button - previously the only way to clear this
+    gate was a manual POST to /issues/{id}/runs/{id}/approve."""
+    with get_session() as s:
+        item = s.get(Issue, issue_id)
+        if not item:
+            raise click.ClickException("Issue not found")
+        run = s.scalar(
+            select(Run)
+            .where(Run.issue_id == issue_id, Run.status == RunStatus.WAITING_APPROVAL)
+            .order_by(Run.created_at.desc())
+        )
+        if not run:
+            raise click.ClickException("No run on this issue is waiting for approval")
+        changed = s.execute(
+            update(Run).where(Run.id == run.id, Run.status == RunStatus.WAITING_APPROVAL).values(status=RunStatus.PENDING),
+            execution_options={"synchronize_session": False},
+        ).rowcount
+        if not changed:
+            raise click.ClickException("This run is no longer waiting for approval")
+        item.status = IssueStatus.IN_PROGRESS
+        s.add(TimelineEvent(issue_id=item.id, event_type="run_approved", detail=f"Run approved for agent {run.agent.name}"))
+        s.commit()
+        s.refresh(run)
+        agent = s.get(Agent, run.agent_id)
+        run = engine_run_issue(s, item, agent, _run=run)
+        click.echo(f"status: {run.status.value}")
+        if run.output:
+            click.echo(f"output: {run.output}")
+        if run.error:
+            click.echo(f"error: {run.error}")
+
+
+@issue.command("reject")
+@click.argument("issue_id")
+def issue_reject(issue_id):
+    """Reject this issue's run that's waiting on require_run_approval."""
+    with get_session() as s:
+        item = s.get(Issue, issue_id)
+        if not item:
+            raise click.ClickException("Issue not found")
+        run = s.scalar(
+            select(Run)
+            .where(Run.issue_id == issue_id, Run.status == RunStatus.WAITING_APPROVAL)
+            .order_by(Run.created_at.desc())
+        )
+        if not run:
+            raise click.ClickException("No run on this issue is waiting for approval")
+        changed = s.execute(
+            update(Run).where(Run.id == run.id, Run.status == RunStatus.WAITING_APPROVAL).values(
+                status=RunStatus.REJECTED, error="rejected by user", finished_at=datetime.now(timezone.utc)
+            ),
+            execution_options={"synchronize_session": False},
+        ).rowcount
+        if not changed:
+            raise click.ClickException("This run is no longer waiting for approval")
+        s.add(TimelineEvent(issue_id=item.id, event_type="run_rejected", detail=f"Run rejected for agent {run.agent.name}"))
+        s.commit()
+        click.echo("rejected")
+
+
 @issue.command("timeline")
 @click.argument("issue_id")
 def issue_timeline(issue_id):
@@ -1555,10 +1618,11 @@ def agent_restore(agent_id):
 @click.option("--name", default=None)
 @click.option("--runtime", "runtime_id", default=None)
 @click.option("--backup-runtime", "backup_runtime_id", default=None, help="Runtime ID to fail over to on a primary-runtime error. Pass an empty string to clear it.")
+@click.option("--failback-runtime", "failback_runtime_id", default=None, help="Runtime ID to fail over to if both the primary and backup runtimes error. Pass an empty string to clear it.")
 @click.option("--verifier", "verifier_agent_id", default=None, help="Agent ID that automatically reviews this agent's completed work (PASS/FAIL). Pass an empty string to clear it.")
 @click.option("--sandbox-image", default=None, help="Docker image to run this agent's terminal commands in when working on a git-worktree-isolated issue (e.g. mcr.microsoft.com/powershell). Only activates when a worktree exists; pass an empty string to clear it.")
 @click.option("--instructions", default=None)
-def agent_update(agent_id, name, runtime_id, backup_runtime_id, verifier_agent_id, sandbox_image, instructions):
+def agent_update(agent_id, name, runtime_id, backup_runtime_id, failback_runtime_id, verifier_agent_id, sandbox_image, instructions):
     with get_session() as s:
         item = s.get(Agent, agent_id)
         if not item:
@@ -1569,28 +1633,34 @@ def agent_update(agent_id, name, runtime_id, backup_runtime_id, verifier_agent_i
             if not s.get(Runtime, runtime_id):
                 raise click.ClickException("Runtime not found")
             item.runtime_id = runtime_id
-        if backup_runtime_id is not None:
-            if backup_runtime_id == "":
-                item.backup_runtime_id = None
-            else:
-                if not s.get(Runtime, backup_runtime_id):
-                    raise click.ClickException("Backup runtime not found")
-                item.backup_runtime_id = backup_runtime_id
-        if verifier_agent_id is not None:
-            if verifier_agent_id == "":
-                item.verifier_agent_id = None
-            else:
-                if verifier_agent_id == agent_id:
-                    raise click.ClickException("An agent cannot verify its own work")
-                if not s.get(Agent, verifier_agent_id):
-                    raise click.ClickException("Verifier agent not found")
-                item.verifier_agent_id = verifier_agent_id
+        _apply_nullable_fk(s, item, "backup_runtime_id", backup_runtime_id, Runtime, "Backup runtime")
+        _apply_nullable_fk(s, item, "failback_runtime_id", failback_runtime_id, Runtime, "Failback runtime")
+        _apply_nullable_fk(
+            s, item, "verifier_agent_id", verifier_agent_id, Agent, "Verifier agent",
+            forbid=agent_id, forbid_message="An agent cannot verify its own work",
+        )
         if sandbox_image is not None:
             item.sandbox_image = sandbox_image or None
         if instructions is not None:
             item.instructions = instructions
         s.commit()
         click.echo(item.id)
+
+
+def _apply_nullable_fk(session, item, attr, value, model, label, *, forbid=None, forbid_message=None):
+    """Update a nullable foreign-key field from a CLI option: None leaves it untouched,
+    '' clears it, and any other value must reference an existing row of `model`.
+    """
+    if value is None:
+        return
+    if value == "":
+        setattr(item, attr, None)
+        return
+    if forbid is not None and value == forbid:
+        raise click.ClickException(forbid_message)
+    if not session.get(model, value):
+        raise click.ClickException(f"{label} not found")
+    setattr(item, attr, value)
 
 
 @agent.command("copy")
@@ -1965,19 +2035,13 @@ def issue_update(issue_id, title, description, status, assignee_agent_id, parent
         item = s.get(Issue, issue_id)
         if not item:
             raise click.ClickException("Issue not found")
-        previous_status, reassigned = item.status, False
+        previous_status = item.status
         if title is not None:
             item.title = title
         if description is not None:
             item.description = description
-        if status is not None:
-            item.status = IssueStatus(status)
-            s.add(TimelineEvent(issue_id=item.id, event_type="status_changed", detail=status))
-        if assignee_agent_id is not None:
-            agent_row = _find_agent(s, assignee_agent_id) if assignee_agent_id else None
-            item.assignee_agent_id = agent_row.id if agent_row else None
-            reassigned = agent_row is not None
-            s.add(TimelineEvent(issue_id=item.id, event_type="assigned", detail=agent_row.name if agent_row else "unassigned"))
+        _apply_issue_status(s, item, status)
+        reassigned = _apply_issue_assignee(s, item, assignee_agent_id)
         if parent_issue_id is not None:
             item.parent_issue_id = _issue_id(s, parent_issue_id) if parent_issue_id else None
         if position is not None:
@@ -1988,16 +2052,38 @@ def issue_update(issue_id, title, description, status, assignee_agent_id, parent
             item.start_date = _valid_date(start_date) or None
         if due_date is not None:
             item.due_date = _valid_date(due_date) or None
-        if stage is not None:
-            if stage and not item.parent_issue_id:
-                raise click.ClickException("--stage needs a parent issue")
-            item.stage = stage or None
+        _apply_issue_stage(item, stage)
         s.commit()
         click.echo(item.id)
         run = apply_status_change(s, item, previous_status, start=not no_start)
         if run is None and reassigned and not no_start:
             run = start_agent_run(s, item)
         _report_started(run)
+
+
+def _apply_issue_status(session, item, status):
+    if status is None:
+        return
+    item.status = IssueStatus(status)
+    session.add(TimelineEvent(issue_id=item.id, event_type="status_changed", detail=status))
+
+
+def _apply_issue_assignee(session, item, assignee_agent_id) -> bool:
+    """Reassign (or unassign, for '') an issue; returns whether a new agent was actually assigned."""
+    if assignee_agent_id is None:
+        return False
+    agent_row = _find_agent(session, assignee_agent_id) if assignee_agent_id else None
+    item.assignee_agent_id = agent_row.id if agent_row else None
+    session.add(TimelineEvent(issue_id=item.id, event_type="assigned", detail=agent_row.name if agent_row else "unassigned"))
+    return agent_row is not None
+
+
+def _apply_issue_stage(item, stage):
+    if stage is None:
+        return
+    if stage and not item.parent_issue_id:
+        raise click.ClickException("--stage needs a parent issue")
+    item.stage = stage or None
 
 
 @issue.command("runs")

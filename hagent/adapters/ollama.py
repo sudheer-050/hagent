@@ -9,7 +9,7 @@ DEFAULT_BASE_URL = "http://localhost:11434"
 
 
 class OllamaRuntime(BaseRuntime):
-    def run(self, prompt: str, context: str = "", tools=None, tool_executor=None) -> RuntimeResult:
+    def run(self, prompt: str, context: str = "", tools=None, tool_executor=None, images=None) -> RuntimeResult:
         base_url = self.config.get("base_url", DEFAULT_BASE_URL)
         full_prompt = f"{context}\n\n{prompt}" if context else prompt
 
