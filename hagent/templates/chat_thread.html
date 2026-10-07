@@ -51,7 +51,16 @@
 <script>
   (function () {
     var list = document.getElementById("chat-message-list");
-    if (list) list.scrollTop = list.scrollHeight;
+    function scrollToBottom() { if (list) list.scrollTop = list.scrollHeight; }
+    scrollToBottom();
+    // Images (avatars, attachments) finish loading after this script runs and can grow the
+    // list's height, so re-pin to the bottom once they're in and once layout has settled.
+    if (list) {
+      list.querySelectorAll("img").forEach(function (img) {
+        if (!img.complete) img.addEventListener("load", scrollToBottom);
+      });
+    }
+    requestAnimationFrame(scrollToBottom);
 
     // Pulls in whatever the server now has for the message list and sidebar (an agent's
     // reply, one it sent on its own via message_user, or one sent from another tab/device)
