@@ -19,3 +19,11 @@ hagent-server*.log
 hagent-watchdog-error.log
 hagent/voice/holly_voice_stdout.log
 hagent/voice/holly_voice_stderr.log
+
+# Local-only files: logs, database backups, uploads, run output, per-user Claude settings
+.claude/settings.local.json
+hagent.db.*.bak
+attachments/
+output/
+avatar_gen_log.txt
+agent_caps_dump.txt
