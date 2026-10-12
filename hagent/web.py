@@ -34,6 +34,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import joinedload, selectinload
 
 from hagent.db import get_active_workspace, get_or_create_default_workspace, get_session, init_db
+from hagent.runtime_env import scrub_inherited_environment
 from hagent.engine import process_queued_run_by_id, queue_issue_run
 from hagent.models import (
     Attachment,
@@ -79,6 +80,7 @@ get_or_create_default_workspace = get_active_workspace
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """Own Hagent's background services for exactly one web-process lifetime."""
+    scrub_inherited_environment()
     init_db()
     start_scheduler()
     resume_pending_runs()
