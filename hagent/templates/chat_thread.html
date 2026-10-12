@@ -8,7 +8,7 @@
   <div class="chat-conversation">
     <div class="chat-conversation-head">
       <span class="agent-avatar agent-custom-avatar" role="img" aria-label="{{ agent.name }} avatar">
-        <img class="agent-avatar-img" src="{{ agent_avatar_url(agent.id) }}" alt="" loading="lazy">
+        <img class="agent-avatar-img" src="{{ agent_avatar_url(agent.id, avatar_path=agent.avatar_path) }}" alt="" loading="lazy">
       </span>
       <span class="chat-conversation-head-info">
         <h2>{{ agent.name }}</h2>
@@ -19,8 +19,9 @@
     </div>
     <div class="chat-message-list" id="chat-message-list">
       {% for m in messages %}
-      <div class="chat-message{% if m.role == 'user' %} from-user{% endif %}">
-        <div class="chat-message-bubble">{{ m.content }}</div>
+      <div class="chat-message{% if m.role == 'user' %} from-user{% endif %}{% if loop.previtem and loop.previtem.role == m.role %} grouped{% endif %}">
+        <div class="chat-message-bubble">{% if m.image_path %}<img class="chat-message-image" src="/chat/messages/{{ m.id }}/image" alt="">{% endif %}{% if m.content %}{{ m.content }}{% endif %}</div>
+        <span class="chat-message-time">{{ m.created_at.strftime('%I:%M %p').lstrip('0') }}</span>
       </div>
       {% else %}
       <div class="chat-empty-state">
@@ -28,26 +29,143 @@
         <p>Ask about their work, a project they're on, or anything on your mind - this isn't tied to any issue.</p>
       </div>
       {% endfor %}
+      {% if pending %}
+      <div class="chat-message chat-message-pending" id="chat-message-pending">
+        <div class="chat-message-bubble chat-typing" aria-live="polite"><span></span><span></span><span></span></div>
+      </div>
+      {% endif %}
     </div>
-    <form class="chat-composer" id="chat-composer" method="post" action="/chat/{{ agent.id }}/messages">
-      <textarea name="message" id="chat-composer-input" placeholder="Message {{ agent.name }}..." rows="1" required></textarea>
-      <button type="submit" class="primary">Send</button>
+    <form class="chat-composer" id="chat-composer" method="post" action="/chat/{{ agent.id }}/messages" enctype="multipart/form-data">
+      <label class="chat-composer-attach icon-btn-round" title="Attach an image" aria-label="Attach an image">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a5 5 0 0 1-7.07-7.07l9.19-9.19a3.5 3.5 0 0 1 4.95 4.95l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+        <input type="file" name="image" id="chat-composer-image" accept="image/png,image/jpeg,image/webp,image/gif">
+      </label>
+      <span class="chat-composer-filename" id="chat-composer-filename"></span>
+      <textarea name="message" id="chat-composer-input" placeholder="Message {{ agent.name }}..." rows="1"></textarea>
+      <button type="submit" class="chat-composer-send" aria-label="Send message">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </button>
     </form>
   </div>
 </div>
 <script>
   (function () {
     var list = document.getElementById("chat-message-list");
-    if (list) list.scrollTop = list.scrollHeight;
+    function scrollToBottom() { if (list) list.scrollTop = list.scrollHeight; }
+    scrollToBottom();
+    // Images (avatars, attachments) finish loading after this script runs and can grow the
+    // list's height, so re-pin to the bottom once they're in and once layout has settled.
+    if (list) {
+      list.querySelectorAll("img").forEach(function (img) {
+        if (!img.complete) img.addEventListener("load", scrollToBottom);
+      });
+    }
+    requestAnimationFrame(scrollToBottom);
+
+    var composer = document.getElementById("chat-composer");
     var input = document.getElementById("chat-composer-input");
+    var imageInput = document.getElementById("chat-composer-image");
+    var filenameTag = document.getElementById("chat-composer-filename");
+
+    // Follow-ups typed while the agent is still working on a previous turn are sent to the
+    // server right away (it saves the message immediately and, if a turn is already in
+    // flight, folds it into the next turn once the current one finishes - see
+    // _complete_chat_turn in web.py). The composer is never disabled here; nothing is held
+    // back client-side waiting for a reply.
+    function buildBubble(text, file) {
+      var bubble = document.createElement("div");
+      bubble.className = "chat-message from-user";
+      var content = document.createElement("div");
+      content.className = "chat-message-bubble";
+      if (file) {
+        var preview = document.createElement("img");
+        preview.className = "chat-message-image";
+        preview.src = URL.createObjectURL(file);
+        content.appendChild(preview);
+      }
+      if (text) content.appendChild(document.createTextNode(text));
+      bubble.appendChild(content);
+      var time = document.createElement("span");
+      time.className = "chat-message-time";
+      time.textContent = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+      bubble.appendChild(time);
+      return bubble;
+    }
+
+    // Posts a message immediately: optimistic bubble, then POST, then refresh() to pick up
+    // the real persisted copy (and the "thinking" bubble, if this started or extended a turn).
+    function deliver(text, file) {
+      if (list) { list.appendChild(buildBubble(text, file)); list.scrollTop = list.scrollHeight; }
+      var body = new FormData();
+      body.append("message", text);
+      if (file) body.append("image", file);
+      fetch(composer.action, { method: "POST", body: body })
+        .then(refresh)
+        .catch(function () { /* transient network error - next poll retries */ });
+    }
+
+    // Pulls in whatever the server now has for the message list and sidebar (an agent's
+    // reply, one it sent on its own via message_user, or one sent from another tab/device)
+    // without a full page reload.
+    function refresh() {
+      return fetch(window.location.href)
+        .then(function (r) { return r.text(); })
+        .then(function (html) {
+          var next = new DOMParser().parseFromString(html, "text/html");
+          var currentList = document.getElementById("chat-message-list");
+          var incomingList = next.getElementById("chat-message-list");
+          if (currentList && incomingList && currentList.innerHTML !== incomingList.innerHTML) {
+            var atBottom = currentList.scrollTop + currentList.clientHeight >= currentList.scrollHeight - 20;
+            currentList.innerHTML = incomingList.innerHTML;
+            if (atBottom) currentList.scrollTop = currentList.scrollHeight;
+          }
+          var currentSidebar = document.querySelector(".chat-sidebar");
+          var incomingSidebar = next.querySelector(".chat-sidebar");
+          if (currentSidebar && incomingSidebar && currentSidebar.innerHTML !== incomingSidebar.innerHTML) {
+            currentSidebar.innerHTML = incomingSidebar.innerHTML;
+          }
+        })
+        .catch(function () { /* transient network error - next poll retries */ });
+    }
+
+    if (imageInput && filenameTag) {
+      imageInput.addEventListener("change", function () {
+        var file = imageInput.files && imageInput.files[0];
+        filenameTag.textContent = file ? file.name : "";
+        filenameTag.classList.toggle("visible", !!file);
+      });
+    }
     if (input) {
+      input.addEventListener("input", function () {
+        input.style.height = "auto";
+        input.style.height = Math.min(input.scrollHeight, 160) + "px";
+      });
+    }
+    if (composer && input) {
+      composer.addEventListener("submit", function (e) {
+        e.preventDefault();
+        var text = input.value.trim();
+        var file = imageInput && imageInput.files && imageInput.files[0];
+        if (!text && !file) return;
+        input.value = "";
+        input.style.height = "";
+        if (imageInput) imageInput.value = "";
+        if (filenameTag) { filenameTag.textContent = ""; filenameTag.classList.remove("visible"); }
+        deliver(text, file);
+      });
       input.addEventListener("keydown", function (e) {
         if (e.key === "Enter" && !e.shiftKey) {
           e.preventDefault();
-          input.form.requestSubmit();
+          composer.requestSubmit();
         }
       });
     }
+
+    var POLL_MS = 4000;
+    function poll() {
+      refresh().then(function () { setTimeout(poll, POLL_MS); });
+    }
+    setTimeout(poll, POLL_MS);
   })();
 </script>
 {% endblock %}

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Memory ? {{ site.app_name }}{% endblock %}
+{% block title %}Memory &middot; {{ site.app_name }}{% endblock %}
 {% block content %}
 <div class="page-head"><div><h1>Unified memory</h1><p>Hagent-owned, provider-neutral, scoped, and attributable.</p></div>
   <a class="button" href="/api/memory/export?project_id={{ filters.project_id }}">Export JSON</a></div>
@@ -29,7 +29,7 @@
   <article class="panel">
     <div class="row"><strong>{{ m.category }}</strong><span class="badge">{{ m.status }}</span><span class="badge">{{ m.verification_status }}</span><span class="badge">{{ m.sensitivity }}</span></div>
     <p style="white-space:pre-wrap">{{ m.content }}</p>
-    <small>Source: {{ m.source.provider }} / {{ m.source.agent or 'unknown agent' }} ? session {{ m.source.session_id or 'n/a' }} ? {{ m.updated_at }}</small>
+    <small>Source: {{ m.source.provider }} / {{ m.source.agent or 'unknown agent' }} &middot; session {{ m.source.session_id or 'n/a' }} &middot; {{ m.updated_at }}</small>
     <details><summary>Correct or supersede</summary>
       <form method="post" action="/memory/{{ m.id }}" class="stack">
         <input type="hidden" name="project_id" value="{{ filters.project_id }}">

@@ -36,17 +36,23 @@ def _mcp_config_file(tools, tool_executor):
 
 
 class ClaudeCodeRuntime(BaseRuntime):
-    def run(self, prompt: str, context: str = "", tools=None, tool_executor=None) -> RuntimeResult:
+    def run(self, prompt: str, context: str = "", tools=None, tool_executor=None, images=None) -> RuntimeResult:
         command = self.config.get("command", "claude")
         candidate = Path(command).expanduser()
         executable = str(candidate) if candidate.is_file() else shutil.which(command)
         if not executable:
             raise RuntimeError("Claude Code is not installed or is not on PATH")
 
-        full_prompt = f"{context}\n\n{prompt}" if context else prompt
-        # Prompt goes over stdin, not as a CLI argument - a long prompt as an argument
-        # can exceed the Windows command-line length limit and fail before Claude Code
-        # even starts (seen in practice: "The command line is too long").
+        # Prompt (and system context) go over stdin, not as CLI arguments - a long
+        # value as an argument can exceed the Windows command-line length limit and
+        # fail before Claude Code even starts ("[WinError 206] The filename or
+        # extension is too long"). This bit before: --append-system-prompt-file and
+        # --system-prompt-snapshot no longer exist in current Claude Code releases,
+        # --append-system-prompt only takes the prompt text inline now, and an
+        # agent's context (instructions + skill files) has no size cap, so it was
+        # only a matter of time before one blew the limit. Folding context into the
+        # stdin prompt instead - same approach generic_cli.py already uses - has no
+        # such limit.
         args = [executable, "--print", "--output-format", "json"]
         if self.model and self.model != "default":
             args.extend(["--model", self.model])
@@ -56,6 +62,8 @@ class ClaudeCodeRuntime(BaseRuntime):
         if resume_session_id:
             args.extend(["--resume", resume_session_id])
 
+        full_prompt = f"{context}\n\n{prompt}" if context else prompt
+
         with _mcp_config_file(tools, tool_executor) as mcp_config_path:
             if mcp_config_path:
                 args.extend(["--mcp-config", mcp_config_path, "--strict-mcp-config"])
@@ -64,9 +72,16 @@ class ClaudeCodeRuntime(BaseRuntime):
                 # reliably picks the wrong (built-in) tool over ours. Naming our tools
                 # explicitly here is what makes ToolSearch actually find and load them.
                 args.extend(["--allowedTools", *[f"mcp__hagent__{tool['name']}" for tool in tools]])
-            # --print mode has no TTY to answer a permission prompt from, so any tool
-            # use (terminal or the MCP delegation bridge) has to skip the gate here.
-            if self.config.get("terminal_enabled") or mcp_config_path:
+            # --print mode has no TTY to answer a permission prompt from. Terminal-
+            # enabled agents need the full bypass (they're expected to run shell
+            # commands). Agents WITHOUT terminal access must not get it just because
+            # they were handed some other MCP tool (delegation, message_user, etc.) -
+            # --allowedTools above already pre-approves exactly those named tools
+            # without needing to also unlock Claude Code's own Read/Write/Edit/Bash
+            # tools. Skipping permissions here for every tool-bearing agent used to
+            # mean any agent, terminal-enabled or not, could write to whatever
+            # directory this process happened to be running in.
+            if self.config.get("terminal_enabled"):
                 args.append("--dangerously-skip-permissions")
             try:
                 completed = subprocess.run(

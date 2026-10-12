@@ -17,7 +17,15 @@ from hagent.models import Base, Workspace
 from hagent.skill_icons import choose_skill_emoji
 from hagent.tenancy import WorkspaceSession
 
-DB_PATH = os.environ.get("HAGENT_DB_PATH", "hagent.db")
+# A bare relative default ("hagent.db") resolves against whatever directory the
+# *caller* happens to be in when they invoke the CLI, not this package's own
+# location - so running `hagent` from anywhere other than the repo root created
+# (or tried to create) an unrelated hagent.db there instead, failing outright
+# in a read-only or unwritable directory. Anchor to this package's own
+# checkout instead: for the common case (repo root == cwd) this resolves to
+# the exact same file as before, so it doesn't move or duplicate anyone's
+# existing database.
+DB_PATH = os.environ.get("HAGENT_DB_PATH", str(Path(__file__).resolve().parent.parent / "hagent.db"))
 DEFAULT_WORKSPACE_NAME = "default"
 CONFIG_PATH = Path(os.environ.get("HAGENT_CONFIG_PATH", str(Path.home() / ".hagent" / "config.json")))
 
@@ -137,10 +145,14 @@ def _ensure_schema() -> None:
             "session_id": "VARCHAR",
             "unread": "BOOLEAN NOT NULL DEFAULT 0",
             "updated_at": "DATETIME",
+            "runtime_id": "VARCHAR",
+            "pending": "BOOLEAN NOT NULL DEFAULT 0",
         },
         "chat_messages": {
             "role": "VARCHAR",
             "content": "TEXT",
+            "image_path": "VARCHAR",
+            "image_mime": "VARCHAR",
         },
     }
     additions['runs'].update({'input_tokens': 'INTEGER', 'output_tokens': 'INTEGER', 'owner_pid': 'INTEGER', 'owner_started': 'FLOAT', 'resumed_from': 'VARCHAR'})
@@ -208,18 +220,20 @@ def _ensure_schema() -> None:
             connection.execute(text("UPDATE chat_threads SET updated_at = created_at WHERE updated_at IS NULL"))
             connection.execute(text("""CREATE TABLE chat_threads_new (
                 id VARCHAR PRIMARY KEY, workspace_id VARCHAR NOT NULL REFERENCES workspaces(id),
-                agent_id VARCHAR NOT NULL REFERENCES agents(id), session_id VARCHAR,
+                agent_id VARCHAR NOT NULL REFERENCES agents(id), session_id VARCHAR, runtime_id VARCHAR,
+                pending BOOLEAN NOT NULL DEFAULT 0,
                 unread BOOLEAN NOT NULL DEFAULT 0, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)"""))
             connection.execute(text("""INSERT INTO chat_threads_new
-                (id, workspace_id, agent_id, session_id, unread, created_at, updated_at)
-                SELECT id, workspace_id, agent_id, session_id, unread, created_at, updated_at FROM chat_threads"""))
+                (id, workspace_id, agent_id, session_id, runtime_id, pending, unread, created_at, updated_at)
+                SELECT id, workspace_id, agent_id, session_id, runtime_id, pending, unread, created_at, updated_at FROM chat_threads"""))
             connection.execute(text("DROP TABLE chat_threads"))
             connection.execute(text("ALTER TABLE chat_threads_new RENAME TO chat_threads"))
         if "author" in {c["name"] for c in inspector.get_columns("chat_messages")}:
             connection.execute(text("UPDATE chat_messages SET role = (CASE WHEN author = 'you' THEN 'user' ELSE 'agent' END), content = body WHERE role IS NULL"))
             connection.execute(text("""CREATE TABLE chat_messages_new (
                 id VARCHAR PRIMARY KEY, thread_id VARCHAR NOT NULL REFERENCES chat_threads(id),
-                role VARCHAR NOT NULL, content TEXT NOT NULL, created_at DATETIME NOT NULL)"""))
+                role VARCHAR NOT NULL, content TEXT NOT NULL, image_path VARCHAR, image_mime VARCHAR,
+                created_at DATETIME NOT NULL)"""))
             connection.execute(text("""INSERT INTO chat_messages_new (id, thread_id, role, content, created_at)
                 SELECT id, thread_id, role, content, created_at FROM chat_messages"""))
             connection.execute(text("DROP TABLE chat_messages"))

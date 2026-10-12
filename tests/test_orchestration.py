@@ -1,6 +1,6 @@
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from click.testing import CliRunner
@@ -367,6 +367,122 @@ def test_finishing_a_run_through_the_engine_wakes_the_parent_agent(world, mocker
     assert "child result" in runs_of(parent)[0].prompt
     dispatcher._executor.shutdown(wait=True)
     dispatcher._executor = None
+
+
+# --- orphaned issues: reconciling dead work and requeuing idle work --------
+
+def _issue_with_run(world, *, agent="coder", status=IssueStatus.IN_PROGRESS, run_status=RunStatus.FAILED, created_at=None, finished_at=None, error=None):
+    """An issue with exactly one past run, as if a process ran and finished (or was cut off)."""
+    with hagent_db.SessionLocal() as s:
+        iss = Issue(project_id=world["project"], title="t", status=status, assignee_agent_id=world[agent])
+        s.add(iss)
+        s.flush()
+        run = Run(issue_id=iss.id, agent_id=world[agent], prompt="do it", status=run_status,
+                   created_at=created_at or finished_at or datetime.now(timezone.utc), finished_at=finished_at, error=error)
+        s.add(run)
+        s.commit()
+        return iss.id, run.id
+
+
+def test_an_issue_whose_last_run_was_cancelled_is_moved_out_of_the_board(world):
+    issue_id, _ = _issue_with_run(world, status=IssueStatus.IN_PROGRESS, run_status=RunStatus.CANCELLED, error="cancelled by user")
+
+    with hagent_db.SessionLocal() as s:
+        resolved = orchestration.reconcile_orphaned_issues(s)
+
+    assert resolved == [issue_id]
+    assert status_of(issue_id) == IssueStatus.CANCELLED
+
+
+def test_an_issue_whose_last_run_was_rejected_is_also_reconciled_from_backlog(world):
+    issue_id, _ = _issue_with_run(world, status=IssueStatus.BACKLOG, run_status=RunStatus.REJECTED, error="rejected by user")
+
+    with hagent_db.SessionLocal() as s:
+        resolved = orchestration.reconcile_orphaned_issues(s)
+
+    assert resolved == [issue_id]
+    assert status_of(issue_id) == IssueStatus.CANCELLED
+
+
+def test_reconciliation_leaves_an_issue_with_a_currently_active_run_alone(world):
+    issue_id, _ = _issue_with_run(world, status=IssueStatus.IN_PROGRESS, run_status=RunStatus.CANCELLED)
+    with hagent_db.SessionLocal() as s:
+        s.add(Run(issue_id=issue_id, agent_id=world["coder"], prompt="do it", status=RunStatus.RUNNING))
+        s.commit()
+
+    with hagent_db.SessionLocal() as s:
+        resolved = orchestration.reconcile_orphaned_issues(s)
+
+    assert resolved == []
+    assert status_of(issue_id) == IssueStatus.IN_PROGRESS
+
+
+def test_a_failed_run_is_not_swept_into_cancelled(world):
+    """FAILED is not a human decision to abandon the work - only CANCELLED/REJECTED are."""
+    issue_id, _ = _issue_with_run(world, status=IssueStatus.TODO, run_status=RunStatus.FAILED, error="boom")
+
+    with hagent_db.SessionLocal() as s:
+        resolved = orchestration.reconcile_orphaned_issues(s)
+
+    assert resolved == []
+    assert status_of(issue_id) == IssueStatus.TODO
+
+
+def test_an_idle_todo_issue_with_no_run_at_all_gets_requeued(world):
+    with hagent_db.SessionLocal() as s:
+        iss = Issue(project_id=world["project"], title="t", status=IssueStatus.TODO, assignee_agent_id=world["coder"])
+        s.add(iss)
+        s.commit()
+        issue_id = iss.id
+
+    with hagent_db.SessionLocal() as s:
+        queued = orchestration.requeue_idle_issues(s)
+
+    assert len(queued) == 1
+    runs = runs_of(issue_id)
+    assert len(runs) == 1 and runs[0].status == RunStatus.PENDING
+
+
+def test_a_just_failed_run_is_not_immediately_reretried(world):
+    issue_id, _ = _issue_with_run(world, status=IssueStatus.IN_PROGRESS, run_status=RunStatus.FAILED, finished_at=datetime.now(timezone.utc), error="boom")
+
+    with hagent_db.SessionLocal() as s:
+        queued = orchestration.requeue_idle_issues(s)
+
+    assert queued == []
+    assert len(runs_of(issue_id)) == 1  # still just the one failed run - cooldown hasn't elapsed
+
+
+def test_after_the_cooldown_a_failed_run_is_retried(world):
+    old = datetime.now(timezone.utc) - timedelta(seconds=orchestration.IDLE_COOLDOWN_SECONDS + 1)
+    issue_id, _ = _issue_with_run(world, status=IssueStatus.IN_PROGRESS, run_status=RunStatus.FAILED, finished_at=old, error="boom")
+
+    with hagent_db.SessionLocal() as s:
+        queued = orchestration.requeue_idle_issues(s)
+
+    assert len(queued) == 1
+    assert len(runs_of(issue_id)) == 2
+
+
+def test_repeated_failures_block_the_issue_instead_of_retrying_forever(world):
+    def old(extra_seconds):
+        return datetime.now(timezone.utc) - timedelta(seconds=orchestration.IDLE_COOLDOWN_SECONDS + extra_seconds)
+
+    with hagent_db.SessionLocal() as s:
+        iss = Issue(project_id=world["project"], title="t", status=IssueStatus.IN_PROGRESS, assignee_agent_id=world["coder"])
+        s.add(iss)
+        s.flush()
+        for i in range(orchestration.MAX_IDLE_RETRIES):
+            when = old(100 - i)
+            s.add(Run(issue_id=iss.id, agent_id=world["coder"], prompt="x", status=RunStatus.FAILED, created_at=when, finished_at=when, error="boom"))
+        s.commit()
+        issue_id = iss.id
+
+    with hagent_db.SessionLocal() as s:
+        queued = orchestration.requeue_idle_issues(s)
+
+    assert queued == []
+    assert status_of(issue_id) == IssueStatus.BLOCKED
 
 
 # --- migration of an existing database -------------------------------------

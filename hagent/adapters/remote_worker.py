@@ -24,7 +24,7 @@ class RemoteWorkerRuntime(BaseRuntime):
         self.runtime_type = runtime_type
         self.worker_name = str(config["worker"])
 
-    def run(self, prompt: str, context: str = "", tools=None, tool_executor=None) -> RuntimeResult:
+    def run(self, prompt: str, context: str = "", tools=None, tool_executor=None, images=None) -> RuntimeResult:
         # Tools and delegation are served by this machine's engine and cannot cross to a worker;
         # the installed assistants on the worker use their own tools.
         timeout = int(self.config.get("timeout", 600))

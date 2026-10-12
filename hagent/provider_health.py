@@ -2,7 +2,7 @@
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import object_session
@@ -25,6 +25,119 @@ _CAPACITY_ERROR = re.compile(
 def is_capacity_error(error) -> bool:
     """Return whether a provider failure means its current allowance is exhausted."""
     return bool(_CAPACITY_ERROR.search(str(error)))
+
+
+# Failures that mean the provider itself is unreachable or broken, not that this task went
+# wrong. A timeout is deliberately excluded: a long task timing out says nothing about the
+# provider's health.
+_INFRASTRUCTURE_ERROR = re.compile(
+    r"ECONNREFUSED|connection refused|failed to start|not installed|not on PATH"
+    r"|ENOTFOUND|getaddrinfo|name or service not known|could not resolve host",
+    re.IGNORECASE,
+)
+# Codex: "... or try again at 5:23 PM." / Claude Code: "You've hit your session limit - resets
+# 5:20pm (America/New_York)". The time is the provider's local clock (or the named zone).
+_RETRY_AT = re.compile(
+    r"(?:try again at|resets(?: at)?)\s+(\d{1,2})(?::(\d{2}))?\s*([ap]\.?m\.?)(?:\s*\(([A-Za-z_]+/[A-Za-z_/]+)\))?",
+    re.IGNORECASE,
+)
+LIMITED_COOLDOWN = timedelta(minutes=30)
+MAX_DETAIL_CHARS = 1000
+ERROR_COOLDOWN = timedelta(minutes=10)
+
+
+def is_infrastructure_error(error) -> bool:
+    if "timed out" in str(error).lower() and "failed to start" in str(error).lower():
+        return False  # adapters report a TimeoutExpired as "failed to start: ... timed out"
+    return bool(_INFRASTRUCTURE_ERROR.search(str(error)))
+
+
+def _as_utc(moment):
+    return moment.replace(tzinfo=timezone.utc) if moment.tzinfo is None else moment
+
+
+def retry_after(runtime: Runtime):
+    """When a runtime marked limited or error may be tried again (UTC), or None if it is usable now.
+
+    A usage-limit message that names a reset time ("try again at 8:35 PM", local time) is
+    honored exactly - this is how Paperclip classifies provider_quota failures. Otherwise a
+    fixed cooldown applies, so a broken provider costs one failed attempt per cooldown window
+    instead of one per run.
+    """
+    if runtime.health_status not in {"limited", "error"} or runtime.last_health_check_at is None:
+        return None
+    checked = _as_utc(runtime.last_health_check_at)
+    if runtime.health_status == "error":
+        return checked + ERROR_COOLDOWN
+    reset = parse_reset_time(runtime.health_detail or "", checked)
+    return reset or checked + LIMITED_COOLDOWN
+
+
+def parse_reset_time(text: str, after: datetime):
+    """The first reset time a usage-limit message names, as the next such moment after `after` (UTC)."""
+    match = _RETRY_AT.search(text)
+    if not match:
+        return None
+    hour = int(match.group(1)) % 12 + (12 if match.group(3).lower().startswith("p") else 0)
+    minute = int(match.group(2) or 0)
+    zone = None
+    if match.group(4):
+        try:
+            from zoneinfo import ZoneInfo
+            zone = ZoneInfo(match.group(4))
+        except Exception:  # noqa: BLE001 - unknown zone or no tz database: fall back to local time
+            zone = None
+    local_after = _as_utc(after).astimezone(zone)
+    reset = local_after.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if reset <= local_after:
+        reset += timedelta(days=1)
+    return reset.astimezone(timezone.utc)
+
+
+def limit_detail(error) -> str:
+    """A health_detail that keeps the reset time even when the raw error is a long JSON event stream.
+
+    CLI errors carry the whole event log, and the "try again at ..." sentence is often past the
+    first 1000 characters, so a plain truncation silently threw the reset time away.
+    """
+    text = str(error).strip()
+    match = _RETRY_AT.search(text)
+    if not match or match.end() <= MAX_DETAIL_CHARS:
+        return text[:MAX_DETAIL_CHARS]
+    reset_clause = match.group(0)
+    return (reset_clause + " | " + text)[:MAX_DETAIL_CHARS]
+
+
+def is_cooling_down(runtime, now=None) -> bool:
+    if runtime is None:
+        return False
+    until = retry_after(runtime)
+    return until is not None and (now or datetime.now(timezone.utc)) < until
+
+
+def record_infrastructure_failure(runtime: Runtime, error) -> bool:
+    """Mark a runtime unhealthy after an unreachable/broken-provider failure. Returns whether it did."""
+    if not is_infrastructure_error(error) or is_capacity_error(error):
+        return False
+    session = object_session(runtime)
+    if session is None:
+        return False
+    runtime.health_status = "error"
+    runtime.health_detail = str(error).strip()[:1000]
+    runtime.last_health_check_at = datetime.now(timezone.utc)
+    session.commit()
+    return True
+
+
+def record_runtime_success(runtime: Runtime) -> None:
+    """A real run succeeded, so the runtime is healthy whatever the last check said."""
+    session = object_session(runtime)
+    if session is None or runtime.health_status == "healthy":
+        return
+    runtime.health_status = "healthy"
+    runtime.health_detail = ""
+    runtime.last_health_check_at = datetime.now(timezone.utc)
+    session.commit()
 
 
 def _monitor_runtime(runtimes: list[Runtime]) -> Runtime:
@@ -89,7 +202,7 @@ def _notify(session, agent: Agent, body: str) -> None:
 def promote_backups_for_limited_runtime(session, failed_runtime: Runtime, error) -> list[Agent]:
     """Swap every affected agent to its own valid backup and note it on the agent's open issues."""
     now = datetime.now(timezone.utc)
-    detail = str(error).strip()[:1000]
+    detail = limit_detail(error)
     failed_runtime.health_status = "limited"
     failed_runtime.health_detail = detail
     failed_runtime.last_health_check_at = now
@@ -103,10 +216,21 @@ def promote_backups_for_limited_runtime(session, failed_runtime: Runtime, error)
     switched = []
     for agent in affected:
         backup = session.get(Runtime, agent.backup_runtime_id) if agent.backup_runtime_id else None
+        if backup and is_cooling_down(backup, now):
+            # Both providers are limited. Moving now would only bounce the agent between two
+            # exhausted runtimes and lose track of its home runtime; stay put and wait.
+            _notify(session, agent, (
+                f"{failed_runtime.name} reached its current session or usage limit, and {agent.name}'s "
+                f"backup {backup.name} is limited too, so I left {agent.name} where it is."))
+            continue
         if backup and not backup.archived and backup.workspace_id == agent.workspace_id and backup.id != failed_runtime.id:
             agent.runtime_id = backup.id
             agent.backup_runtime_id = failed_runtime.id
-            agent.failback_runtime_id = failed_runtime.id
+            # Remember the agent's home runtime from its FIRST failover only. Overwriting it on a
+            # second failover is how a day with both providers limited stranded every agent on
+            # whichever provider happened to recover first.
+            if agent.failback_runtime_id is None:
+                agent.failback_runtime_id = failed_runtime.id
             _notify(
                 session,
                 agent,
@@ -131,11 +255,14 @@ def promote_backups_for_limited_runtime(session, failed_runtime: Runtime, error)
 
 
 def restore_recovered_runtime(session, recovered_runtime: Runtime) -> list[Agent]:
-    """Return automatically failed-over agents to their recovered provider."""
+    """Return automatically failed-over agents to their home provider once it recovers.
+
+    The home provider is failback_runtime_id; the agent's current backup is irrelevant here (after
+    two failovers it can point anywhere), so it is not part of the match.
+    """
     affected = session.scalars(
         select(Agent).where(
             Agent.workspace_id == recovered_runtime.workspace_id,
-            Agent.backup_runtime_id == recovered_runtime.id,
             Agent.failback_runtime_id == recovered_runtime.id,
             Agent.archived.is_(False),
         )

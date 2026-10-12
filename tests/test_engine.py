@@ -1,8 +1,102 @@
 import pytest
 
 from hagent.adapters.base import RuntimeResult
-from hagent.engine import DelegationLimitExceeded, execute_agent, queue_issue_run, run_issue
-from hagent.models import Agent, Issue, IssueStatus, Project, Runtime, RunStatus, RuntimeType, Skill, Squad, SquadMember, TimelineEvent, Workspace
+from hagent.engine import DelegationLimitExceeded, _run_verifier_pass, _verifier_verdict_passed, execute_agent, queue_issue_run, run_issue
+from hagent.models import Agent, Issue, IssueStatus, Project, Run, Runtime, RunStatus, RuntimeType, Skill, Squad, SquadMember, TimelineEvent, Workspace
+
+
+def test_verifier_verdict_uses_explicit_verdict_line():
+    assert _verifier_verdict_passed("PASS\nThe injected text mentioned stale FAIL/PASS verdicts.")
+    assert _verifier_verdict_passed("Review complete.\n\n- PASS: all requirements are met.")
+    assert not _verifier_verdict_passed("FAIL: the requested test is missing.")
+    assert not _verifier_verdict_passed("The response discusses both PASS and FAIL without deciding.")
+
+
+def test_verifier_pass_auto_approves(session, mocker):
+    ws, agent = _make_agent(session)
+    verifier = Agent(
+        workspace_id=ws.id,
+        runtime_id=agent.runtime_id,
+        name="reviewer",
+        instructions="verify",
+    )
+    session.add(verifier)
+    session.flush()
+    agent.verifier_agent_id = verifier.id
+    issue = _make_issue(session, ws, status=IssueStatus.IN_REVIEW)
+    run = Run(
+        issue_id=issue.id,
+        agent_id=agent.id,
+        prompt="do the work",
+        status=RunStatus.COMPLETED,
+        output="finished",
+    )
+    session.add(run)
+    session.commit()
+    mocker.patch(
+        "hagent.engine.run_issue",
+        return_value=mocker.Mock(output="PASS\nEverything works."),
+    )
+
+    _run_verifier_pass(session, run, issue, "finished")
+
+    session.refresh(issue)
+    assert issue.status == IssueStatus.DONE
+    assert session.query(TimelineEvent).filter_by(
+        issue_id=issue.id,
+        event_type="verification_passed",
+    ).one()
+
+
+def test_verifier_fail_requeues_a_fix_run(session, mocker):
+    ws, agent = _make_agent(session)
+    verifier = Agent(workspace_id=ws.id, runtime_id=agent.runtime_id, name="reviewer", instructions="verify")
+    session.add(verifier)
+    session.flush()
+    agent.verifier_agent_id = verifier.id
+    issue = _make_issue(session, ws, status=IssueStatus.IN_REVIEW)
+    run = Run(issue_id=issue.id, agent_id=agent.id, prompt="do the work", status=RunStatus.COMPLETED, output="finished")
+    session.add(run)
+    session.commit()
+    run_issue_mock = mocker.patch(
+        "hagent.engine.run_issue",
+        return_value=mocker.Mock(output="FAIL: missing the edge case"),
+    )
+
+    _run_verifier_pass(session, run, issue, "finished")
+
+    session.refresh(issue)
+    assert issue.status == IssueStatus.IN_PROGRESS
+    # Once for the verifier's own review run, once to requeue the fix.
+    assert run_issue_mock.call_count == 2
+    assert session.query(TimelineEvent).filter_by(issue_id=issue.id, event_type="verification_failed").one()
+
+
+def test_verifier_gives_up_after_repeated_rejections(session, mocker):
+    ws, agent = _make_agent(session)
+    verifier = Agent(workspace_id=ws.id, runtime_id=agent.runtime_id, name="reviewer", instructions="verify")
+    session.add(verifier)
+    session.flush()
+    agent.verifier_agent_id = verifier.id
+    issue = _make_issue(session, ws, status=IssueStatus.IN_REVIEW)
+    run = Run(issue_id=issue.id, agent_id=agent.id, prompt="do the work", status=RunStatus.COMPLETED, output="finished")
+    session.add(run)
+    session.commit()
+    for _ in range(3):
+        session.add(TimelineEvent(issue_id=issue.id, event_type="verification_failed", detail="FAIL"))
+    session.commit()
+    run_issue_mock = mocker.patch(
+        "hagent.engine.run_issue",
+        return_value=mocker.Mock(output="FAIL: still broken"),
+    )
+
+    _run_verifier_pass(session, run, issue, "finished")
+
+    session.refresh(issue)
+    assert issue.status == IssueStatus.IN_REVIEW
+    # Only the verifier's own review run - no fix run requeued once the cap is hit.
+    assert run_issue_mock.call_count == 1
+    assert session.query(TimelineEvent).filter_by(issue_id=issue.id, event_type="verification_gave_up").one()
 
 
 def _make_agent(session, runtime_type=RuntimeType.OLLAMA):
@@ -160,6 +254,54 @@ def test_direct_agent_execution_uses_its_configured_backup(session, mocker):
     assert run_adapter.call_count == 2
     assert agent.runtime_id == backup.id
     assert agent.backup_runtime_id != backup.id
+
+
+def test_backup_failure_hands_run_to_optional_failback(session, mocker):
+    ws, agent = _make_agent(session)
+    backup = Runtime(workspace_id=ws.id, name="backup", type=RuntimeType.OLLAMA, model="backup-model", config_json="{}")
+    failback = Runtime(workspace_id=ws.id, name="failback", type=RuntimeType.OLLAMA, model="failback-model", config_json="{}")
+    session.add_all([backup, failback])
+    session.commit()
+    agent.backup_runtime_id = backup.id
+    agent.failback_runtime_id = failback.id
+    session.commit()
+    issue = _make_issue(session, ws)
+    run_adapter = mocker.patch(
+        "hagent.adapters.ollama.OllamaRuntime.run",
+        side_effect=[RuntimeError("quota exhausted"), RuntimeError("backup also down"), RuntimeResult(output="failback completed")],
+    )
+
+    run = run_issue(session, issue, agent)
+
+    assert run.status == RunStatus.COMPLETED
+    assert run.output == "failback completed"
+    assert run_adapter.call_count == 3
+    events = session.query(TimelineEvent).filter_by(issue_id=issue.id, event_type="runtime_failover").all()
+    assert len(events) == 2
+    assert "failback" in events[1].detail
+
+
+def test_both_backup_and_failback_failing_combines_all_three_errors(session, mocker):
+    ws, agent = _make_agent(session)
+    backup = Runtime(workspace_id=ws.id, name="backup", type=RuntimeType.OLLAMA, model="backup-model", config_json="{}")
+    failback = Runtime(workspace_id=ws.id, name="failback", type=RuntimeType.OLLAMA, model="failback-model", config_json="{}")
+    session.add_all([backup, failback])
+    session.commit()
+    agent.backup_runtime_id = backup.id
+    agent.failback_runtime_id = failback.id
+    session.commit()
+    issue = _make_issue(session, ws)
+    mocker.patch(
+        "hagent.adapters.ollama.OllamaRuntime.run",
+        side_effect=[RuntimeError("primary down"), RuntimeError("backup down"), RuntimeError("failback down")],
+    )
+
+    run = run_issue(session, issue, agent)
+
+    assert run.status == RunStatus.FAILED
+    assert "primary down" in run.error
+    assert "backup down" in run.error
+    assert "failback down" in run.error
 
 
 def test_cancellation_does_not_launch_backup(session, mocker):

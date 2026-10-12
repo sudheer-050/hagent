@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Our Team</title>
+<style>
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: #f7f7f9;
+    color: #1a1a1a;
+    margin: 0;
+    padding: 2rem;
+  }
+  h1 {
+    text-align: center;
+    margin-bottom: 1.5rem;
+  }
+  #team-list {
+    list-style: none;
+    margin: 0 auto;
+    padding: 0;
+    max-width: 720px;
+    display: grid;
+    gap: 1rem;
+  }
+  .team-card {
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+  }
+  .team-card h2 {
+    margin: 0 0 0.25rem;
+    font-size: 1.1rem;
+  }
+  .team-card .role {
+    color: #555;
+    font-weight: 600;
+    margin: 0 0 0.5rem;
+  }
+  .team-card .fun-fact {
+    margin: 0;
+  }
+  #error-state {
+    max-width: 720px;
+    margin: 0 auto;
+    background: #fdecea;
+    border: 1px solid #f5c2c0;
+    color: #7a1f16;
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    text-align: center;
+    display: none;
+  }
+  #loading-state {
+    text-align: center;
+    color: #555;
+  }
+</style>
+</head>
+<body>
+<h1>Our Team</h1>
+<p id="loading-state" role="status">Loading team...</p>
+<div id="error-state" role="alert"></div>
+<ul id="team-list" aria-live="polite"></ul>
+
+<script>
+async function loadTeam() {
+  const loadingEl = document.getElementById('loading-state');
+  const errorEl = document.getElementById('error-state');
+  const listEl = document.getElementById('team-list');
+
+  try {
+    const response = await fetch('/team');
+    if (!response.ok) {
+      throw new Error(`Request failed with status ${response.status}`);
+    }
+    const members = await response.json();
+
+    listEl.innerHTML = '';
+    members.forEach((member) => {
+      const li = document.createElement('li');
+      li.className = 'team-card';
+      li.innerHTML = `
+        <h2>${escapeHtml(member.name)}</h2>
+        <p class="role">${escapeHtml(member.role)}</p>
+        <p class="fun-fact">${escapeHtml(member.fun_fact)}</p>
+      `;
+      listEl.appendChild(li);
+    });
+  } catch (err) {
+    errorEl.textContent = 'Sorry, we could not load the team right now. Please try again later.';
+    errorEl.style.display = 'block';
+  } finally {
+    loadingEl.style.display = 'none';
+  }
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+loadTeam();
+</script>
+</body>
+</html>

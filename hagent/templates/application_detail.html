@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}{{ application.name }} &middot; {{ site.app_name }}{% endblock %}
+{% block content %}
+{% set app = application %}
+<div class="page-header">
+  <div>
+    <div class="eyebrow"><a href="/applications">Applications</a></div>
+    <h2>{{ app.name }}</h2>
+    <p class="page-sub">{{ app.tagline }}</p>
+  </div>
+</div>
+
+<div class="settings-layout">
+  <section class="settings-card">
+    <div class="section-heading"><div><h3>About</h3></div></div>
+    <p>{{ app.description }}</p>
+    <div class="form-grid">
+      <div><label class="field-label">Built with</label><p>{{ app.built_with }}</p></div>
+      <div><label class="field-label">Status</label><p>{{ 'Live' if app.status == 'live' else 'Source only, not deployed' }}</p></div>
+    </div>
+    <div class="settings-save-bar">
+      <span>{{ 'Opens in a new tab.' if app.status == 'live' else 'Not deployed yet - view the source instead.' }}</span>
+      <div style="display:flex; gap:0.6rem;">
+        {% if app.open_url %}<a class="button-link primary" href="{{ app.open_url }}" target="_blank" rel="noopener">{{ app.open_label }}</a>{% endif %}
+        <a class="button-link" href="{{ app.repo_url }}" target="_blank" rel="noopener">{{ 'View source' if app.status == 'live' else 'Check it out' }}</a>
+      </div>
+    </div>
+  </section>
+</div>
+{% endblock %}

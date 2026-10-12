@@ -1,11 +1,14 @@
 """Server side of remote CLI access: run Hagent commands on behalf of an authenticated client.
 
-Commands run in this server process, so file-path arguments (attachments, skill imports, repo
-paths) refer to the server machine, and `workspace switch` changes the server's active workspace,
-exactly as it would if typed there.
+Commands run in a short-lived child process on the server, so file-path arguments (attachments,
+skill imports, repo paths) refer to the server machine.  Process isolation is important here:
+Click's test runner temporarily replaces global stdout/stderr and is not safe beside background
+agent threads in the web process.
 """
 
 import threading
+import subprocess
+import sys
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -16,7 +19,6 @@ router = APIRouter()
 DENIED_REMOTE = {"auth", "serve", "warm", "remote", "worker", "daemon"}
 _run_lock = threading.Lock()
 _LOCK_WAIT_SECONDS = 60
-_init_wrapped = False
 
 
 class CliRequest(BaseModel):
@@ -37,25 +39,6 @@ def whoami(request: Request):
     return {"username": user.username, "role": user.role, "kind": user.kind}
 
 
-def _cli_module():
-    """Import the CLI once and make its per-command database setup run only once per process."""
-    global _init_wrapped
-    from hagent import cli as cli_module
-
-    if not _init_wrapped:
-        real_init_db = cli_module.init_db
-        done = []
-
-        def init_db_once():
-            if not done:
-                real_init_db()
-                done.append(True)
-
-        cli_module.init_db = init_db_once
-        _init_wrapped = True
-    return cli_module
-
-
 @router.post("/api/cli")
 def run_command(payload: CliRequest, request: Request):
     _require_user(request)
@@ -67,16 +50,22 @@ def run_command(payload: CliRequest, request: Request):
     if not _run_lock.acquire(timeout=_LOCK_WAIT_SECONDS):
         raise HTTPException(503, "Another remote command is still running; try again shortly")
     try:
-        from click.testing import CliRunner
-
-        result = CliRunner().invoke(_cli_module().cli, argv, prog_name="hagent")
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "hagent", *argv],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=180,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            return {
+                "stdout": exc.stdout or "",
+                "stderr": (exc.stderr or "") + "Remote command timed out after 180 seconds.\n",
+                "exit_code": 124,
+            }
     finally:
         _run_lock.release()
-    stderr = result.stderr
-    exit_code = result.exit_code
-    if result.exception is not None and not isinstance(result.exception, SystemExit):
-        import traceback
-
-        stderr += "".join(traceback.format_exception(*result.exc_info))
-        exit_code = 1
-    return {"stdout": result.stdout, "stderr": stderr, "exit_code": exit_code}
+    return {"stdout": result.stdout, "stderr": result.stderr, "exit_code": result.returncode}

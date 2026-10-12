@@ -1,5 +1,6 @@
 """Google Gemini API runtime adapter."""
 
+import base64
 import os
 
 import httpx
@@ -11,13 +12,23 @@ DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
 
 class GeminiRuntime(BaseRuntime):
-    def run(self, prompt: str, context: str = "", tools=None, tool_executor=None) -> RuntimeResult:
+    def run(self, prompt: str, context: str = "", tools=None, tool_executor=None, images=None) -> RuntimeResult:
         api_key = self.config.get("api_key") or os.environ.get("GEMINI_API_KEY")
         if not api_key:
             raise RuntimeError("No Gemini API key configured (set GEMINI_API_KEY)")
 
         base_url = self.config.get("base_url", DEFAULT_BASE_URL).rstrip("/")
-        contents = [{"role": "user", "parts": [{"text": prompt}]}]
+        first_turn_parts = [{"text": prompt}]
+        for image in images or []:
+            # inlineData, not a tool call - this is how Gemini takes an image as part of the
+            # same turn it's asked to look at or edit, same shape for input and output images.
+            first_turn_parts.append({
+                "inlineData": {
+                    "mimeType": image["mime_type"],
+                    "data": base64.b64encode(image["data"]).decode("ascii"),
+                }
+            })
+        contents = [{"role": "user", "parts": first_turn_parts}]
         transcript = []
 
         for _ in range(self.config.get("max_tool_rounds", 8)):
@@ -50,7 +61,15 @@ class GeminiRuntime(BaseRuntime):
             calls = [part["functionCall"] for part in parts if part.get("functionCall")]
             if not calls or not tool_executor:
                 output = "".join(part.get("text", "") for part in parts)
-                return RuntimeResult(output=output, raw={"messages": transcript})
+                output_images = [
+                    {
+                        "mime_type": part["inlineData"].get("mimeType", "image/png"),
+                        "data": base64.b64decode(part["inlineData"]["data"]),
+                    }
+                    for part in parts
+                    if part.get("inlineData", {}).get("data")
+                ]
+                return RuntimeResult(output=output, raw={"messages": transcript}, images=output_images or None)
 
             contents.append(model_content)
             responses = []

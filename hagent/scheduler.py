@@ -46,6 +46,19 @@ def run_autopilot_once(autopilot_id: str) -> AutopilotRun | None:
         if autopilot.mode == "create_issue":
             return _run_create_issue_autopilot(session, autopilot, autopilot_run)
 
+        from hagent.orchestration import provider_wait_until
+
+        wait_until = provider_wait_until(session, autopilot.agent)
+        if wait_until is not None:
+            # Running every matching issue now would only fail each of them on the same limit.
+            autopilot_run.status = "skipped"
+            autopilot_run.finished_at = datetime.now(timezone.utc)
+            autopilot_run.summary = (f"Skipped: every provider {autopilot.agent.name} can use is at its usage limit "
+                                     f"until {wait_until.astimezone().strftime('%I:%M %p').lstrip('0')}")
+            session.commit()
+            session.refresh(autopilot_run)
+            return autopilot_run
+
         issues = find_matching_issues(session, autopilot)
         ran = succeeded = failed = cancelled = awaiting_approval = skipped = 0
         for issue in issues:
@@ -143,6 +156,7 @@ def sync_scheduler_jobs(scheduler: BackgroundScheduler) -> int:
         monitor_minutes = 15
     from hagent.dispatcher import DISPATCH_INTERVAL_SECONDS, dispatch_pending
     from hagent.recovery import RECOVERY_INTERVAL_SECONDS, recover_interrupted_runs
+    from hagent.orchestration import IDLE_SWEEP_INTERVAL_SECONDS
 
     scheduler.add_job(
         recover_interrupted_runs,
@@ -172,7 +186,24 @@ def sync_scheduler_jobs(scheduler: BackgroundScheduler) -> int:
         max_instances=1,
         coalesce=True,
     )
+    scheduler.add_job(
+        _sweep_idle_issues,
+        trigger="interval",
+        seconds=IDLE_SWEEP_INTERVAL_SECONDS,
+        id="hagent-idle-issue-sweep",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
     return count
+
+
+def _sweep_idle_issues() -> list[str]:
+    from hagent.orchestration import reconcile_orphaned_issues, requeue_idle_issues
+
+    with get_session(scoped=False) as session:
+        reconcile_orphaned_issues(session)  # first: retire anything whose work was actually cancelled/rejected
+        return requeue_idle_issues(session)
 
 
 def find_webhook_trigger(token: str) -> AutopilotTrigger | None:

@@ -8,7 +8,7 @@ from hagent.adapters.base import BaseRuntime, RuntimeResult
 
 
 class GeminiCliRuntime(BaseRuntime):
-    def run(self, prompt: str, context: str = "", tools=None, tool_executor=None) -> RuntimeResult:
+    def run(self, prompt: str, context: str = "", tools=None, tool_executor=None, images=None) -> RuntimeResult:
         command = self.config.get("command", "gemini")
         executable = shutil.which(command)
         if not executable:

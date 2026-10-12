@@ -2,7 +2,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 import json, re
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from hagent.models import Project, RoutingDecision, RoutingPolicy, Runtime
 from hagent.runtime_catalog import routing_capabilities

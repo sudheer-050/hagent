@@ -6,7 +6,7 @@ from hagent.adapters.base import BaseRuntime, RuntimeResult
 
 
 class ClaudeRuntime(BaseRuntime):
-    def run(self, prompt: str, context: str = "", tools=None, tool_executor=None) -> RuntimeResult:
+    def run(self, prompt: str, context: str = "", tools=None, tool_executor=None, images=None) -> RuntimeResult:
         try:
             import anthropic
         except ImportError:

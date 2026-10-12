@@ -11,18 +11,25 @@ function Test-PortListening([int]$port) {
     return [bool]$conn
 }
 
+function Start-DetachedProcess([string]$filePath, [string]$arguments, [string]$workingDirectory) {
+    # Start-Process fails when the inherited environment contains both Path and PATH.
+    # ProcessStartInfo with shell execution avoids PowerShell's case-insensitive merge.
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $filePath
+    $startInfo.Arguments = $arguments
+    $startInfo.WorkingDirectory = $workingDirectory
+    $startInfo.UseShellExecute = $true
+    $startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+    [void][System.Diagnostics.Process]::Start($startInfo)
+}
+
 try {
     if (-not (Test-Path -LiteralPath $python)) {
         throw "Python executable not found: $python"
     }
 
     if (-not (Test-PortListening 8000)) {
-        Start-Process -FilePath $python `
-            -ArgumentList '-m', 'hagent', 'serve' `
-            -WorkingDirectory $repoRoot `
-            -RedirectStandardOutput (Join-Path $repoRoot 'hagent-server.log') `
-            -RedirectStandardError (Join-Path $repoRoot 'hagent-server-error.log') `
-            -WindowStyle Hidden
+        Start-DetachedProcess $python '-m hagent serve' $repoRoot
     }
 } catch {
     Add-Content -LiteralPath $errorLog -Value "$(Get-Date -Format o) $($_.Exception.Message)"
