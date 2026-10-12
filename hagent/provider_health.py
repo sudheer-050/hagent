@@ -2,7 +2,7 @@
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import object_session
@@ -25,6 +25,86 @@ _CAPACITY_ERROR = re.compile(
 def is_capacity_error(error) -> bool:
     """Return whether a provider failure means its current allowance is exhausted."""
     return bool(_CAPACITY_ERROR.search(str(error)))
+
+
+# Failures that mean the provider itself is unreachable or broken, not that this task went
+# wrong. A timeout is deliberately excluded: a long task timing out says nothing about the
+# provider's health.
+_INFRASTRUCTURE_ERROR = re.compile(
+    r"ECONNREFUSED|connection refused|failed to start|not installed|not on PATH"
+    r"|ENOTFOUND|getaddrinfo|name or service not known|could not resolve host",
+    re.IGNORECASE,
+)
+_RETRY_AT = re.compile(r"try again at (\d{1,2}):(\d{2})\s*([AP]M)", re.IGNORECASE)
+LIMITED_COOLDOWN = timedelta(minutes=30)
+ERROR_COOLDOWN = timedelta(minutes=10)
+
+
+def is_infrastructure_error(error) -> bool:
+    if "timed out" in str(error).lower() and "failed to start" in str(error).lower():
+        return False  # adapters report a TimeoutExpired as "failed to start: ... timed out"
+    return bool(_INFRASTRUCTURE_ERROR.search(str(error)))
+
+
+def _as_utc(moment):
+    return moment.replace(tzinfo=timezone.utc) if moment.tzinfo is None else moment
+
+
+def retry_after(runtime: Runtime):
+    """When a runtime marked limited or error may be tried again (UTC), or None if it is usable now.
+
+    A usage-limit message that names a reset time ("try again at 8:35 PM", local time) is
+    honored exactly - this is how Paperclip classifies provider_quota failures. Otherwise a
+    fixed cooldown applies, so a broken provider costs one failed attempt per cooldown window
+    instead of one per run.
+    """
+    if runtime.health_status not in {"limited", "error"} or runtime.last_health_check_at is None:
+        return None
+    checked = _as_utc(runtime.last_health_check_at)
+    if runtime.health_status == "error":
+        return checked + ERROR_COOLDOWN
+    match = _RETRY_AT.search(runtime.health_detail or "")
+    if not match:
+        return checked + LIMITED_COOLDOWN
+    hour, minute, meridiem = int(match.group(1)) % 12, int(match.group(2)), match.group(3).upper()
+    hour += 12 if meridiem == "PM" else 0
+    local_checked = checked.astimezone()
+    reset = local_checked.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if reset <= local_checked:
+        reset += timedelta(days=1)
+    return reset.astimezone(timezone.utc)
+
+
+def is_cooling_down(runtime, now=None) -> bool:
+    if runtime is None:
+        return False
+    until = retry_after(runtime)
+    return until is not None and (now or datetime.now(timezone.utc)) < until
+
+
+def record_infrastructure_failure(runtime: Runtime, error) -> bool:
+    """Mark a runtime unhealthy after an unreachable/broken-provider failure. Returns whether it did."""
+    if not is_infrastructure_error(error) or is_capacity_error(error):
+        return False
+    session = object_session(runtime)
+    if session is None:
+        return False
+    runtime.health_status = "error"
+    runtime.health_detail = str(error).strip()[:1000]
+    runtime.last_health_check_at = datetime.now(timezone.utc)
+    session.commit()
+    return True
+
+
+def record_runtime_success(runtime: Runtime) -> None:
+    """A real run succeeded, so the runtime is healthy whatever the last check said."""
+    session = object_session(runtime)
+    if session is None or runtime.health_status == "healthy":
+        return
+    runtime.health_status = "healthy"
+    runtime.health_detail = ""
+    runtime.last_health_check_at = datetime.now(timezone.utc)
+    session.commit()
 
 
 def _monitor_runtime(runtimes: list[Runtime]) -> Runtime:
@@ -103,10 +183,21 @@ def promote_backups_for_limited_runtime(session, failed_runtime: Runtime, error)
     switched = []
     for agent in affected:
         backup = session.get(Runtime, agent.backup_runtime_id) if agent.backup_runtime_id else None
+        if backup and is_cooling_down(backup, now):
+            # Both providers are limited. Moving now would only bounce the agent between two
+            # exhausted runtimes and lose track of its home runtime; stay put and wait.
+            _notify(session, agent, (
+                f"{failed_runtime.name} reached its current session or usage limit, and {agent.name}'s "
+                f"backup {backup.name} is limited too, so I left {agent.name} where it is."))
+            continue
         if backup and not backup.archived and backup.workspace_id == agent.workspace_id and backup.id != failed_runtime.id:
             agent.runtime_id = backup.id
             agent.backup_runtime_id = failed_runtime.id
-            agent.failback_runtime_id = failed_runtime.id
+            # Remember the agent's home runtime from its FIRST failover only. Overwriting it on a
+            # second failover is how a day with both providers limited stranded every agent on
+            # whichever provider happened to recover first.
+            if agent.failback_runtime_id is None:
+                agent.failback_runtime_id = failed_runtime.id
             _notify(
                 session,
                 agent,
@@ -131,11 +222,14 @@ def promote_backups_for_limited_runtime(session, failed_runtime: Runtime, error)
 
 
 def restore_recovered_runtime(session, recovered_runtime: Runtime) -> list[Agent]:
-    """Return automatically failed-over agents to their recovered provider."""
+    """Return automatically failed-over agents to their home provider once it recovers.
+
+    The home provider is failback_runtime_id; the agent's current backup is irrelevant here (after
+    two failovers it can point anywhere), so it is not part of the match.
+    """
     affected = session.scalars(
         select(Agent).where(
             Agent.workspace_id == recovered_runtime.workspace_id,
-            Agent.backup_runtime_id == recovered_runtime.id,
             Agent.failback_runtime_id == recovered_runtime.id,
             Agent.archived.is_(False),
         )
