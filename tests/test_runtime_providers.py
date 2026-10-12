@@ -85,13 +85,15 @@ def test_claude_code_uses_print_json_mode(mocker):
     assert "--dangerously-skip-permissions" not in args
 
 
-def test_claude_code_passes_agent_context_as_system_prompt(mocker):
+def test_claude_code_passes_agent_context_via_stdin(mocker):
+    # Context used to go in as an --append-system-prompt CLI argument, but an
+    # agent's context (instructions + skill files) has no size cap and a long
+    # enough one blows the Windows command-line length limit before Claude Code
+    # even starts. It has to go over stdin, same as the prompt, so there's no limit.
     mocker.patch("hagent.adapters.claude_code.shutil.which", return_value="claude")
     captured = {}
 
     def fake_run(args, **kwargs):
-        index = args.index("--append-system-prompt")
-        captured["context"] = args[index + 1]
         captured["input"] = kwargs["input"]
         captured["args"] = args
         return SimpleNamespace(
@@ -107,9 +109,8 @@ def test_claude_code_passes_agent_context_as_system_prompt(mocker):
         context="User-approved Holly workflow",
     )
 
-    assert captured["input"] == "Open the HAI project"
-    assert captured["context"] == "User-approved Holly workflow"
-    assert "User-approved Holly workflow" not in captured["input"]
+    assert "--append-system-prompt" not in captured["args"]
+    assert captured["input"] == "User-approved Holly workflow\n\nOpen the HAI project"
 
 
 def test_runtime_catalog_includes_descriptions_and_grok():

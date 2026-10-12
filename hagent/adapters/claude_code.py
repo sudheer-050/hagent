@@ -43,9 +43,16 @@ class ClaudeCodeRuntime(BaseRuntime):
         if not executable:
             raise RuntimeError("Claude Code is not installed or is not on PATH")
 
-        # Prompt goes over stdin, not as a CLI argument - a long prompt as an argument
-        # can exceed the Windows command-line length limit and fail before Claude Code
-        # even starts (seen in practice: "The command line is too long").
+        # Prompt (and system context) go over stdin, not as CLI arguments - a long
+        # value as an argument can exceed the Windows command-line length limit and
+        # fail before Claude Code even starts ("[WinError 206] The filename or
+        # extension is too long"). This bit before: --append-system-prompt-file and
+        # --system-prompt-snapshot no longer exist in current Claude Code releases,
+        # --append-system-prompt only takes the prompt text inline now, and an
+        # agent's context (instructions + skill files) has no size cap, so it was
+        # only a matter of time before one blew the limit. Folding context into the
+        # stdin prompt instead - same approach generic_cli.py already uses - has no
+        # such limit.
         args = [executable, "--print", "--output-format", "json"]
         if self.model and self.model != "default":
             args.extend(["--model", self.model])
@@ -55,11 +62,7 @@ class ClaudeCodeRuntime(BaseRuntime):
         if resume_session_id:
             args.extend(["--resume", resume_session_id])
 
-        # --append-system-prompt-file and --system-prompt-snapshot no longer exist
-        # in current Claude Code releases; --append-system-prompt only takes the
-        # prompt text inline now, not a file path.
-        if context:
-            args.extend(["--append-system-prompt", context])
+        full_prompt = f"{context}\n\n{prompt}" if context else prompt
 
         with _mcp_config_file(tools, tool_executor) as mcp_config_path:
             if mcp_config_path:
@@ -83,7 +86,7 @@ class ClaudeCodeRuntime(BaseRuntime):
             try:
                 completed = subprocess.run(
                     args,
-                    input=prompt,
+                    input=full_prompt,
                     cwd=self.config.get("working_directory") or None,
                     capture_output=True,
                     text=True,
