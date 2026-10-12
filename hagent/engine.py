@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import tempfile
 import threading
 import time
@@ -18,7 +19,7 @@ from hagent.adapters.base import ResumableError
 from hagent.models import Agent, ChatMessage, ChatThread, Comment, Issue, IssueStatus, Project, ProjectStatus, Repo, RoutingDecision, Run, RunStatus, Runtime, Skill, SkillLesson, UserProfile
 from hagent.models import TimelineEvent
 from hagent.mcp_client import call_tool_sync, list_tools_sync
-from hagent.provider_health import handle_capacity_failure, is_capacity_error
+from hagent.provider_health import handle_capacity_failure, is_capacity_error, is_cooling_down, record_infrastructure_failure, record_runtime_success
 from hagent.terminal import run_agent_command
 from hagent.live_activity import start_delegation, end_delegation
 from hagent.worktrees import ensure_worktree
@@ -665,12 +666,30 @@ def _run_with_failover(agent, primary, backup_runtime, failback_runtime, prompt,
     Failover happens only when execution raises an exception. A normal model response, even an
     imperfect one, is returned without launching a second paid request. Cancellation never
     starts a backup run.
+
+    A primary that is cooling down (out of quota until a known reset time, or unreachable a few
+    minutes ago) is skipped in favor of a usable backup, instead of spending minutes per run
+    rediscovering the same failure.
     """
+    if (
+        backup_runtime is not None
+        and is_cooling_down(primary)
+        and not is_cooling_down(backup_runtime)
+        and backup_runtime.workspace_id == agent.workspace_id
+        and not backup_runtime.archived
+    ):
+        log.info("Runtime %s is cooling down (%s); running %s on backup %s",
+                 primary.name, primary.health_status, agent.name, backup_runtime.name)
+        primary, backup_runtime = backup_runtime, primary
+        # The routed model/effort and any resumable session belong to the skipped runtime.
+        route_config = {"timeout": (route_config or {}).get("timeout")}
+        resume_session_id = None
     try:
         result = _execute_with_runtime(agent, primary, prompt, cancelled, record_tool,
             delegation_path, resolve_backup_runtime, delegation_budget, record_skill_use,
             working_directory_override, resume_session_id, route_config, history=history, images=images)
         result.runtime_id = primary.id
+        record_runtime_success(primary)
     except DelegationLimitExceeded:
         # A configured cost guard is a deliberate stop, not a provider error:
         # do not silently spend on the backup runtime after the budget is used.
@@ -678,6 +697,7 @@ def _run_with_failover(agent, primary, backup_runtime, failback_runtime, prompt,
         raise
     except Exception as primary_error:
         handle_capacity_failure(agent, primary, primary_error)
+        record_infrastructure_failure(primary, primary_error)
         if not backup_runtime or _is_cancellation(primary_error, cancelled):
             finish_observers(error=primary_error)
             raise
@@ -714,11 +734,16 @@ def _try_backup_then_failback(agent, primary, primary_error, backup_runtime, fai
             delegation_path, resolve_backup_runtime, delegation_budget, record_skill_use,
             working_directory_override, route_config=fallback_config, history=history, images=images)
         result.runtime_id = backup_runtime.id
+        record_runtime_success(backup_runtime)
         if record_skill_use:
             record_skill_use(agent)
         finish_observers(result=result, outcome="fallback_completed")
         return result
     except Exception as backup_error:
+        # Record the backup's own limit too, or a day with both providers exhausted looks like
+        # only one is, and nothing knows when to try again.
+        handle_capacity_failure(agent, backup_runtime, backup_error)
+        record_infrastructure_failure(backup_runtime, backup_error)
         # If the primary recovered a resumable session id before failing, don't
         # lose it just because the backup also failed - a future retry on the
         # primary runtime can still pick up from that checkpoint.
@@ -736,11 +761,14 @@ def _try_backup_then_failback(agent, primary, primary_error, backup_runtime, fai
                     delegation_path, resolve_backup_runtime, delegation_budget, record_skill_use,
                     working_directory_override, history=history, images=images)
                 result.runtime_id = failback_runtime.id
+                record_runtime_success(failback_runtime)
                 if record_skill_use:
                     record_skill_use(agent)
                 finish_observers(result=result, outcome="failback_completed")
                 return result
             except Exception as failback_error:
+                handle_capacity_failure(agent, failback_runtime, failback_error)
+                record_infrastructure_failure(failback_runtime, failback_error)
                 combined = ResumableError(
                     f"Primary runtime {primary.name} failed: {primary_error}; "
                     f"backup runtime {backup_runtime.name} failed: {backup_error}; "
@@ -939,6 +967,10 @@ def _tool_status_lookup(agent, teammate, arguments, record_tool):
     return result
 
 
+CLI_TIMEOUT_FLOOR = 1800
+CLI_RUNTIME_TYPES = {"claude_code", "codex_cli", "opencode_cli", "gemini_cli", "antigravity_cli", "generic_cli"}
+
+
 def _build_adapter_config(agent, runtime, effective_working_directory, resume_session_id, route_config):
     config = json.loads(runtime.config_json or "{}")
     if getattr(agent, "terminal_enabled", False):
@@ -962,7 +994,11 @@ def _build_adapter_config(agent, runtime, effective_working_directory, resume_se
     if route_config.get("output_limit"):
         config["max_tokens"] = route_config["output_limit"]
     if route_config.get("timeout"):
-        config["timeout"] = route_config["timeout"]
+        # The router's estimate (often ~180 s) must never cut below the runtime's own setting,
+        # and agentic CLIs routinely need many minutes of real tool work; a wall-clock kill at
+        # 3 minutes was failing legitimate runs. Paperclip uses a 30-minute floor for the same reason.
+        floor = CLI_TIMEOUT_FLOOR if runtime.type.value in CLI_RUNTIME_TYPES else 0
+        config["timeout"] = max(int(route_config["timeout"]), int(config.get("timeout") or 0), floor)
     return config
 
 
@@ -1185,10 +1221,24 @@ def _execute_with_runtime(agent, runtime, prompt, cancelled, record_tool, delega
             )
         for file in skill.files:
             context += f"\n--- {file.filename} ---\n{file.content}"
-    return adapter.run(
-        prompt=prompt,
-        context=context,
-        tools=tools or None,
-        tool_executor=execute_tool if tools else None,
-        images=images,
-    )
+    try:
+        return adapter.run(
+            prompt=prompt,
+            context=context,
+            tools=tools or None,
+            tool_executor=execute_tool if tools else None,
+            images=images,
+        )
+    finally:
+        _remove_sandbox(config)
+
+
+def _remove_sandbox(config):
+    """Delete the disposable scratch directory _build_adapter_config made for this run.
+    Without this every non-terminal run left one behind (thousands accumulated in %TEMP%)."""
+    directory = config.get("working_directory")
+    if config.get("terminal_enabled") or not directory:
+        return
+    path = Path(directory)
+    if path.name.startswith("hagent-sandbox-") and path.parent == Path(tempfile.gettempdir()):
+        shutil.rmtree(path, ignore_errors=True)

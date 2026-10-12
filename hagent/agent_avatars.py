@@ -41,12 +41,17 @@ _STATE_FACE = {
 _DEFAULT_FACE = ("round", "smile01")
 
 
-def agent_avatar_url(seed: str, size: int = 64, state: str | None = None) -> str:
-    """DiceBear API URL for an agent's avatar. `seed` should be the agent's
-    id (stable even if the agent is renamed). `state` is the same
-    resting/running/thinking value web.py's activity-state helpers compute;
-    when given, it pins the robot's eyes and mouth to an expression for
-    that state instead of leaving them to the seed's random draw."""
+def agent_avatar_url(seed: str, size: int = 64, state: str | None = None, avatar_path: str | None = None) -> str:
+    """DiceBear API URL for an agent's avatar, or `avatar_path` directly when
+    the agent has one set (e.g. a generated portrait under /static/avatars).
+    `seed` should be the agent's id (stable even if the agent is renamed).
+    `state` is the same resting/running/thinking value web.py's
+    activity-state helpers compute; when given, it pins the robot's eyes and
+    mouth to an expression for that state instead of leaving them to the
+    seed's random draw. Ignored when avatar_path is set, since a photo has
+    no equivalent expression states."""
+    if avatar_path:
+        return avatar_path
     eyes, mouth = _STATE_FACE.get(state, _DEFAULT_FACE)
     return (
         f"{DICEBEAR_BASE}?seed={quote(str(seed))}&size={size}"

@@ -46,6 +46,19 @@ def run_autopilot_once(autopilot_id: str) -> AutopilotRun | None:
         if autopilot.mode == "create_issue":
             return _run_create_issue_autopilot(session, autopilot, autopilot_run)
 
+        from hagent.orchestration import provider_wait_until
+
+        wait_until = provider_wait_until(session, autopilot.agent)
+        if wait_until is not None:
+            # Running every matching issue now would only fail each of them on the same limit.
+            autopilot_run.status = "skipped"
+            autopilot_run.finished_at = datetime.now(timezone.utc)
+            autopilot_run.summary = (f"Skipped: every provider {autopilot.agent.name} can use is at its usage limit "
+                                     f"until {wait_until.astimezone().strftime('%I:%M %p').lstrip('0')}")
+            session.commit()
+            session.refresh(autopilot_run)
+            return autopilot_run
+
         issues = find_matching_issues(session, autopilot)
         ran = succeeded = failed = cancelled = awaiting_approval = skipped = 0
         for issue in issues:

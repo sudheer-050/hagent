@@ -108,16 +108,44 @@ def _utc(moment: datetime) -> datetime:
 
 
 def _consecutive_failures(session, issue_id: str) -> int:
-    """How many of the issue's most recent runs failed in a row, most recent first."""
-    statuses = session.scalars(
-        select(Run.status).where(Run.issue_id == issue_id).order_by(Run.created_at.desc()).limit(MAX_IDLE_RETRIES + 1)
+    """How many of the issue's most recent runs failed in a row, most recent first.
+
+    Failures caused by a provider's usage limit are skipped: they say nothing about the issue, and
+    counting them blocked perfectly good work just because both subscriptions ran out for a while.
+    """
+    from hagent.provider_health import is_capacity_error
+
+    runs = session.execute(
+        select(Run.status, Run.error).where(Run.issue_id == issue_id).order_by(Run.created_at.desc()).limit(50)
     ).all()
     count = 0
-    for status in statuses:
+    for status, error in runs:
+        if status == RunStatus.FAILED and is_capacity_error(error or ""):
+            continue
         if status != RunStatus.FAILED:
             break
         count += 1
+        if count > MAX_IDLE_RETRIES:
+            break
     return count
+
+
+def provider_wait_until(session, agent) -> datetime | None:
+    """When the agent can next run, if every runtime it could use is cooling down; otherwise None.
+
+    This is what Paperclip calls a scheduled retry: instead of re-firing a run every few minutes
+    into a provider that has already said "try again at 5:23 PM", wait for that reset.
+    """
+    from hagent.models import Runtime
+    from hagent.provider_health import is_cooling_down, retry_after
+
+    candidates = [session.get(Runtime, agent.runtime_id)]
+    if agent.backup_runtime_id:
+        candidates.append(session.get(Runtime, agent.backup_runtime_id))
+    candidates = [runtime for runtime in candidates if runtime is not None and not runtime.archived]
+    if not candidates or not all(is_cooling_down(runtime) for runtime in candidates):
+        return None
+    return min(retry_after(runtime) for runtime in candidates)
 
 
 def reconcile_orphaned_issues(session) -> list[str]:
@@ -170,6 +198,10 @@ def requeue_idle_issues(session) -> list[str]:
         if agent is None or getattr(agent, "archived", False):
             continue
         last_run = session.scalar(select(Run).where(Run.issue_id == issue.id).order_by(Run.created_at.desc()).limit(1))
+        wait_until = provider_wait_until(session, agent)
+        if wait_until is not None:
+            _note_provider_wait(session, issue, agent, wait_until)
+            continue
         if last_run is not None:
             settled_at = last_run.finished_at or last_run.created_at
             if settled_at and (datetime.now(timezone.utc) - _utc(settled_at)).total_seconds() < IDLE_COOLDOWN_SECONDS:
@@ -193,6 +225,17 @@ def requeue_idle_issues(session) -> list[str]:
         session.commit()
         queued.append(run.id)
     return queued
+
+
+def _note_provider_wait(session, issue: Issue, agent, wait_until: datetime) -> None:
+    """Say once on the timeline that the issue is waiting for a provider reset, not stuck."""
+    when = wait_until.astimezone().strftime("%I:%M %p").lstrip("0")
+    detail = f"Every provider {agent.name} can use is at its usage limit; will retry automatically after {when}."
+    last = session.scalar(select(TimelineEvent).where(TimelineEvent.issue_id == issue.id).order_by(TimelineEvent.created_at.desc()).limit(1))
+    if last is not None and last.event_type == "waiting_for_provider" and last.detail == detail:
+        return
+    session.add(TimelineEvent(issue_id=issue.id, event_type="waiting_for_provider", detail=detail))
+    session.commit()
 
 
 def apply_status_change(session, issue: Issue, previous: IssueStatus, start: bool) -> Run | None:

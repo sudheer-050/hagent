@@ -26,7 +26,7 @@ from hagent import db as hagent_db
 from hagent.db import get_session
 from hagent.engine import process_queued_run_by_id
 from hagent.models import Agent, AppSetting, Issue, Run, RunStatus
-from hagent.orchestration import PRIORITY_RANK
+from hagent.orchestration import PRIORITY_RANK, provider_wait_until
 
 log = logging.getLogger(__name__)
 
@@ -103,6 +103,11 @@ def heartbeat_age(session) -> float | None:
         return None
 
 
+def _provider_hold(session, agent_id: str) -> datetime | None:
+    agent = session.get(Agent, agent_id)
+    return provider_wait_until(session, agent) if agent is not None else None
+
+
 def dispatch_pending() -> int:
     """Start every queued run whose agent has spare capacity. Returns how many were started."""
     _beat()
@@ -116,6 +121,9 @@ def dispatch_pending() -> int:
         if not pending:
             return 0
         running = dict(session.execute(select(Run.agent_id, func.count()).where(Run.status == RunStatus.RUNNING).group_by(Run.agent_id)).all())
+        # Hold runs whose every usable provider is out of quota until its announced reset, the way
+        # Paperclip schedules a retry: starting them now only fails them and spends a strike.
+        held = {agent_id for agent_id in {row.agent_id for row in pending} if _provider_hold(session, agent_id)}
 
     now = datetime.now(timezone.utc)
     pending.sort(key=lambda row: (effective_rank(row.priority, row.created_at, now), _utc(row.created_at)))
@@ -127,7 +135,7 @@ def dispatch_pending() -> int:
             if run_id in pending_ids:  # started here but not yet claimed in the database
                 per_agent[agent_id] = per_agent.get(agent_id, 0) + 1
         for row in pending:
-            if row.id in _inflight or len(_inflight) >= _max_parallel():
+            if row.id in _inflight or len(_inflight) >= _max_parallel() or row.agent_id in held:
                 continue
             if per_agent.get(row.agent_id, 0) >= max(1, row.max_concurrent_tasks or 1):
                 continue
@@ -229,7 +237,10 @@ def explain_queue(session, now: datetime | None = None) -> dict:
     for position, (run, issue, agent) in enumerate(pending, start=1):
         capacity = max(1, agent.max_concurrent_tasks or 1)
         key = issue_key(session, issue)
-        if slots_used[agent.id] >= capacity:
+        hold = provider_wait_until(session, agent)
+        if hold is not None:
+            reason = f"waiting for {agent.name}'s providers to reset (after {hold.astimezone().strftime('%I:%M %p').lstrip('0')})"
+        elif slots_used[agent.id] >= capacity:
             reason = f"waiting for {agent.name} ({slots_used[agent.id]}/{capacity} busy: {', '.join(holders.get(agent.id, []))})"
         elif global_used >= cap:
             reason = f"global limit reached ({cap} runs at once)"

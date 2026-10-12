@@ -16,6 +16,7 @@ import click
 from sqlalchemy import select, update
 
 from hagent.db import get_active_workspace, get_or_create_default_workspace, get_session, init_db, set_active_workspace
+from hagent.runtime_env import scrub_inherited_environment
 from hagent.engine import run_issue as engine_run_issue
 from hagent.triggers import configure as configure_trigger
 from hagent.models import (
@@ -64,6 +65,7 @@ get_or_create_default_workspace = get_active_workspace
 @click.group()
 def cli():
     """Hagent: self-hosted multi-agent orchestration."""
+    scrub_inherited_environment()
     init_db()
 
 
