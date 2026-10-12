@@ -8,12 +8,17 @@
 # nonexistent --full-auto) because the task needs network access to call the
 # OpenAI Images API, which Codex's default sandbox blocks.
 #
+# Each image is shrunk to 512 px (~150 KB) by scripts\shrink_avatars.py right after it is saved.
+#
 # Usage: powershell -ExecutionPolicy Bypass -File scripts\generate_agent_avatars.ps1
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $avatarDir = Join-Path $repoRoot 'hagent\static\avatars'
 New-Item -ItemType Directory -Force -Path $avatarDir | Out-Null
+$python = Join-Path $repoRoot '.venv\Scripts\python.exe'
+if (-not (Test-Path $python)) { $python = 'python' }
+$shrink = Join-Path $repoRoot 'scripts\shrink_avatars.py'
 
 $baseStyle = "Photorealistic professional corporate headshot portrait, studio lighting, plain neutral light-gray background, shoulders-up, direct eye contact with camera, warm confident expression, shallow depth of field, shot on 85mm lens, high detail skin texture, natural color grading, no text, no watermark, no illustration or cartoon style, image centered in a circular frame with a solid light-gray background outside the circle, portrait fills the circle edge-to-edge."
 
@@ -46,6 +51,9 @@ foreach ($agent in $agents) {
 
     if (-not (Test-Path $outPath)) {
         Write-Warning "$($agent.key): no file produced at $outPath - check Codex output above."
+    } else {
+        # Generated portraits are ~1.8 MB; shrink to web size before anything gets committed.
+        & $python $shrink $outPath
     }
 }
 
