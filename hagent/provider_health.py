@@ -35,8 +35,14 @@ _INFRASTRUCTURE_ERROR = re.compile(
     r"|ENOTFOUND|getaddrinfo|name or service not known|could not resolve host",
     re.IGNORECASE,
 )
-_RETRY_AT = re.compile(r"try again at (\d{1,2}):(\d{2})\s*([AP]M)", re.IGNORECASE)
+# Codex: "... or try again at 5:23 PM." / Claude Code: "You've hit your session limit - resets
+# 5:20pm (America/New_York)". The time is the provider's local clock (or the named zone).
+_RETRY_AT = re.compile(
+    r"(?:try again at|resets(?: at)?)\s+(\d{1,2})(?::(\d{2}))?\s*([ap]\.?m\.?)(?:\s*\(([A-Za-z_]+/[A-Za-z_/]+)\))?",
+    re.IGNORECASE,
+)
 LIMITED_COOLDOWN = timedelta(minutes=30)
+MAX_DETAIL_CHARS = 1000
 ERROR_COOLDOWN = timedelta(minutes=10)
 
 
@@ -63,16 +69,43 @@ def retry_after(runtime: Runtime):
     checked = _as_utc(runtime.last_health_check_at)
     if runtime.health_status == "error":
         return checked + ERROR_COOLDOWN
-    match = _RETRY_AT.search(runtime.health_detail or "")
+    reset = parse_reset_time(runtime.health_detail or "", checked)
+    return reset or checked + LIMITED_COOLDOWN
+
+
+def parse_reset_time(text: str, after: datetime):
+    """The first reset time a usage-limit message names, as the next such moment after `after` (UTC)."""
+    match = _RETRY_AT.search(text)
     if not match:
-        return checked + LIMITED_COOLDOWN
-    hour, minute, meridiem = int(match.group(1)) % 12, int(match.group(2)), match.group(3).upper()
-    hour += 12 if meridiem == "PM" else 0
-    local_checked = checked.astimezone()
-    reset = local_checked.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    if reset <= local_checked:
+        return None
+    hour = int(match.group(1)) % 12 + (12 if match.group(3).lower().startswith("p") else 0)
+    minute = int(match.group(2) or 0)
+    zone = None
+    if match.group(4):
+        try:
+            from zoneinfo import ZoneInfo
+            zone = ZoneInfo(match.group(4))
+        except Exception:  # noqa: BLE001 - unknown zone or no tz database: fall back to local time
+            zone = None
+    local_after = _as_utc(after).astimezone(zone)
+    reset = local_after.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if reset <= local_after:
         reset += timedelta(days=1)
     return reset.astimezone(timezone.utc)
+
+
+def limit_detail(error) -> str:
+    """A health_detail that keeps the reset time even when the raw error is a long JSON event stream.
+
+    CLI errors carry the whole event log, and the "try again at ..." sentence is often past the
+    first 1000 characters, so a plain truncation silently threw the reset time away.
+    """
+    text = str(error).strip()
+    match = _RETRY_AT.search(text)
+    if not match or match.end() <= MAX_DETAIL_CHARS:
+        return text[:MAX_DETAIL_CHARS]
+    reset_clause = match.group(0)
+    return (reset_clause + " | " + text)[:MAX_DETAIL_CHARS]
 
 
 def is_cooling_down(runtime, now=None) -> bool:
@@ -169,7 +202,7 @@ def _notify(session, agent: Agent, body: str) -> None:
 def promote_backups_for_limited_runtime(session, failed_runtime: Runtime, error) -> list[Agent]:
     """Swap every affected agent to its own valid backup and note it on the agent's open issues."""
     now = datetime.now(timezone.utc)
-    detail = str(error).strip()[:1000]
+    detail = limit_detail(error)
     failed_runtime.health_status = "limited"
     failed_runtime.health_detail = detail
     failed_runtime.last_health_check_at = now

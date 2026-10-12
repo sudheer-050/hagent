@@ -199,3 +199,103 @@ def test_agents_return_to_their_own_home_runtime_after_both_providers_were_limit
     assert claude_home.runtime_id == claude.id                      # each back on its own home runtime
     assert codex_home.runtime_id == codex.id
     assert codex_home.failback_runtime_id is None
+
+
+# --- waiting out usage limits instead of failing into them (2026-10-12) ---------------------
+# Real failures: 42 of 42 runs after the cooldown fix failed on usage limits, retried blindly every
+# ~6 minutes, and "Smoke test: Jack" was blocked after three limit failures that weren't its fault.
+
+def _limited(runtime, detail, minutes_ago=1):
+    runtime.health_status = "limited"
+    runtime.health_detail = detail
+    runtime.last_health_check_at = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
+
+
+def test_claude_reset_message_with_a_timezone_is_understood():
+    from hagent.provider_health import parse_reset_time
+    after = datetime(2026, 10, 11, 20, 0, tzinfo=timezone.utc)  # 4:00 PM in New York
+    reset = parse_reset_time("You've hit your session limit · resets 5:20pm (America/New_York)", after)
+    assert reset == datetime(2026, 10, 11, 21, 20, tzinfo=timezone.utc)
+
+
+def test_reset_time_already_passed_today_means_tomorrow():
+    from hagent.provider_health import parse_reset_time
+    after = datetime(2026, 10, 11, 23, 0).astimezone()
+    reset = parse_reset_time("try again at 5:23 PM.", after).astimezone()
+    assert (reset.day, reset.hour, reset.minute) == (12, 17, 23)
+
+
+def test_reset_time_deep_inside_a_long_cli_error_survives_truncation():
+    from hagent.provider_health import limit_detail, parse_reset_time
+    error = '{"type":"thread.started"}\n' + "x" * 3000 + "You've hit your usage limit ... or try again at 5:23 PM."
+    detail = limit_detail(error)
+    assert len(detail) <= 1000
+    assert parse_reset_time(detail, datetime.now(timezone.utc)) is not None
+
+
+def test_agent_waits_only_when_every_provider_it_can_use_is_limited(session):
+    from hagent.orchestration import provider_wait_until
+    agent, primary, backup = _two_runtime_agent(session)
+    _limited(primary, "usage limit reached")
+    assert provider_wait_until(session, agent) is None  # backup still usable
+    _limited(backup, "session limit reached")
+    wait = provider_wait_until(session, agent)
+    assert wait is not None and wait > datetime.now(timezone.utc)
+
+
+def test_usage_limit_failures_do_not_count_as_strikes_against_the_issue(session):
+    from hagent.models import Issue, Project, Run, RunStatus
+    from hagent.orchestration import _consecutive_failures
+    agent, *_ = _two_runtime_agent(session)
+    project = Project(workspace_id=agent.workspace_id, name="p")
+    session.add(project); session.commit()
+    issue = Issue(project_id=project.id, title="t")
+    session.add(issue); session.commit()
+    base = datetime.now(timezone.utc)
+    for i, error in enumerate(["You've hit your usage limit", "429 too many requests", "session limit reached", "boom: real bug"]):
+        session.add(Run(issue_id=issue.id, agent_id=agent.id, prompt="p", status=RunStatus.FAILED, error=error,
+                        created_at=base - timedelta(minutes=i)))
+    session.commit()
+    assert _consecutive_failures(session, issue.id) == 1  # only the real bug counts
+
+
+def test_backup_hitting_its_own_limit_is_recorded(session, mocker):
+    agent, primary, backup = _two_runtime_agent(session)
+    _record_models(mocker, RuntimeError("usage limit reached, try again at 5:23 PM"),
+                   RuntimeError("You've hit your session limit - resets 5:20pm (America/New_York)"))
+    try:
+        execute_agent(agent, "hi", backup_runtime=backup)
+    except Exception:
+        pass
+    assert primary.health_status == "limited"
+    assert backup.health_status == "limited" and is_cooling_down(backup)
+
+
+def test_dispatcher_holds_runs_until_the_providers_reset(cli_db, monkeypatch):
+    from hagent import db as hagent_db, dispatcher
+    from hagent.models import Issue, IssueStatus, Project, Run, RunStatus
+    with hagent_db.SessionLocal() as s:
+        agent, primary, backup = _two_runtime_agent(s)
+        _limited(primary, "usage limit reached")
+        _limited(backup, "usage limit reached")
+        project = Project(workspace_id=agent.workspace_id, name="p")
+        s.add(project); s.commit()
+        issue = Issue(project_id=project.id, title="t", status=IssueStatus.IN_PROGRESS, assignee_agent_id=agent.id)
+        s.add(issue); s.flush()
+        s.add(Run(issue_id=issue.id, agent_id=agent.id, prompt="p", status=RunStatus.PENDING))
+        s.commit()
+        agent_id = agent.id
+    started = []
+    monkeypatch.setattr(dispatcher, "_execute", lambda run_id: started.append(run_id))
+    monkeypatch.setattr(dispatcher, "_pool", lambda: type("P", (), {"submit": staticmethod(lambda fn, rid: fn(rid))})())
+    dispatcher._inflight.clear()
+
+    assert dispatcher.dispatch_pending() == 0 and started == []
+    with hagent_db.SessionLocal() as s:
+        reason = dispatcher.explain_queue(s)["queued"][0]["reason"]
+        assert "providers to reset" in reason
+        for runtime in (s.get(Agent, agent_id).runtime, s.get(Runtime, s.get(Agent, agent_id).backup_runtime_id)):
+            runtime.health_status = "healthy"
+        s.commit()
+    assert dispatcher.dispatch_pending() == 1
+    dispatcher._inflight.clear()

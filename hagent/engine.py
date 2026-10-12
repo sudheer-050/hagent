@@ -740,6 +740,9 @@ def _try_backup_then_failback(agent, primary, primary_error, backup_runtime, fai
         finish_observers(result=result, outcome="fallback_completed")
         return result
     except Exception as backup_error:
+        # Record the backup's own limit too, or a day with both providers exhausted looks like
+        # only one is, and nothing knows when to try again.
+        handle_capacity_failure(agent, backup_runtime, backup_error)
         record_infrastructure_failure(backup_runtime, backup_error)
         # If the primary recovered a resumable session id before failing, don't
         # lose it just because the backup also failed - a future retry on the
@@ -758,11 +761,14 @@ def _try_backup_then_failback(agent, primary, primary_error, backup_runtime, fai
                     delegation_path, resolve_backup_runtime, delegation_budget, record_skill_use,
                     working_directory_override, history=history, images=images)
                 result.runtime_id = failback_runtime.id
+                record_runtime_success(failback_runtime)
                 if record_skill_use:
                     record_skill_use(agent)
                 finish_observers(result=result, outcome="failback_completed")
                 return result
             except Exception as failback_error:
+                handle_capacity_failure(agent, failback_runtime, failback_error)
+                record_infrastructure_failure(failback_runtime, failback_error)
                 combined = ResumableError(
                     f"Primary runtime {primary.name} failed: {primary_error}; "
                     f"backup runtime {backup_runtime.name} failed: {backup_error}; "
