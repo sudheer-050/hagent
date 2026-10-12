@@ -5,7 +5,7 @@
     {% for row in rows %}
     <a class="chat-thread-link{% if row.agent.id == active_agent_id %} active{% endif %}{% if row.unread %} unread{% endif %}" href="/chat/{{ row.agent.id }}" title="{{ row.agent.name }}">
       <span class="agent-avatar agent-custom-avatar chat-thread-avatar" role="img" aria-label="{{ row.agent.name }} avatar">
-        <img class="agent-avatar-img" src="{{ agent_avatar_url(row.agent.id) }}" alt="" loading="lazy">
+        <img class="agent-avatar-img" src="{{ agent_avatar_url(row.agent.id, avatar_path=row.agent.avatar_path) }}" alt="" loading="lazy">
       </span>
       <span class="chat-thread-info">
         <span class="chat-thread-row">
