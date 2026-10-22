@@ -300,9 +300,12 @@ def test_engine_exposes_connection_tools_only_to_assigned_agent(session, mocker)
 def test_real_stdio_mcp_discovery_and_execution(tmp_path):
     import sys
     stub = tmp_path / "connector.py"
-    stub.write_text('''from mcp.server.fastmcp import FastMCP
+    stub.write_text('''try:
+    from mcp.server.mcpserver import MCPServer
+except ImportError:
+    from mcp.server.fastmcp import FastMCP as MCPServer
 import os
-server = FastMCP("Connection test")
+server = MCPServer("Connection test")
 @server.tool()
 def hello(name: str) -> str:
     return "Hello " + name + ("; credential available" if os.environ.get("DEMO_KEY") else "; missing credential")
