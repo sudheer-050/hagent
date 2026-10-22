@@ -33,6 +33,12 @@
     --font-sans: -apple-system, "Segoe UI", "Inter", system-ui, sans-serif;
     --font-mono: ui-monospace, "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   }
+  .release-card{margin:16px 0;padding:22px 24px;border:1px solid var(--border);border-radius:14px;background:var(--bg-panel)}
+  .release-card summary{cursor:pointer;font-size:19px;font-weight:700;color:var(--text)}
+  .release-card summary:focus-visible{outline:2px solid var(--accent);outline-offset:6px}
+  .release-notes{white-space:pre-wrap;overflow-wrap:anywhere;margin:22px 0;color:var(--text-muted);line-height:1.75}
+  .release-downloads{display:flex;flex-wrap:wrap;gap:10px}.release-downloads a{overflow-wrap:anywhere;max-width:100%}
+  section[id]{scroll-margin-top:24px}
   * { box-sizing: border-box; }
   body {
     margin: 0;
@@ -193,6 +199,7 @@
     <div class="links">
       <a href="/">All HAI apps</a>
       <a href="getting-started.html">How to use</a>
+      <a href="#versions">Versions</a>
       <a href="setup.html">Setup</a>
       <a href="use-cases.html">Use cases</a>
       <a href="faq.html">FAQ</a>
@@ -375,6 +382,69 @@ hagent serve</pre>
     <p><a href="https://github.com/sudheer-050/hagent/releases/tag/v0.2.3">Full release notes and downloads</a> &middot; <a href="https://github.com/sudheer-050/hagent/blob/v0.2.3/docs/CONNECTIONS.md">Connection setup guide</a></p>
   </div>
 </section>
+
+<section id="versions"><div class="wrap"><div class="section-head"><h2>Versions and downloads</h2><p>Compare the latest five stable versions, read what changed, and download the files for the version you choose.</p></div><div id="release-list"><details class="release-card" open><summary>v0.2.3 &middot; Latest &middot; 2026-10-22</summary><div class="release-notes">Hagent 0.2.3 adds direct Gmail and Google Drive connectors, a unified Connections page, and simpler read-only API setup. Google accounts, APIs, and MCP tools can be assigned to individual agents.
+
+
+
+What&#x27;s new
+
+- Gmail search/read and Drive search/read, including Google Docs text export.
+
+- Google sign-in after one-time installation setup, encrypted credentials, automatic token refresh, and single-use OAuth state with PKCE.
+
+- API setup with name, endpoint, and key; custom authentication under Advanced.
+
+- Account status and per-agent access management, plus connection tests.
+
+- MCP local commands, remote HTTP/SSE connections, and protected credentials.
+
+- Restart helper that checks for running tasks first.
+
+
+
+Fixes
+
+- Preserve Hagent login when Google redirects back.
+
+- Avoid repeated review/completed tasks in default autopilot matching.
+
+- Keep internal maintenance projects off the main board.
+
+- Improve reassignment, issue discussion context, parent/child verification, and failure reporting.
+
+
+
+Setup notes
+
+Google sign-in requires registering an OAuth app once per installation and enabling Gmail and Drive APIs. Google connectors are read-only. Direct APIs support fixed JSON GET endpoints. Access to connected accounts is explicitly assigned to agents; personal account tokens and local data are not part of this release.
+
+
+
+See connection setup and the changelog.
+
+
+
+Validation: 358 tests passed, 1 native stdio MCP test skipped because of Windows sandbox pipe restrictions. Wheel and source distribution built successfully.
+
+</div><div class="release-downloads"><a class="btn ghost" href="https://github.com/sudheer-050/hagent/archive/refs/tags/v0.2.3.zip">Source ZIP</a><a class="btn ghost" href="https://github.com/sudheer-050/hagent/archive/refs/tags/v0.2.3.tar.gz">Source tar.gz</a><a class="btn ghost" href="https://github.com/sudheer-050/hagent/releases/download/v0.2.3/hagent-0.2.3-py3-none-any.whl">hagent-0.2.3-py3-none-any.whl</a><a class="btn ghost" href="https://github.com/sudheer-050/hagent/releases/download/v0.2.3/hagent-0.2.3.tar.gz">hagent-0.2.3.tar.gz</a><a class="btn ghost" href="https://github.com/sudheer-050/hagent/releases/tag/v0.2.3">Full release notes</a></div></details><details class="release-card" ><summary>v0.2.2 &middot; 2026-09-20</summary><div class="release-notes">Agent memory: remember_about_user shares confirmed facts through the existing memory service.
+
+Review controls: explicitly approve work or send it back from review.
+
+Board recovery: reconcile orphaned issues and fade old cancelled cards.
+
+Chat updates: background refresh for messages and unread counts.
+
+Runtime safety: terminal-enabled agents control the CLI sandbox exception.</div><div class="release-downloads"><a class="btn ghost" href="https://github.com/sudheer-050/hagent/archive/refs/tags/v0.2.2.zip">Source ZIP</a><a class="btn ghost" href="https://github.com/sudheer-050/hagent/archive/refs/tags/v0.2.2.tar.gz">Source tar.gz</a><a class="btn ghost" href="https://github.com/sudheer-050/hagent/tree/v0.2.2">Browse source</a></div></details><details class="release-card" ><summary>v0.2.1 &middot; 2026-09-19</summary><div class="release-notes">Skill learning: redacted failure lessons can be recalled across agents sharing a skill.
+
+Dashboard packaging: include templates and static files in built wheels.
+
+Service lifecycle: start and stop scheduler, dispatcher, and executor cleanly.
+
+Documentation: setup guides, examples, screenshots, and release validation.
+
+Validation at release: 293 tests passed.</div><div class="release-downloads"><a class="btn ghost" href="https://github.com/sudheer-050/hagent/archive/refs/tags/v0.2.1.zip">Source ZIP</a><a class="btn ghost" href="https://github.com/sudheer-050/hagent/archive/refs/tags/v0.2.1.tar.gz">Source tar.gz</a><a class="btn ghost" href="https://github.com/sudheer-050/hagent/tree/v0.2.1">Browse source</a></div></details></div><p class="install-hint">Source archives are available for every listed version. Packaged files appear when attached to a GitHub release. The list refreshes from GitHub; saved notes remain available if GitHub cannot be reached.</p><p><a href="https://github.com/sudheer-050/hagent/tags">Browse all older versions on GitHub</a></p></div></section>
+<script type="application/json" id="release-snapshot">[{"tag": "v0.2.3", "date": "2026-10-22T17:23:21Z", "notes": "Hagent 0.2.3 adds direct Gmail and Google Drive connectors, a unified Connections page, and simpler read-only API setup. Google accounts, APIs, and MCP tools can be assigned to individual agents.\r\n\r\n### What's new\r\n- Gmail search/read and Drive search/read, including Google Docs text export.\r\n- Google sign-in after one-time installation setup, encrypted credentials, automatic token refresh, and single-use OAuth state with PKCE.\r\n- API setup with name, endpoint, and key; custom authentication under Advanced.\r\n- Account status and per-agent access management, plus connection tests.\r\n- MCP local commands, remote HTTP/SSE connections, and protected credentials.\r\n- Restart helper that checks for running tasks first.\r\n\r\n### Fixes\r\n- Preserve Hagent login when Google redirects back.\r\n- Avoid repeated review/completed tasks in default autopilot matching.\r\n- Keep internal maintenance projects off the main board.\r\n- Improve reassignment, issue discussion context, parent/child verification, and failure reporting.\r\n\r\n### Setup notes\r\nGoogle sign-in requires registering an OAuth app once per installation and enabling Gmail and Drive APIs. Google connectors are read-only. Direct APIs support fixed JSON GET endpoints. Access to connected accounts is explicitly assigned to agents; personal account tokens and local data are not part of this release.\r\n\r\nSee [connection setup](https://github.com/sudheer-050/hagent/blob/v0.2.3/docs/CONNECTIONS.md) and [the changelog](https://github.com/sudheer-050/hagent/blob/v0.2.3/CHANGELOG.md).\r\n\r\nValidation: 358 tests passed, 1 native stdio MCP test skipped because of Windows sandbox pipe restrictions. Wheel and source distribution built successfully.\r\n", "published": true, "assets": [{"name": "hagent-0.2.3-py3-none-any.whl", "url": "https://github.com/sudheer-050/hagent/releases/download/v0.2.3/hagent-0.2.3-py3-none-any.whl"}, {"name": "hagent-0.2.3.tar.gz", "url": "https://github.com/sudheer-050/hagent/releases/download/v0.2.3/hagent-0.2.3.tar.gz"}]}, {"tag": "v0.2.2", "date": "2026-09-20", "published": false, "assets": [], "notes": "Agent memory: remember_about_user shares confirmed facts through the existing memory service.\n\nReview controls: explicitly approve work or send it back from review.\n\nBoard recovery: reconcile orphaned issues and fade old cancelled cards.\n\nChat updates: background refresh for messages and unread counts.\n\nRuntime safety: terminal-enabled agents control the CLI sandbox exception."}, {"tag": "v0.2.1", "date": "2026-09-19", "published": false, "assets": [], "notes": "Skill learning: redacted failure lessons can be recalled across agents sharing a skill.\n\nDashboard packaging: include templates and static files in built wheels.\n\nService lifecycle: start and stop scheduler, dispatcher, and executor cleanly.\n\nDocumentation: setup guides, examples, screenshots, and release validation.\n\nValidation at release: 293 tests passed."}]</script><script src="releases.js?v=1" defer></script>
 
 <section id="assessment">
   <div class="wrap">
