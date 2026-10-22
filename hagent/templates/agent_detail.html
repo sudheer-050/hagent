@@ -23,8 +23,8 @@
           {% if skills %}<div class="check-grid">{% for skill in skills %}<label class="check-card"><input type="checkbox" name="skill_ids" value="{{ skill.id }}" {{ 'checked' if skill in agent.skills else '' }}><span><strong>{{ skill.name }}</strong><small>{{ skill.description or "Reusable instruction bundle" }}</small></span></label>{% endfor %}</div>{% else %}<div class="inline-empty">No skills available. <a href="/skills">Create a skill</a>.</div>{% endif %}
         </details>
         <details class="agent-advanced">
-          <summary>MCP tool servers <span class="section-count">{{ agent.mcp_servers|length }}</span></summary>
-          {% if mcp_servers %}<div class="check-grid">{% for server in mcp_servers %}<label class="check-card"><input type="checkbox" name="mcp_server_ids" value="{{ server.id }}" {{ 'checked' if server in agent.mcp_servers else '' }}><span><strong>{{ server.name }}</strong><small>{{ server.transport }}{% if server.url %} &middot; {{ server.url }}{% endif %}</small></span></label>{% endfor %}</div>{% else %}<div class="inline-empty">No MCP servers are registered yet. Add one with the Hagent CLI.</div>{% endif %}
+          <summary>Connections <span class="section-count">{{ agent.mcp_servers|length }}</span></summary>
+          {% if mcp_servers %}<div class="check-grid">{% for server in mcp_servers %}<label class="check-card"><input type="checkbox" name="mcp_server_ids" value="{{ server.id }}" {{ 'checked' if server in agent.mcp_servers else '' }}><span><strong>{{ server.name }}</strong><small>{{ server.transport }}</small></span></label>{% endfor %}</div>{% else %}<div class="inline-empty">No connections yet. <a href="/connections">Connect an account or API</a>.</div>{% endif %}
         </details>
         <details class="agent-advanced">
           <summary>Advanced settings</summary>

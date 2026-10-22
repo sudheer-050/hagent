@@ -69,6 +69,28 @@ def test_run_autopilot_once_runs_matching_issues_and_records_run(session, mocker
     assert session.query(AutopilotRun).count() == 1
 
 
+def test_unfiltered_autopilot_does_not_reopen_reviewed_or_closed_work(session, mocker, monkeypatch):
+    ws, agent, project = _setup(session)
+    issues = {status: Issue(project_id=project.id, title=status.value, status=status)
+              for status in IssueStatus}
+    session.add_all(issues.values())
+    autopilot = Autopilot(workspace_id=ws.id, name="unfiltered", agent_id=agent.id,
+                          project_id=project.id)
+    session.add(autopilot)
+    session.commit()
+    execute = mocker.patch("hagent.scheduler.run_issue",
+                           return_value=type("Result", (), {"status": RunStatus.COMPLETED})())
+    monkeypatch.setattr("hagent.scheduler.get_session", lambda **kwargs: _SessionCtx(session))
+
+    run_autopilot_once(autopilot.id)
+    run_autopilot_once(autopilot.id)
+
+    expected = {issues[s].id for s in (IssueStatus.BACKLOG, IssueStatus.TODO, IssueStatus.IN_PROGRESS)}
+    assert {call.args[1].id for call in execute.call_args_list} == expected
+    assert execute.call_count == 6
+    assert issues[IssueStatus.IN_REVIEW].status == IssueStatus.IN_REVIEW
+
+
 def test_run_autopilot_once_returns_none_for_disabled_autopilot(session, monkeypatch):
     ws, agent, project = _setup(session)
     autopilot = Autopilot(workspace_id=ws.id, name="ap", agent_id=agent.id, enabled=False)

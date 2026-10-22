@@ -50,10 +50,17 @@ def _has_active_run(session, issue: Issue) -> bool:
     return session.scalar(select(Run.id).where(Run.issue_id == issue.id, Run.status.in_(ACTIVE_RUN_STATUSES)).limit(1)) is not None
 
 
+def has_unfinished_children(session, issue: Issue) -> bool:
+    return session.scalar(select(Issue.id).where(
+        Issue.parent_issue_id == issue.id, Issue.status.notin_(CLOSED_STATUSES),
+    ).limit(1)) is not None
+
+
 def _stage_summary(session, parent: Issue, stage: int, children: list[Issue]) -> str:
     from hagent.keys import issue_key
 
-    lines = [f"Stage {stage} of your sub-issues has finished. Results:", ""]
+    lines = [f"Original task:\n{parent.description or parent.title}", "",
+             f"Stage {stage} of your sub-issues has finished. Results:", ""]
     for child in children:
         latest = session.scalar(select(Run).where(Run.issue_id == child.id, Run.status == RunStatus.COMPLETED).order_by(Run.created_at.desc()).limit(1))
         output = (latest.output or "").strip()[:SUMMARY_OUTPUT_CHARS] if latest else ""
@@ -96,6 +103,14 @@ def after_issue_finished(session, issue: Issue) -> None:
             parent = session.get(Issue, issue.parent_issue_id)
             if parent is not None:
                 fire_ready_stages(session, parent)
+                # A coordinator that returned before its children completed is waiting,
+                # not delivered. Resume it once, including for unstaged children.
+                if (parent.status == IssueStatus.BLOCKED and not has_unfinished_children(session, parent)
+                        and not _has_active_run(session, parent)):
+                    last_event = session.scalar(select(TimelineEvent).where(
+                        TimelineEvent.issue_id == parent.id).order_by(TimelineEvent.created_at.desc()).limit(1))
+                    if last_event and last_event.event_type == "verification_deferred":
+                        start_agent_run(session, parent, prompt=_stage_summary(session, parent, "complete", [issue]))
         # The issue may itself be a parent whose earlier stages completed while it was busy.
         fire_ready_stages(session, issue)
     except Exception:  # noqa: BLE001
@@ -193,6 +208,8 @@ def requeue_idle_issues(session) -> list[str]:
     idle = session.scalars(select(Issue).where(Issue.status.in_(AUTO_START_STATUSES), Issue.assignee_agent_id.is_not(None))).all()
     for issue in idle:
         if _has_active_run(session, issue):
+            continue
+        if has_unfinished_children(session, issue):
             continue
         agent = issue.assignee
         if agent is None or getattr(agent, "archived", False):

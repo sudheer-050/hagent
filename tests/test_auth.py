@@ -158,7 +158,7 @@ def test_login_sets_a_hardened_session_cookie_that_grants_access(maker, client):
     cookie = response.headers["set-cookie"].lower()
 
     assert response.status_code == 303 and response.headers["location"] == "/agents"
-    assert "httponly" in cookie and "samesite=strict" in cookie
+    assert "httponly" in cookie and "samesite=lax" in cookie
     assert client.get(PROTECTED).status_code == 404  # the cookie now authenticates
 
 

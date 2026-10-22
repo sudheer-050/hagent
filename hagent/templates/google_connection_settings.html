@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Google sign-in settings &middot; {{ site.app_name }}{% endblock %}
+{% block content %}
+<a class="crumb" href="/connections">&larr; Connections</a>
+<div class="page-header"><div><div class="eyebrow">One-time installation setup</div><h2>Google sign-in settings</h2><p class="page-sub">Configure Hagent's Google app once. After that, accounts connect with “Sign in with Google.”</p></div></div>
+{% if notice %}<p role="status">{{ notice }}</p>{% endif %}
+<section class="detail-section" style="max-width:720px">
+  <p>In <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer">Google Cloud</a>, enable the Gmail API and Google Drive API, configure the consent screen, and create an OAuth client of type <strong>Web application</strong>. During Testing, add your Google account as a test user.</p>
+  <p>Register this exact authorized redirect URI:</p>
+  <code style="display:block;overflow-wrap:anywhere;padding:12px;background:rgba(0,0,0,.2);border-radius:8px">{{ redirect_uri }}</code>
+  {% if managed %}<p>Google sign-in is configured through this installation's environment settings.</p>{% else %}
+  <form method="post" action="/connections/google/settings" class="stack" style="margin-top:24px">
+    <div><label class="field-label" for="app-google-id">Google OAuth client ID</label><input id="app-google-id" name="client_id" value="{{ client_id }}" placeholder="…apps.googleusercontent.com" autocomplete="off" required></div>
+    <div><label class="field-label" for="app-google-secret">Google OAuth client secret</label><input id="app-google-secret" type="password" name="client_secret" autocomplete="new-password" placeholder="{{ 'Already saved; leave blank to keep' if configured else 'Enter once for this installation' }}" {{ 'required' if not configured }}></div>
+    <button class="primary" type="submit">Enable Google sign-in</button>
+  </form>
+  {% endif %}
+  <p style="margin-top:20px">These are the installation's app credentials. Individual users won't need to enter them. <a href="https://developers.google.com/identity/protocols/oauth2/web-server" target="_blank" rel="noopener noreferrer">Google OAuth documentation</a></p>
+</section>
+{% endblock %}

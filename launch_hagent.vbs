@@ -2,6 +2,7 @@ Option Explicit
 
 Dim shell, files, repoRoot, powerShell, ensureScript, chrome, command
 Dim exitCode, request, ready, attempt
+Dim portFile, portReader, portText, localUrl
 
 Set shell = CreateObject("WScript.Shell")
 Set files = CreateObject("Scripting.FileSystemObject")
@@ -22,11 +23,24 @@ If exitCode <> 0 Then
     WScript.Quit exitCode
 End If
 
+localUrl = "http://127.0.0.1:8000/"
+portFile = files.BuildPath(repoRoot, "output\hagent-local-port.txt")
+If files.FileExists(portFile) Then
+    Set portReader = files.OpenTextFile(portFile, 1)
+    portText = Trim(portReader.ReadAll)
+    portReader.Close
+    If IsNumeric(portText) Then
+        If CLng(portText) >= 8000 And CLng(portText) <= 8009 Then
+            localUrl = "http://127.0.0.1:" & CStr(CLng(portText)) & "/"
+        End If
+    End If
+End If
+
 ready = False
 For attempt = 1 To 30
     On Error Resume Next
     Set request = CreateObject("MSXML2.XMLHTTP.6.0")
-    request.Open "GET", "http://127.0.0.1:8000/", False
+    request.Open "GET", localUrl, False
     request.Send
     ready = (Err.Number = 0)
     If ready Then ready = (request.Status = 200 Or request.Status = 302 Or request.Status = 401)
@@ -41,4 +55,4 @@ If Not ready Then
     WScript.Quit 1
 End If
 
-shell.Run """" & chrome & """ --app=http://127.0.0.1:8000/", 1, False
+shell.Run """" & chrome & """ --app=" & localUrl, 1, False

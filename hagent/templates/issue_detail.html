@@ -11,6 +11,16 @@
   </div>
 </div>
 
+{% if latest_verification %}
+<div class="card" role="status">
+  <strong>Latest verification: {{ latest_verification.event_type.replace('verification_', '').replace('_', ' ').title() }}</strong>
+  <p class="page-sub" style="max-width:none">{{ latest_verification.detail }}</p>
+  {% if latest_verification.event_type == 'verification_failed' %}
+  <p>Approval closes this task as your decision; it does not mean the failed checks passed.</p>
+  {% endif %}
+</div>
+{% endif %}
+
 {% if issue.description %}
 <div class="card">
   <p class="page-sub" style="max-width:none">{{ issue.description }}</p>

@@ -429,7 +429,8 @@ def login_submit(request: Request, username: str = Form(""), password: str = For
         secret, _row = issue_token(s, s.get(User, user.id), kind="session", name=request.headers.get("user-agent", "")[:80], ttl_days=SESSION_DAYS)
     response = RedirectResponse(safe_next(next), status_code=303)
     secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
-    response.set_cookie(SESSION_COOKIE, secret, max_age=SESSION_DAYS * 86400, httponly=True, samesite="strict", secure=secure, path="/")
+    # OAuth returns through a cross-site top-level GET; Strict drops this session.
+    response.set_cookie(SESSION_COOKIE, secret, max_age=SESSION_DAYS * 86400, httponly=True, samesite="lax", secure=secure, path="/")
     return response
 
 

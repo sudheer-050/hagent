@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Connections &middot; {{ site.app_name }}{% endblock %}
+{% block head %}
+<style>
+.connection-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:20px;margin:24px 0}.connection-panel{border:1px solid var(--border,#26364c);border-radius:16px;padding:24px;background:var(--surface,rgba(15,30,52,.7))}.connection-panel h3{margin:0 0 8px}.connection-panel p{line-height:1.6}.connection-panel summary{cursor:pointer;font-weight:600}.connection-panel .stack{margin-top:18px}.connection-panel input,.connection-panel textarea,.connection-panel select{width:100%;box-sizing:border-box}.connection-panel .check-card input{width:auto}.connection-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}.connection-notice{padding:14px 18px;border:1px solid var(--accent);border-radius:12px;margin:16px 0;overflow-wrap:anywhere}.connection-redirect{display:block;overflow-wrap:anywhere;padding:12px;background:rgba(0,0,0,.2);border-radius:8px;font-size:12px}.connection-label{display:flex;align-items:center;justify-content:space-between;gap:12px}.connection-help{font-size:13px;opacity:.78}.connection-panel label.field-label{display:block;margin-bottom:6px}.connection-panel details{margin-top:16px}.connection-panel .check-grid{margin-top:12px}.connection-panel button{cursor:pointer}
+.connection-create{margin:24px 0;max-width:840px}.connection-kind{display:flex;flex-wrap:wrap;gap:10px;border:0;padding:0;margin:22px 0}.connection-kind legend{font-size:13px;opacity:.75;margin-bottom:10px}.connection-kind label{display:flex;align-items:center;gap:9px;padding:12px 18px;border:1px solid var(--border,#34465d);border-radius:10px;cursor:pointer}.connection-kind input{width:auto;accent-color:var(--accent)}.connection-kind label:has(input:checked){border-color:var(--accent);background:var(--accent-tint)}.setup-panel{display:none}.connection-create:has(#connection-account:checked) .setup-account,.connection-create:has(#connection-api:checked) .setup-api,.connection-create:has(#connection-mcp:checked) .setup-mcp{display:block}.connection-setup-panels{max-width:650px}.setup-panel h4{margin:0 0 10px;font-size:18px}
+.account-providers{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin:20px 0}.account-provider{padding:22px;border:1px solid var(--border,#34465d);border-radius:14px}.account-provider h4{margin:0 0 8px}.account-provider button{margin-top:12px;width:100%}.account-provider .provider-mark{font-size:26px;font-weight:700;margin-bottom:14px}.google-installation{font-size:12px;opacity:.75;margin-top:18px}
+</style>
+{% endblock %}
+{% block content %}
+<div class="page-header"><div><div class="eyebrow">Accounts &amp; tools</div><h2>Connections</h2><p class="page-sub">Let your agents work directly with your accounts, APIs, and tools.</p></div></div>
+{% if notice %}<div class="connection-notice" role="status">{{ notice }}</div>{% endif %}
+
+{% if connections %}
+<h3 id="your-connections">Your connections</h3>
+<div class="connection-grid">
+{% for connection in connections %}
+<section class="connection-panel">
+  <div class="connection-label"><h3>{{ connection.label }}</h3><span class="chip">{{ 'Google' if connection.transport == 'google' else ('API' if connection.transport == 'api' else 'MCP') }}</span></div>
+  <p class="connection-help">{% if connection.transport == 'google' %}{{ 'Gmail' if connection.service == 'gmail' else 'Google Drive' }} &middot; {{ 'Account connected' if connection.connected else 'Sign-in needed' }} &middot; Read-only{% elif connection.transport == 'api' %}Direct API &middot; Read-only requests{% else %}{{ {'stdio':'Local command','sse':'Server-sent events','http':'Streamable HTTP'}.get(connection.transport,connection.transport) }}{% endif %}</p>
+  {% if connection.last_test %}<p role="status">{{ connection.last_test }}</p>{% endif %}
+  <details><summary>Agents with access <span class="section-count">{{ connection.agent_ids|length }}</span></summary>
+  <form method="post" action="/connections/{{ connection.id }}/agents" class="stack">
+    <div class="check-grid">{% for agent in agents %}<label class="check-card"><input type="checkbox" name="agent_ids" value="{{ agent.id }}" {{ 'checked' if agent.id in connection.agent_ids else '' }}><span>{{ agent.name }}</span></label>{% endfor %}</div>
+    <button type="submit">Save agent access</button>
+  </form>
+  </details>
+  <div class="connection-actions">
+    {% if connection.transport == 'google' %}<form method="post" action="/connections/{{ connection.id }}/google/start"><button class="primary" type="submit">{{ 'Reconnect Google' if connection.connected else 'Sign in with Google' }}</button></form>{% endif %}
+    <form method="post" action="/connections/{{ connection.id }}/test"><button type="submit">Test connection</button></form>
+    <form method="post" action="/connections/{{ connection.id }}/disconnect"><button type="submit">Disconnect</button></form>
+  </div>
+</section>
+{% endfor %}
+</div>
+{% else %}<div class="inline-empty">No connections yet. Add an account connector, API, or MCP server below.</div>{% endif %}
+
+<section class="connection-panel connection-create" id="add-connection">
+<h3>Add connection</h3>
+<p class="connection-help">Connect an account, API, or tool.</p>
+<fieldset class="connection-kind"><legend>Connection type</legend>
+  <label><input id="connection-account" type="radio" name="connection-type" value="account" checked>Account connector</label>
+  <label><input id="connection-api" type="radio" name="connection-type" value="api">API</label>
+  <label><input id="connection-mcp" type="radio" name="connection-type" value="mcp">MCP</label>
+</fieldset>
+<div class="connection-setup-panels">
+<div class="setup-panel setup-account">
+  <p class="connection-help">Choose an account, sign in with Google, and approve access. Your Google password stays with Google.</p>
+  <div class="account-providers">
+    <div class="account-provider"><div class="provider-mark" aria-hidden="true">G</div><h4>Gmail</h4><p class="connection-help">Search and read your email.</p>{% if connections|selectattr("transport", "equalto", "google")|selectattr("service", "equalto", "gmail")|selectattr("connected")|list %}<p role="status">Connected</p><a href="#your-connections">Manage access</a>{% else %}<form method="post" action="/connections/google/connect"><input type="hidden" name="service_name" value="gmail"><button class="primary" type="submit" {{ 'disabled' if google_ready is undefined }}>Sign in to Gmail</button></form>{% endif %}</div>
+    <div class="account-provider"><div class="provider-mark" aria-hidden="true">△</div><h4>Google Drive</h4><p class="connection-help">Find and read your files.</p>{% if connections|selectattr("transport", "equalto", "google")|selectattr("service", "equalto", "drive")|selectattr("connected")|list %}<p role="status">Connected</p><a href="#your-connections">Manage access</a>{% else %}<form method="post" action="/connections/google/connect"><input type="hidden" name="service_name" value="drive"><button class="primary" type="submit" {{ 'disabled' if google_ready is undefined }}>Sign in to Google Drive</button></form>{% endif %}</div>
+  </div>
+  <p class="google-installation">{% if google_ready is undefined %}Restart Hagent to load the Google sign-in update.{% else %}{% if not google_ready %}Google sign-in hasn't been enabled for this installation. {% endif %}<a href="/connections/google/settings">Google sign-in settings</a>{% endif %}</p>
+</div>
+
+<div class="setup-panel setup-api">
+  <h4>Connect an API</h4>
+    <p class="connection-help">Add a service that supports direct API access. Enter its endpoint and API key.</p>
+    <form method="post" action="/connections" class="stack">
+      <input type="hidden" name="kind" value="api">
+      <div><label class="field-label" for="api-label">Connection name</label><input id="api-label" name="label" placeholder="My service" maxlength="80" required></div>
+      <div><label class="field-label" for="api-url">Endpoint URL</label><input id="api-url" type="url" name="url" placeholder="https://api.example.com/items" required></div>
+      <div><label class="field-label" for="api-token">API key</label><input id="api-token" type="password" name="token" autocomplete="new-password" placeholder="Paste your API key"></div>
+      <details><summary>Advanced</summary><div class="stack">
+        <div><label class="field-label" for="api-auth">Authentication</label><select id="api-auth" name="auth"><option value="bearer">Bearer token (default)</option><option value="header">API key header</option><option value="none">No authentication</option></select></div>
+        <div><label class="field-label" for="api-header">API key header name</label><input id="api-header" name="key_name" value="X-API-Key"></div>
+      </div></details>
+      <button class="primary" type="submit">Connect API</button>
+      <p class="connection-help">Supports JSON endpoints that accept read requests. For services requiring a custom key header, open Advanced.</p>
+    </form>
+</div>
+<div class="setup-panel setup-mcp">
+    <h4>Connect an MCP server</h4>
+    <p class="connection-help">Use an installed local MCP server or connect to a remote server.</p>
+    <form method="post" action="/connections" class="stack">
+      <div><label class="field-label" for="mcp-label">Connection name</label><input id="mcp-label" name="label" placeholder="My tools" maxlength="80" required></div>
+      <div><label class="field-label" for="mcp-kind">Transport</label><select id="mcp-kind" name="kind"><option value="stdio">Local command (stdio)</option><option value="http">Remote HTTP</option><option value="sse">Remote SSE</option></select></div>
+      <div><label class="field-label" for="mcp-command">Local command</label><input id="mcp-command" name="command" placeholder="Path to an installed MCP server"></div>
+      <div><label class="field-label" for="mcp-args">Arguments (JSON array)</label><textarea id="mcp-args" name="arguments" rows="2">[]</textarea></div>
+      <div><label class="field-label" for="mcp-url">Remote server URL</label><input id="mcp-url" type="url" name="url" placeholder="https://example.com/mcp"></div>
+      <div><label class="field-label" for="mcp-env">Environment variables (JSON)</label><textarea id="mcp-env" name="environment" rows="2" spellcheck="false" autocomplete="off">{}</textarea></div>
+      <div><label class="field-label" for="mcp-headers">Remote authorization headers (JSON)</label><textarea id="mcp-headers" name="headers" rows="2" spellcheck="false" autocomplete="off">{}</textarea></div>
+      <button type="submit">Save MCP connection</button>
+    </form>
+  </div>
+</div>
+</section>
+{% endblock %}

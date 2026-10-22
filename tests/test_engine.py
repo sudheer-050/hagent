@@ -2,7 +2,7 @@ import pytest
 
 from hagent.adapters.base import RuntimeResult
 from hagent.engine import DelegationLimitExceeded, _run_verifier_pass, _verifier_verdict_passed, execute_agent, queue_issue_run, run_issue
-from hagent.models import Agent, Issue, IssueStatus, Project, Run, Runtime, RunStatus, RuntimeType, Skill, Squad, SquadMember, TimelineEvent, Workspace
+from hagent.models import Agent, Comment, Issue, IssueStatus, Project, Run, Runtime, RunStatus, RuntimeType, Skill, Squad, SquadMember, TimelineEvent, Workspace
 
 
 def test_verifier_verdict_uses_explicit_verdict_line():
@@ -10,6 +10,7 @@ def test_verifier_verdict_uses_explicit_verdict_line():
     assert _verifier_verdict_passed("Review complete.\n\n- PASS: all requirements are met.")
     assert not _verifier_verdict_passed("FAIL: the requested test is missing.")
     assert not _verifier_verdict_passed("The response discusses both PASS and FAIL without deciding.")
+    assert not _verifier_verdict_passed("I cannot give this a PASS until the microphone works.")
 
 
 def test_verifier_pass_auto_approves(session, mocker):
@@ -35,7 +36,7 @@ def test_verifier_pass_auto_approves(session, mocker):
     session.commit()
     mocker.patch(
         "hagent.engine.run_issue",
-        return_value=mocker.Mock(output="PASS\nEverything works."),
+        return_value=mocker.Mock(output="PASS\nEverything works.", status=RunStatus.COMPLETED),
     )
 
     _run_verifier_pass(session, run, issue, "finished")
@@ -67,8 +68,9 @@ def test_verifier_fail_requeues_a_fix_run(session, mocker):
 
     session.refresh(issue)
     assert issue.status == IssueStatus.IN_PROGRESS
-    # Once for the verifier's own review run, once to requeue the fix.
-    assert run_issue_mock.call_count == 2
+    # Verification runs once; rework is queued for the dispatcher rather than recursive.
+    assert run_issue_mock.call_count == 1
+    assert session.query(Run).filter_by(issue_id=issue.id, status=RunStatus.PENDING).one()
     assert session.query(TimelineEvent).filter_by(issue_id=issue.id, event_type="verification_failed").one()
 
 
@@ -168,6 +170,118 @@ def test_queue_issue_run_reuses_existing_active_run(session):
     assert first.id == second.id
     assert first.status == RunStatus.PENDING
     assert issue.status == IssueStatus.IN_PROGRESS
+
+
+def test_running_coordinator_hands_off_to_new_agent_without_review(session, mocker):
+    ws, coordinator = _make_agent(session)
+    worker = Agent(workspace_id=ws.id, runtime_id=coordinator.runtime_id, name="worker")
+    session.add(worker)
+    session.commit()
+    issue = _make_issue(session, ws)
+    issue.assignee_agent_id = coordinator.id
+    session.commit()
+    verifier = mocker.patch("hagent.engine._run_verifier_pass")
+
+    def handoff(*args, **kwargs):
+        issue.assignee_agent_id = worker.id
+        session.commit()
+        queued = queue_issue_run(session, issue, worker)
+        assert queued.agent_id == worker.id
+        assert queued.status == RunStatus.PENDING
+        # Even direct/synchronous execution cannot overlap the coordinator.
+        assert run_issue(session, issue, worker, _run=queued).status == RunStatus.PENDING
+        return RuntimeResult(output="Worker queued, implementation is not done.")
+
+    execute = mocker.patch("hagent.engine.execute_agent", side_effect=handoff)
+    first = run_issue(session, issue, coordinator)
+    assert first.status == RunStatus.COMPLETED
+    assert issue.status == IssueStatus.IN_PROGRESS
+    verifier.assert_not_called()
+    queued = session.query(Run).filter_by(issue_id=issue.id, agent_id=worker.id).one()
+    execute.side_effect = None
+    execute.return_value = RuntimeResult(output="Implemented and tested")
+    assert run_issue(session, issue, worker, _run=queued).status == RunStatus.COMPLETED
+    assert issue.status == IssueStatus.IN_REVIEW
+    assert execute.call_count == 2
+
+
+def test_reassignment_replaces_stale_pending_run_and_snapshots_corrections(session):
+    ws, original = _make_agent(session)
+    worker = Agent(workspace_id=ws.id, runtime_id=original.runtime_id, name="worker")
+    session.add(worker)
+    session.commit()
+    issue = _make_issue(session, ws)
+    first = queue_issue_run(session, issue, original)
+    session.add(Comment(issue_id=issue.id, author="owner", body="Use the existing local STT instead."))
+    session.commit()
+    second = queue_issue_run(session, issue, worker)
+    session.refresh(first)
+    assert first.status == RunStatus.CANCELLED
+    assert second.agent_id == worker.id and second.status == RunStatus.PENDING
+    assert "Use the existing local STT instead." in second.prompt
+    assert queue_issue_run(session, issue, worker).id == second.id
+
+
+def test_parent_waits_for_unstaged_child_then_resumes_once(session, mocker):
+    from hagent.orchestration import after_issue_finished, requeue_idle_issues
+    ws, agent = _make_agent(session)
+    parent = _make_issue(session, ws)
+    parent.assignee_agent_id = agent.id
+    child = Issue(project_id=parent.project_id, parent_issue_id=parent.id,
+                  title="implementation", status=IssueStatus.IN_PROGRESS)
+    session.add(child)
+    session.commit()
+    mocker.patch("hagent.engine.execute_agent", return_value=RuntimeResult(output="Child still building"))
+    verifier = mocker.patch("hagent.engine._run_verifier_pass")
+    run_issue(session, parent, agent)
+    assert parent.status == IssueStatus.BLOCKED
+    verifier.assert_not_called()
+    assert requeue_idle_issues(session) == []
+    child.status = IssueStatus.DONE
+    session.commit()
+    after_issue_finished(session, child)
+    after_issue_finished(session, child)
+    assert session.query(Run).filter_by(issue_id=parent.id, status=RunStatus.PENDING).count() == 1
+
+
+def test_finishing_run_does_not_reopen_human_approved_issue(session, mocker):
+    ws, agent = _make_agent(session)
+    issue = _make_issue(session, ws)
+
+    def approve_while_running(*args, **kwargs):
+        issue.status = IssueStatus.DONE
+        session.commit()
+        return RuntimeResult(output="Finished after the owner closed it")
+
+    mocker.patch("hagent.engine.execute_agent", side_effect=approve_while_running)
+    verifier = mocker.patch("hagent.engine._run_verifier_pass")
+    run_issue(session, issue, agent)
+    assert issue.status == IssueStatus.DONE
+    verifier.assert_not_called()
+
+
+def test_status_tool_reports_idle_assignment_instead_of_claiming_work(session):
+    from hagent.engine import _tool_status_lookup
+    ws, agent = _make_agent(session)
+    issue = _make_issue(session, ws, status=IssueStatus.IN_PROGRESS)
+    issue.assignee_agent_id = agent.id
+    session.commit()
+    text = _tool_status_lookup(agent, agent, {}, None)
+    assert "Assignment is not execution" in text
+    run = queue_issue_run(session, issue, agent)
+    text = _tool_status_lookup(agent, agent, {}, None)
+    assert "run: pending" in text and run.id in text
+
+
+def test_worktree_setup_failure_is_recorded_instead_of_leaving_running_job(session, mocker):
+    ws, agent = _make_agent(session)
+    issue = _make_issue(session, ws)
+    mocker.patch("hagent.engine._resolve_worktree", side_effect=OSError("Repository is unavailable"))
+    execute = mocker.patch("hagent.engine.execute_agent")
+    run = run_issue(session, issue, agent)
+    assert run.status == RunStatus.FAILED
+    assert "Repository is unavailable" in run.error
+    execute.assert_not_called()
 
 
 def test_run_issue_failure_persists_error_and_leaves_issue_in_progress(session, mocker):
