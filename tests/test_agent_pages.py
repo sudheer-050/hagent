@@ -57,6 +57,75 @@ def seed_agent():
         return agent.id, runtime.id, skill.id
 
 
+def test_issue_page_displays_failed_verification_and_allows_owner_override(local_db):
+    from hagent.models import IssueStatus
+    agent_id, _, _ = seed_agent()
+    with db.get_session() as session:
+        agent = session.get(Agent, agent_id)
+        project = Project(workspace_id=agent.workspace_id, name="Test project")
+        session.add(project)
+        session.flush()
+        issue = Issue(project_id=project.id, title="Needs a working microphone",
+                      assignee_agent_id=agent_id, status=IssueStatus.IN_REVIEW)
+        session.add(issue)
+        session.flush()
+        session.add(TimelineEvent(issue_id=issue.id, event_type="verification_failed",
+                                  detail="FAIL: microphone capture was not verified"))
+        session.commit()
+        issue_id = issue.id
+    client = TestClient(app)
+    page = client.get(f"/issues/{issue_id}")
+    assert page.status_code == 200
+    assert "Latest verification: Failed" in page.text
+    assert "microphone capture was not verified" in page.text
+    assert "it does not mean the failed checks passed" in page.text
+    assert client.post(f"/issues/{issue_id}/review/approve", follow_redirects=False).status_code == 303
+    with db.get_session() as session:
+        assert session.get(Issue, issue_id).status == IssueStatus.DONE
+
+
+def test_board_hides_internal_checks_but_keeps_project_access(local_db):
+    from hagent.models import IssueStatus
+    agent_id, _, _ = seed_agent()
+    with db.get_session() as session:
+        agent = session.get(Agent, agent_id)
+        projects = [Project(workspace_id=agent.workspace_id, name=name) for name in
+                    ("My application", "Hagent Ops", "Verification Reviews", "Worktree Isolation Test")]
+        session.add_all(projects)
+        session.flush()
+        for project in projects:
+            session.add(Issue(project_id=project.id, title=f"Task for {project.name}",
+                              status=IssueStatus.IN_REVIEW))
+        session.commit()
+        maintenance_id = projects[1].id
+    client = TestClient(app)
+    board = client.get("/board")
+    assert board.status_code == 200
+    assert "Task for My application" in board.text
+    for name in ("Hagent Ops", "Verification Reviews", "Worktree Isolation Test"):
+        assert f"Task for {name}" not in board.text
+    assert "Task for Hagent Ops" in client.get(f"/projects/{maintenance_id}").text
+
+
+def test_web_assignment_queues_real_run_immediately(local_db):
+    from hagent.models import IssueStatus
+    agent_id, _, _ = seed_agent()
+    with db.get_session() as session:
+        agent = session.get(Agent, agent_id)
+        project = Project(workspace_id=agent.workspace_id, name="Test project")
+        session.add(project)
+        session.flush()
+        issue = Issue(project_id=project.id, title="Implement this", status=IssueStatus.BACKLOG)
+        session.add(issue)
+        session.commit()
+        issue_id = issue.id
+    result = TestClient(app).post(f"/issues/{issue_id}/assign", data={"agent_id": agent_id}, follow_redirects=False)
+    assert result.status_code == 303
+    with db.get_session() as session:
+        run = session.scalar(select(Run).where(Run.issue_id == issue_id))
+        assert run is not None and run.agent_id == agent_id and run.status == RunStatus.PENDING
+
+
 def test_agents_page_is_focused_inventory(local_db):
     agent_id, _, _ = seed_agent()
     response = TestClient(app).get("/agents")
@@ -148,7 +217,7 @@ def test_agent_detail_updates_profile_and_skills(local_db, tmp_path):
     detail = client.get(f"/agents/{agent_id}")
     assert detail.status_code == 200
     assert "Assigned work" in detail.text
-    assert "MCP tool servers" in detail.text
+    assert "Connections" in detail.text
     assert "Environment variables (JSON)" in detail.text
 
     response = client.post(

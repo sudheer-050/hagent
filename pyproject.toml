@@ -1,6 +1,6 @@
 [project]
 name = "hagent"
-version = "0.2.2"
+version = "0.2.3"
 description = "Self-hosted multi-agent orchestration platform (CLI + web dashboard) supporting pluggable AI runtimes."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -17,6 +17,7 @@ dependencies = [
     "psutil>=5.9",
     "apscheduler>=3.10",
     "mcp>=1.2",
+    "cryptography>=42",
 ]
 
 [project.optional-dependencies]
@@ -42,3 +43,6 @@ hagent = ['templates/*.html', 'static/*.css', 'static/*.js', 'static/*.png', 'st
 
 [tool.setuptools.packages.find]
 include = ["hagent*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

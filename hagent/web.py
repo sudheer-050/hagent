@@ -320,6 +320,8 @@ app.add_middleware(AuthMiddleware)
 app.include_router(auth_router)
 app.include_router(remote_api_router)
 app.include_router(worker_api_router)
+from hagent.connections_web import install as install_connections
+install_connections(app, templates, require)
 
 
 @app.exception_handler(ScopeError)
@@ -943,6 +945,10 @@ def issue_detail(request: Request, issue_id: str):
                 "agents": agents,
                 "all_labels": all_labels,
                 "statuses": ISSUE_STATUS_ORDER,
+                "latest_verification": s.scalar(select(TimelineEvent).where(
+                    TimelineEvent.issue_id == issue.id,
+                    TimelineEvent.event_type.in_(["verification_passed", "verification_failed", "verification_deferred"]),
+                ).order_by(TimelineEvent.created_at.desc()).limit(1)),
                 "active": "projects",
             },
         )
@@ -1005,8 +1011,10 @@ def issue_diff_page(request: Request, issue_id: str):
 
 @app.post("/issues/{issue_id}/status")
 def issue_set_status(issue_id: str, status: str = Form(...)):
+    from hagent.orchestration import apply_status_change
     with get_session() as s:
         i = require(s, Issue, issue_id)
+        previous = i.status
         new_status = IssueStatus(status)
         # In Review is a decision point, not a free move: the automatic verifier already tries to
         # approve or bounce it, and when that doesn't resolve it, a human decides via the dedicated
@@ -1016,6 +1024,7 @@ def issue_set_status(issue_id: str, status: str = Form(...)):
         i.status = new_status
         s.add(TimelineEvent(issue_id=i.id, event_type="status_changed", detail=status))
         s.commit()
+        apply_status_change(s, i, previous, start=True)
         project_id = i.project_id
     return RedirectResponse(url=f"/projects/{project_id}", status_code=303)
 
@@ -1062,8 +1071,11 @@ def issue_review_reject(issue_id: str, note: str = Form("")):
 
 @app.post("/issues/{issue_id}/assign")
 def issue_assign(issue_id: str, agent_id: str = Form("")):
+    from hagent.orchestration import start_agent_run
     with get_session() as s:
         i = require(s, Issue, issue_id)
+        if agent_id:
+            require(s, Agent, agent_id)
         i.assignee_agent_id = agent_id or None
         # Same rule as creation: assigning someone to a Backlog issue means it's ready to be
         # worked now, so pull it out of Backlog instead of leaving it idle there.
@@ -1071,6 +1083,8 @@ def issue_assign(issue_id: str, agent_id: str = Form("")):
             i.status = IssueStatus.TODO
         s.add(TimelineEvent(issue_id=i.id, event_type="assigned", detail=agent_id or "unassigned"))
         s.commit()
+        if agent_id:
+            start_agent_run(s, i)
     return RedirectResponse(url=f"/issues/{issue_id}", status_code=303)
 
 

@@ -1,5 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
+{# Maintenance history stays on project pages, outside the owner's board. #}
+{% set maintenance_projects = ['Verification Reviews', 'Hagent Ops', 'Worktree Isolation Test', 'Benchmark', 'Test Project', 'Live Application Acceptance Trials', 'Invigilation Pilot: Team Directory Widget', 'Local Dictation', 'Stopped Music Studio (2026-10-07)', 'Stopped food-site sample (2026-10-07)'] %}
 <div class="page-header">
   <div>
     <h2>Board</h2>
@@ -7,9 +9,9 @@
 </div>
 
 {% macro grouped_section(status) %}
-<h3>{{ status.value.replace('_', ' ').title() }} <span class="count">{{ issues_by_status[status]|length }}</span></h3>
+<h3>{{ status.value.replace('_', ' ').title() }} <span class="count">{{ issues_by_status[status]|rejectattr('project.name', 'in', maintenance_projects)|list|length }}</span></h3>
 <div class="board-column-body">
-{% for project_name, project_issues in issues_by_status_project[status].items() %}
+{% for project_name, project_issues in issues_by_status_project[status].items() if project_name not in maintenance_projects %}
 <details class="board-project-group" open>
   <summary class="board-project-group-label">{{ project_name }} <span class="count">{{ project_issues|length }}</span></summary>
   {% for i in project_issues %}
@@ -36,9 +38,9 @@
   </div>
   {% elif status.value != 'done' %}
   <div class="board-column">
-    <h3>{{ status.value.replace('_', ' ').title() }} <span class="count">{{ issues_by_status[status]|length }}</span></h3>
+    <h3>{{ status.value.replace('_', ' ').title() }} <span class="count">{{ issues_by_status[status]|rejectattr('project.name', 'in', maintenance_projects)|list|length }}</span></h3>
     <div class="board-column-body">
-    {% for i in issues_by_status[status] %}
+    {% for i in issues_by_status[status]|rejectattr('project.name', 'in', maintenance_projects) %}
     <div class="issue-card">
       <a href="/issues/{{ i.id }}">{{ i.title }}</a>
       <div class="meta">

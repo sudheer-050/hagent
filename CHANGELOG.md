@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.2.3 - 2026-10-22
+
+### Added
+
+- A Connections page for Google accounts, direct read-only JSON APIs, and local or remote MCP servers.
+- Gmail email search/read and Google Drive file search/read tools, assigned separately to each agent.
+- Google sign-in with a one-time installation setup, encrypted credentials, token refresh, and single-use OAuth state with PKCE.
+- A simpler API form with name, endpoint URL, and API key; custom authentication is under Advanced.
+- Connected account indicators replace redundant sign-in prompts, with links to manage agent access.
+- A local restart helper that checks running tasks before restarting this checkout.
+
+### Fixed
+
+- Google OAuth returns retain the Hagent session instead of unnecessarily prompting for the Hagent login again.
+- Default autopilot issue matching excludes review and completed issues, avoiding repeated maintenance reviews.
+- Internal maintenance projects are hidden from the main board by default.
+
+### Workflow reliability
+
+
+- Reassignment during a running coordinator now queues the new agent separately and serializes runs on the same issue.
+- Queued work includes recent issue discussion so scope corrections are available to the implementer.
+- Parent delivery verification waits for unfinished children; deferred parents resume after their children close.
+- Verifier rework goes through the dispatcher, honors the current assignee, and resets the retry budget after reassignment.
+- Status tools distinguish assigned issues from actual running, queued, and approval-waiting runs.
+- Web assignment/status changes use the orchestration hooks; review pages display the latest verification result while preserving owner approval.
+- Worktree setup exceptions are recorded as failed runs, and late results preserve owner-closed issues.
+- Pytest discovers the application tests rather than bundled environments under local scratch directories.
+
 ## 0.2.1 - 2026-09-19
 
 ### Added

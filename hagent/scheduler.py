@@ -27,6 +27,12 @@ def find_matching_issues(session, autopilot: Autopilot) -> list[Issue]:
         stmt = stmt.where(Issue.project_id == autopilot.project_id)
     if autopilot.filter_status:
         stmt = stmt.where(Issue.status == autopilot.filter_status)
+    else:
+        # An unfiltered recurring runner must not reopen delivered work or
+        # bypass the verifier's exhausted-retry handoff to a human.
+        stmt = stmt.where(Issue.status.in_([
+            IssueStatus.BACKLOG, IssueStatus.TODO, IssueStatus.IN_PROGRESS,
+        ]))
     return list(session.scalars(stmt).all())
 
 

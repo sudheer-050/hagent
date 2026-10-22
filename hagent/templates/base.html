@@ -55,6 +55,10 @@
           {% set unread = chat_unread_count() %}
           <span class="section-count nav-badge" id="chat-nav-unread-badge"{% if not unread %} hidden{% endif %}>{{ unread }}</span>
         </a>
+        <a href="/connections" class="{{ 'active' if active == 'connections' }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-2 2M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l2-2"/></svg>
+          Connections
+        </a>
       </nav>
 
       <details class="nav-group" name="sidebar-nav" {{ 'open' if active in ['projects', 'approvals', 'repos'] }}>

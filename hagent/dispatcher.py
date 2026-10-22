@@ -25,7 +25,7 @@ from sqlalchemy import func, select
 from hagent import db as hagent_db
 from hagent.db import get_session
 from hagent.engine import process_queued_run_by_id
-from hagent.models import Agent, AppSetting, Issue, Run, RunStatus
+from hagent.models import Agent, AppSetting, Issue, IssueStatus, Run, RunStatus
 from hagent.orchestration import PRIORITY_RANK, provider_wait_until
 
 log = logging.getLogger(__name__)
@@ -113,14 +113,15 @@ def dispatch_pending() -> int:
     _beat()
     with get_session(scoped=False) as session:
         pending = session.execute(
-            select(Run.id, Run.agent_id, Issue.priority, Run.created_at, Agent.max_concurrent_tasks)
+            select(Run.id, Run.agent_id, Run.issue_id, Issue.priority, Run.created_at, Agent.max_concurrent_tasks)
             .join(Issue, Issue.id == Run.issue_id)
             .join(Agent, Agent.id == Run.agent_id)
-            .where(Run.status == RunStatus.PENDING)
+            .where(Run.status == RunStatus.PENDING, Issue.status.notin_([IssueStatus.DONE, IssueStatus.CANCELLED]))
         ).all()
         if not pending:
             return 0
         running = dict(session.execute(select(Run.agent_id, func.count()).where(Run.status == RunStatus.RUNNING).group_by(Run.agent_id)).all())
+        busy_issues = set(session.scalars(select(Run.issue_id).where(Run.status == RunStatus.RUNNING)))
         # Hold runs whose every usable provider is out of quota until its announced reset, the way
         # Paperclip schedules a retry: starting them now only fails them and spends a strike.
         held = {agent_id for agent_id in {row.agent_id for row in pending} if _provider_hold(session, agent_id)}
@@ -131,15 +132,17 @@ def dispatch_pending() -> int:
     with _lock:
         per_agent = dict(running)  # already includes in-flight runs that have claimed RUNNING
         pending_ids = {row.id for row in pending}
+        busy_issues.update(row.issue_id for row in pending if row.id in _inflight)
         for run_id, agent_id in _inflight.items():
             if run_id in pending_ids:  # started here but not yet claimed in the database
                 per_agent[agent_id] = per_agent.get(agent_id, 0) + 1
         for row in pending:
-            if row.id in _inflight or len(_inflight) >= _max_parallel() or row.agent_id in held:
+            if row.id in _inflight or len(_inflight) >= _max_parallel() or row.agent_id in held or row.issue_id in busy_issues:
                 continue
             if per_agent.get(row.agent_id, 0) >= max(1, row.max_concurrent_tasks or 1):
                 continue
             _inflight[row.id] = row.agent_id
+            busy_issues.add(row.issue_id)
             per_agent[row.agent_id] = per_agent.get(row.agent_id, 0) + 1
             _pool().submit(_execute, row.id)
             started += 1

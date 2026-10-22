@@ -81,6 +81,28 @@ def wait_for(predicate, seconds=3.0):
     return False
 
 
+def test_handoff_waits_for_old_agent_then_dispatches_new_agent(world, gate):
+    from hagent.engine import queue_issue_run
+    issue_id, old_id = queue_run(world, "Coordinator handoff")
+    started, release = gate
+    with hagent_db.SessionLocal() as s:
+        old = s.get(Run, old_id)
+        old.status = RunStatus.RUNNING
+        s.commit()
+        issue = s.get(Issue, issue_id)
+        issue.assignee_agent_id = world["reviewer"]
+        s.commit()
+        followup = queue_issue_run(s, issue, s.get(Agent, world["reviewer"]))
+        new_id = followup.id
+    assert dispatcher.dispatch_pending() == 0
+    assert started == []
+    with hagent_db.SessionLocal() as s:
+        s.get(Run, old_id).status = RunStatus.COMPLETED
+        s.commit()
+    assert dispatcher.dispatch_pending() == 1
+    assert wait_for(lambda: any(run_id == new_id for run_id, _ in started))
+
+
 # --- aging ------------------------------------------------------------------
 
 def test_waiting_raises_priority_one_level_per_aging_period():
