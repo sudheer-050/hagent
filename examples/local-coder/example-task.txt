@@ -1,0 +1,25 @@
+Build a small command-line task manager as a package in the subdirectory taskbook/ of your current repo (create it; leave the other existing folders alone). Python 3.10+, standard library only.
+
+You are the ONLY writer in this repo for this task. Only use steps you create yourself. If you find taskbook files or sub-issues you did not create, do not reuse them: stop and report them.
+
+State is one JSON object: {"next_id": int, "tasks": [task, ...]}. A task is {"id": int, "title": str, "done": bool, "created": str} where created is an ISO date string. Ids come from next_id, which only ever increases, so an id is never reused even after the highest task is removed.
+
+taskbook/storage.py
+- load_state(path: str) -> dict: returns {"next_id": 1, "tasks": []} if the file does not exist; raises ValueError if the file is not valid JSON, is not an object, or lacks a valid "next_id" (int) or "tasks" (list).
+- save_state(path: str, state: dict) -> None: writes JSON (UTF-8, indent=2, ensure_ascii=False) atomically: write to a temp file in the same directory, then os.replace.
+
+taskbook/tasks.py (all functions take the state dict)
+- add_task(state, title, today) -> dict: strips the title; an empty title after stripping raises ValueError; the new task gets id = state["next_id"], then next_id is incremented; the task is appended to state["tasks"] and returned.
+- complete_task(state, task_id) -> dict: marks done; raises ValueError if the id does not exist or the task is already done.
+- remove_task(state, task_id) -> dict: removes and returns the task; raises ValueError if the id does not exist. It must not change next_id.
+- list_tasks(state, show_done=False) -> list[dict]: open tasks only unless show_done is true; sorted by id.
+
+taskbook/cli.py
+- main(argv: list[str], path: str, today: str) -> int using argparse with subcommands: add TITLE... (words joined by a space), list [--all], done ID, rm ID.
+- Output lines look like "  3 [ ] Buy milk" for open tasks and "  3 [x] Buy milk" for done tasks (id right-aligned to width 3). add prints "Added 3: Buy milk". done prints "Completed 3". rm prints "Removed 3". An empty list prints "No tasks.".
+- Returns 0 on success. On any ValueError it prints the message to stderr and returns 1.
+
+taskbook/__main__.py
+- Calls main(sys.argv[1:], path, today) where path is the TASKBOOK_FILE environment variable or ~/.taskbook.json, and today is date.today().isoformat(). Exits with the returned code.
+
+Requirements: tests live in taskbook/tests/ (pytest). Cover every function including all error cases, a title with non-ASCII characters (for example "Cafe ☕ ünïcode"), ids never reused after removing the HIGHEST id (remove the last task, then add: the new id must be larger), corrupt or wrong-shape state files, and an end-to-end CLI test using a temporary file. Plan it in stages as per your skill: write the tests yourself first, delegate storage.py, tasks.py and cli.py to the Local Coder (modules in the same stage, cli.py after them), run all tests with python -m pytest taskbook, add a .gitignore for __pycache__ before committing, and commit only your own files. Report which Local Coder steps were right first time and which needed a corrective step. Before you finish, make sure every sub-issue you created is closed and nothing of yours is still running.
