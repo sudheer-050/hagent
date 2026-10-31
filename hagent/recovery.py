@@ -96,9 +96,12 @@ def recover_interrupted_runs() -> list[str]:
                 session.add(TimelineEvent(issue_id=issue.id, event_type="run_abandoned", detail=f"Interrupted {depth + 1} times in a row; blocked instead of retrying again."))
                 session.commit()
                 continue
+            # A resumed verification must keep its link to the run it reviews (and its working directory),
+            # otherwise its verdict is never applied and the reviewed issue stays "not verified".
             resumed = Run(
                 issue_id=run.issue_id, agent_id=run.agent_id, status=RunStatus.PENDING, resumed_from=run.id,
                 prompt=_strip_note(run.prompt) + RESUME_NOTE, session_id=run.session_id,
+                review_of_run_id=run.review_of_run_id, working_directory=run.working_directory,
             )
             session.add(resumed)
             session.flush()

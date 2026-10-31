@@ -75,6 +75,20 @@ def test_an_orphaned_run_is_failed_and_resumed_as_a_new_pending_run(world):
         assert s.scalar(select(TimelineEvent.detail).where(TimelineEvent.issue_id == issue_id, TimelineEvent.event_type == "run_resumed"))
 
 
+def test_a_resumed_verification_run_keeps_its_review_link_and_working_directory(world):
+    issue_id, old_id = interrupted_run(world)
+    with hagent_db.SessionLocal() as s:
+        run = s.get(Run, old_id)
+        run.review_of_run_id, run.working_directory = "the-reviewed-run", "C:/work/repo"
+        s.commit()
+
+    recover_interrupted_runs()
+
+    _, resumed = runs_of(issue_id)
+    assert resumed.resumed_from == old_id
+    assert (resumed.review_of_run_id, resumed.working_directory) == ("the-reviewed-run", "C:/work/repo")
+
+
 def test_runs_owned_by_a_live_process_are_left_alone(world):
     pid, started = recovery.current_owner()
     issue_id, _ = interrupted_run(world, owner_pid=pid, owner_started=started)
