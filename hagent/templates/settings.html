@@ -27,7 +27,7 @@
         <div><label class="field-label" for="settings-name">App name</label><input id="settings-name" name="app_name" maxlength="40" value="{{ settings.app_name }}" required></div>
         <div><label class="field-label" for="settings-tagline">Sidebar tagline</label><input id="settings-tagline" name="tagline" maxlength="100" value="{{ settings.tagline }}"></div>
         <div><label class="field-label" for="settings-accent">Accent color</label><div class="color-setting"><input id="settings-accent" name="accent_color" type="color" value="{{ settings.accent_color }}"><code>{{ settings.accent_color }}</code></div></div>
-        <div><label class="field-label" for="settings-theme">Theme</label><select id="settings-theme" name="theme">{% for key, label in app_themes.items() %}<option value="{{ key }}" {{ 'selected' if settings.theme == key }}>{{ label }}</option>{% endfor %}</select></div>
+        <div><label class="field-label" for="settings-theme">Theme</label><select id="settings-theme" name="theme" data-saved="{{ settings.theme }}">{% for key, label in app_themes.items() %}<option value="{{ key }}" {{ 'selected' if settings.theme == key }}>{{ label }}</option>{% endfor %}</select><div class="field-help">Previews as you choose. Click Save settings to keep it.</div></div>
         <div><label class="field-label" for="settings-density">Interface density</label><select id="settings-density" name="density"><option value="comfortable" {{ 'selected' if settings.density == 'comfortable' }}>Comfortable</option><option value="compact" {{ 'selected' if settings.density == 'compact' }}>Compact</option></select></div>
       </div>
       <div class="check-grid settings-checks">

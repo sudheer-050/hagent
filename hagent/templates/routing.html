@@ -18,7 +18,7 @@
 </div>
 <div class="panel"><h2>Preview</h2><p>Use <code>GET /api/routing/preview?prompt=...</code> or <code>hagent route preview</code> to inspect a route without persisting or executing it.</p></div>
 <div class="panel"><h2>Recent decisions</h2>
-  <table><thead><tr><th>Task</th><th>Provider/model</th><th>Effort</th><th>Score</th><th>Mode</th><th>Outcome</th><th>Latency</th></tr></thead>
-  <tbody>{% for d in decisions %}<tr><td>{{ d.task_type }}</td><td>{{ d.provider }} / {{ d.model }}</td><td>{{ d.effort }}</td><td>{{ d.complexity_score }}</td><td>{{ d.mode }}</td><td>{{ d.outcome }}</td><td>{{ d.latency_ms or '?' }}</td></tr>{% else %}<tr><td colspan="7">No routing decisions yet.</td></tr>{% endfor %}</tbody></table>
+  <div class="scroll-x"><table><thead><tr><th>Task</th><th>Provider/model</th><th>Effort</th><th>Score</th><th>Mode</th><th>Outcome</th><th>Latency</th></tr></thead>
+  <tbody>{% for d in decisions %}<tr><td>{{ d.task_type }}</td><td>{{ d.provider }} / {{ d.model }}</td><td>{{ d.effort }}</td><td>{{ d.complexity_score }}</td><td>{{ d.mode }}</td><td>{{ d.outcome }}</td><td>{{ d.latency_ms or '?' }}</td></tr>{% else %}<tr><td colspan="7">No routing decisions yet.</td></tr>{% endfor %}</tbody></table></div>
 </div>
 {% endblock %}

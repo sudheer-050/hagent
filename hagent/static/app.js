@@ -239,6 +239,21 @@
   var sidebarScroll = document.querySelector(".sidebar-scroll");
   var modalOverlay = document.getElementById("modal-overlay");
 
+  // Narrow screens: the menu button opens the navigation as a dropdown.
+  var navToggle = document.getElementById("nav-toggle");
+  function setNavOpen(open) {
+    document.body.classList.toggle("nav-open", open);
+    if (navToggle) navToggle.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+  if (navToggle) {
+    navToggle.addEventListener("click", function () {
+      setNavOpen(!document.body.classList.contains("nav-open"));
+    });
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape") setNavOpen(false);
+    });
+  }
+
   function execScripts(container) {
     container.querySelectorAll("script").forEach(function (old) {
       var fresh = document.createElement("script");
@@ -250,15 +265,28 @@
     });
   }
 
+  // The router swaps page fragments without reloading <html>, so keep the theme
+  // in step by hand: a theme previewed on the Settings page is undone when you
+  // leave without saving, and a freshly saved theme applies without a refresh.
+  var themeRoot = document.documentElement;
+  if (!themeRoot.dataset.savedTheme) themeRoot.dataset.savedTheme = themeRoot.dataset.theme || "";
+  function syncTheme() {
+    var field = document.getElementById("settings-theme");
+    if (field && field.dataset.saved) themeRoot.dataset.savedTheme = field.dataset.saved;
+    if (themeRoot.dataset.savedTheme) themeRoot.dataset.theme = themeRoot.dataset.savedTheme;
+  }
+
   function applyFragment(data) {
     if (data.title) document.title = data.title;
     document.body.className = data.body_class || "";
+    if (navToggle) navToggle.setAttribute("aria-expanded", "false");
     if (sidebarScroll) sidebarScroll.innerHTML = data.nav;
     if (mainSlot) {
       mainSlot.innerHTML = data.main;
       execScripts(mainSlot);
       (window.hagentPageInits || []).forEach(function (fn) { fn(); });
     }
+    syncTheme();
     if (modalOverlay) {
       modalOverlay.hidden = true;
       document.body.classList.remove("modal-open");
@@ -595,3 +623,12 @@ function initAgentDraftHelper() {
 }
 (window.hagentPageInits = window.hagentPageInits || []).push(initAgentDraftHelper);
 initAgentDraftHelper();
+
+// Live theme preview: choosing a theme on the Settings page shows it at once.
+// It is only saved when the form is submitted; leaving the page undoes it.
+function previewTheme(event) {
+  if (!event.target || event.target.id !== 'settings-theme') return;
+  document.documentElement.dataset.theme = event.target.value;
+}
+document.addEventListener('input', previewTheme);
+document.addEventListener('change', previewTheme);

@@ -85,6 +85,8 @@
   --space-5: 24px;
   --space-6: 32px;
   --space-7: 48px;
+  /* Horizontal page padding; shrinks with the window (see the responsive section at the end). */
+  --main-pad: clamp(var(--space-3), 3.4vw, var(--space-7));
 
   /* --- radius / shadow --- */
   --radius-sm: 6px;
@@ -151,7 +153,7 @@ body {
 /* ---------------------------------------------------------------------- */
 
 .sidebar {
-  width: 232px;
+  width: clamp(188px, 17vw, 232px);
   flex-shrink: 0;
   background: var(--glass-raised);
   backdrop-filter: var(--glass-blur);
@@ -186,6 +188,8 @@ body {
   gap: var(--space-2);
   padding: 0 var(--space-2);
 }
+
+.sidebar .nav-toggle { display: none; }
 
 .brand-mark {
   width: 28px;
@@ -774,7 +778,7 @@ body {
 
 .stat-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
   gap: var(--space-3);
   margin-bottom: var(--space-5);
 }
@@ -822,7 +826,7 @@ body {
   align-items: start;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1100px) {
   .dash-columns { grid-template-columns: 1fr; }
 }
 
@@ -851,7 +855,7 @@ body {
 
 .main {
   flex: 1;
-  padding: var(--space-6) var(--space-7);
+  padding: var(--space-6) var(--main-pad);
   min-width: 0;
 }
 
@@ -888,10 +892,10 @@ body {
   padding-top: var(--space-4);
   padding-bottom: var(--space-4);
   margin-top: calc(-1 * var(--space-6));
-  margin-left: calc(-1 * var(--space-7));
-  margin-right: calc(-1 * var(--space-7));
-  padding-left: var(--space-7);
-  padding-right: var(--space-7);
+  margin-left: calc(-1 * var(--main-pad));
+  margin-right: calc(-1 * var(--main-pad));
+  padding-left: var(--main-pad);
+  padding-right: var(--main-pad);
 }
 
 .page-header h2 {
@@ -1575,7 +1579,7 @@ pre {
 .compact-empty { margin-top: var(--space-4); padding: var(--space-5); }
 .agent-empty-icon svg { width: 40px; height: 40px; fill: none; stroke: currentColor; stroke-width: 1.5; }
 
-.agent-profile-header { display: flex; align-items: center; gap: var(--space-4); margin-bottom: var(--space-5); position: sticky; top: 0; z-index: 5; background: var(--glass-raised); backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur); border-bottom: 1px solid var(--glass-border); box-shadow: var(--shadow-sm); padding-top: var(--space-4); padding-bottom: var(--space-4); margin-top: calc(-1 * var(--space-4)); margin-left: calc(-1 * var(--space-7)); margin-right: calc(-1 * var(--space-7)); padding-left: var(--space-7); padding-right: var(--space-7); }
+.agent-profile-header { display: flex; align-items: center; gap: var(--space-4); margin-bottom: var(--space-5); position: sticky; top: 0; z-index: 5; background: var(--glass-raised); backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur); border-bottom: 1px solid var(--glass-border); box-shadow: var(--shadow-sm); padding-top: var(--space-4); padding-bottom: var(--space-4); margin-top: calc(-1 * var(--space-4)); margin-left: calc(-1 * var(--main-pad)); margin-right: calc(-1 * var(--main-pad)); padding-left: var(--main-pad); padding-right: var(--main-pad); }
 .agent-profile-header h2 { margin: 0; font-size: 1.55rem; }
 .agent-profile-actions { display: flex; align-items: center; gap: var(--space-3); margin-left: auto; }
 .agent-detail-layout { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: var(--space-4); align-items: start; }
@@ -1852,18 +1856,36 @@ body.modal-open { overflow: hidden; }
     border-right: 0;
     border-bottom: 1px solid var(--border);
   }
-  .sidebar > div:nth-child(3) { min-width: 0; }
-  .sidebar .nav-label, .sidebar-footer { display: none; }
-  .sidebar nav {
-    flex-direction: row;
-    overflow-x: auto;
-    scrollbar-width: thin;
-    padding-bottom: 0.15rem;
+  .sidebar {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    z-index: 50;
+    background: var(--bg-raised);
   }
-  .sidebar nav a { flex: none; white-space: nowrap; }
+  .sidebar .brand { min-width: 0; }
+  .sidebar .brand a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sidebar-actions { display: flex; gap: var(--space-1); }
   .sidebar-actions .icon-btn span:not(.kbd) { display: none; }
   .sidebar-actions .kbd { display: none; }
+  .sidebar .nav-toggle { display: inline-flex; }
+  /* The full navigation becomes a dropdown under the top bar. */
+  .sidebar-scroll {
+    display: none;
+    grid-column: 1 / -1;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    max-height: calc(100dvh - 56px);
+    overflow-y: auto;
+    padding: var(--space-3);
+    background: var(--bg-raised);
+    border-bottom: 1px solid var(--border);
+    box-shadow: var(--shadow-md);
+  }
+  body.nav-open .sidebar-scroll { display: block; }
+  .sidebar nav { flex-direction: column; overflow: visible; }
+  .sidebar nav a { white-space: normal; }
+  .sidebar-footer { display: none; }
   .main { width: 100%; max-width: none; padding: var(--space-4) var(--space-3); }
   .page-header, .agent-profile-header {
     margin-left: calc(-1 * var(--space-3));
@@ -1992,6 +2014,7 @@ a.collection-row:hover { background: var(--glass-panel-hover); }
 .autopilot-controls { display:flex; align-items:center; gap:12px; }
 .autopilot-controls input { width:140px; }
 @media (max-width: 800px) {
+  .agent-row-head { display: none; }
   .agent-row, .runtime-row, .squad-row, .autopilot-row { grid-template-columns: 36px minmax(0, 1fr) auto; }
   .collection-row-meta { grid-column: 2; white-space:normal; }
   .agent-row .collection-row-designation { grid-column: 2; justify-self: start; }
@@ -2257,7 +2280,7 @@ body.chat-page { height:100dvh; min-height:0; overflow:hidden; }
   .chat-page .main { flex:1; height:auto; min-height:0; }
   .chat-workspace { grid-template-columns:minmax(0,1fr); grid-template-rows:auto minmax(0,1fr); }
   .chat-sidebar { border-right:0; border-bottom:1px solid var(--glass-border); }
-  .chat-thread-list { display:flex; gap:.3rem; overflow-x:auto; margin-top:var(--space-2); }
+  .chat-thread-list { display:flex; flex-direction:row; gap:.3rem; overflow-x:auto; overflow-y:hidden; margin-top:var(--space-2); flex:none; }
   .chat-thread-link { flex:none; max-width:180px; }
   .chat-message { max-width:85%; }
   .chat-composer { margin:0 var(--space-3) var(--space-3); }
@@ -2405,3 +2428,57 @@ html[data-theme="light"] .terminal-dropdown {
   --bg-input: #0d2038; --bg-panel: #142742; --bg-panel-hover: #1a3453;
   color: var(--text);
 }
+
+
+/* ==========================================================================
+   Responsive safety net. Everything below adapts to the window width instead
+   of assuming a wide desktop screen.
+   ========================================================================== */
+
+.main img, .main video, .main canvas { max-width: 100%; }
+.main pre { max-width: 100%; overflow-x: auto; }
+.modal { max-width: min(100%, calc(100vw - 1rem)); }
+.table-wrap, .scroll-x { max-width: 100%; overflow-x: auto; }
+
+@media (max-width: 1100px) {
+  .page-header { flex-wrap: wrap; }
+  .form-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); }
+}
+
+@media (max-width: 760px) {
+  .page-header h2 { font-size: 1.25rem; }
+  .stat-tile { padding: var(--space-3); }
+  .board { scroll-snap-type: x proximity; }
+  .board-column { scroll-snap-align: start; }
+  button, .icon-btn, select, input:not([type="checkbox"]):not([type="radio"]) { min-height: 38px; }
+}
+
+@media (max-width: 420px) {
+  .main { padding: var(--space-3) var(--space-2); }
+  .page-header, .agent-profile-header {
+    margin-left: calc(-1 * var(--space-2));
+    margin-right: calc(-1 * var(--space-2));
+    padding-left: var(--space-2);
+    padding-right: var(--space-2);
+  }
+  .stat-grid { grid-template-columns: 1fr 1fr; }
+}
+
+.kbd { white-space: nowrap; }
+@media (max-width: 1100px) { .sidebar-actions .kbd { display: none; } }
+
+@media (max-width: 760px) { :root { --main-pad: var(--space-3); } }
+@media (max-width: 420px) { :root { --main-pad: var(--space-2); } }
+@media (max-width: 1100px) {
+  .sidebar-actions .icon-btn { flex: 1 1 0; min-width: 0; justify-content: center; }
+  .sidebar-actions .icon-btn:last-of-type { flex: 0 0 auto; }
+}
+.page-header > div:first-child { flex: 1 1 220px; min-width: 0; }
+
+/* Long unbroken strings (paths, ids, hashes) wrap instead of widening the page. */
+.main { overflow-wrap: break-word; }
+
+/* Form fields fill their column at every width. */
+.form-grid input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]):not([type="range"]),
+.form-grid select,
+.form-grid textarea { width: 100%; max-width: 100%; }
