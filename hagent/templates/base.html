@@ -1,6 +1,6 @@
 {% set site = app_settings() %}
 <!doctype html>
-<html class="density-{{ site.density }}" style="--accent:{{ site.accent_color }};--accent-strong:color-mix(in srgb, {{ site.accent_color }} 78%, white);--accent-tint:color-mix(in srgb, {{ site.accent_color }} 14%, transparent);--accent-tint-strong:color-mix(in srgb, {{ site.accent_color }} 24%, transparent)">
+<html class="density-{{ site.density }}" data-theme="{{ site.theme }}" style="--accent:{{ site.accent_color }};--accent-strong:color-mix(in srgb, {{ site.accent_color }} 78%, white);--accent-tint:color-mix(in srgb, {{ site.accent_color }} 14%, transparent);--accent-tint-strong:color-mix(in srgb, {{ site.accent_color }} 24%, transparent)">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -8,7 +8,7 @@
   <title>{% block title %}{{ site.app_name }}{% endblock %}</title>
   <link rel="icon" href="{{ site.app_icon_url }}">
   <link rel="apple-touch-icon" href="{{ site.app_icon_url }}">
-  <link rel="stylesheet" href="/static/style.css?v=no-scrollbars-4">
+  <link rel="stylesheet" href="/static/style.css?v=themes-v5">
   {% block head %}{% endblock %}
 </head>
 <body class="{% block body_class %}{% endblock %}">

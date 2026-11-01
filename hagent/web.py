@@ -233,12 +233,24 @@ APP_SETTING_DEFAULTS = {
     "accent_color": "#e8a857",
     "app_icon_url": "/static/holly_icon.png",
     "density": "comfortable",
+    "theme": "evening-blue",
     "show_starfield": "true",
     "default_agent_delegation_limit": "8",
     "default_agent_require_approval": "false",
     "default_agent_terminal_enabled": "false",
     "default_agent_terminal_directory": str(Path.home()),
 }
+
+
+APP_THEMES = {
+    "evening-blue": "Evening Blue",
+    "midnight": "Midnight",
+    "forest": "Forest",
+    "graphite": "Graphite",
+    "plum": "Plum",
+    "light": "Light",
+}
+templates.env.globals["app_themes"] = APP_THEMES
 
 
 def get_app_settings(session=None) -> dict:
@@ -248,6 +260,8 @@ def get_app_settings(session=None) -> dict:
     values = dict(APP_SETTING_DEFAULTS)
     values.update({item.key: item.value for item in session.scalars(select(AppSetting)).all()})
     values["show_starfield"] = values["show_starfield"].lower() == "true"
+    if values.get("theme") not in APP_THEMES:
+        values["theme"] = "evening-blue"
     values["default_agent_require_approval"] = values["default_agent_require_approval"].lower() == "true"
     values["default_agent_terminal_enabled"] = values["default_agent_terminal_enabled"].lower() == "true"
     try:
@@ -523,6 +537,7 @@ async def update_settings(
     tagline: str = Form(""),
     accent_color: str = Form("#e8a857"),
     density: str = Form("comfortable"),
+    theme: str = Form("evening-blue"),
     show_starfield: str | None = Form(None),
     default_agent_delegation_limit: int = Form(8),
     default_agent_require_approval: str | None = Form(None),
@@ -541,6 +556,8 @@ async def update_settings(
         raise HTTPException(400, "Accent color must be a six-digit hex color")
     if density not in {"comfortable", "compact"}:
         raise HTTPException(400, "Unknown interface density")
+    if theme not in APP_THEMES:
+        raise HTTPException(400, "Unknown theme")
     if not 0 <= default_agent_delegation_limit <= 50:
         raise HTTPException(400, "Delegation calls per run must be between 0 and 50")
     terminal_directory = default_agent_terminal_directory.strip()
@@ -552,6 +569,7 @@ async def update_settings(
         "tagline": tagline,
         "accent_color": accent_color,
         "density": density,
+        "theme": theme,
         "show_starfield": str(show_starfield is not None).lower(),
         "default_agent_delegation_limit": str(default_agent_delegation_limit),
         "default_agent_require_approval": str(default_agent_require_approval is not None).lower(),
