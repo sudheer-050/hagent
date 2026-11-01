@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.4 - 2026-11-01
+
+### Added
+
+- Selectable themes in Settings: Evening Blue (default), Midnight, Forest, Graphite, Plum and Light. A theme previews as you choose it and is saved with Save settings; leaving the page without saving undoes the preview.
+- A responsive layout. On narrow windows the sidebar becomes a compact top bar with a menu button that opens the navigation as a dropdown. Page padding and the sidebar width scale with the window, and the dashboard columns, stat cards and chat thread list reflow.
+
+### Fixed
+
+- A saved theme now applies immediately instead of after a manual refresh.
+- Long paths, ids and hashes wrap instead of widening the page, and wide tables scroll inside their own box.
+- Form fields fill their column.
+- Panels that used undefined color variables (Connections cards, autopilot flow badges) now follow the active theme.
+
 ## 0.2.3 - 2026-10-22
 
 ### Added
