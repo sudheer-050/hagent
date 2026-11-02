@@ -16,7 +16,11 @@ model but scrubs the known-bad variables once, at startup.
 import logging
 import os
 import socket
+import subprocess
 from urllib.parse import urlsplit
+
+# Captured background commands must not open a Windows console.
+BACKGROUND_PROCESS_FLAGS = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 log = logging.getLogger(__name__)
 

@@ -16,7 +16,8 @@ class ClaudeRuntime(BaseRuntime):
         if not api_key:
             raise RuntimeError("No Anthropic API key configured (set ANTHROPIC_API_KEY)")
 
-        client = anthropic.Anthropic(api_key=api_key)
+        client = anthropic.Anthropic(api_key=api_key, timeout=self.config.get("timeout", 600),
+                                     max_retries=self.config.get("max_retries", 2))
         messages = [{"role": "user", "content": prompt}]
         transcript = []
         try:
@@ -31,7 +32,7 @@ class ClaudeRuntime(BaseRuntime):
                     kwargs["tools"] = tools
                 effort_parameter = self.config.get("effort_parameter")
                 if effort_parameter and self.config.get("reasoning_effort"):
-                    kwargs[effort_parameter] = self.config["reasoning_effort"]
+                    kwargs[effort_parameter] = {"effort": self.config["reasoning_effort"]} if effort_parameter == "output_config" else self.config["reasoning_effort"]
                 message = client.messages.create(**kwargs)
                 raw = message.model_dump() if hasattr(message, "model_dump") else {}
                 transcript.append(raw)

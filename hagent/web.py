@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 
 from fastapi import BackgroundTasks, FastAPI, Form, Request, HTTPException, UploadFile, File
 from fastapi.staticfiles import StaticFiles
@@ -71,6 +72,7 @@ from hagent.skill_icons import choose_skill_emoji
 from hagent.skill_badges import skill_badge_svg
 from hagent.terminal import resolve_working_directory
 from hagent.memory import MemoryScope, MemoryService
+from hagent.provider_health import usage_limit_notice
 from hagent.router import ModelRouter
 from hagent.models import RoutingDecision
 
@@ -82,17 +84,23 @@ async def lifespan(_app: FastAPI):
     """Own Hagent's background services for exactly one web-process lifetime."""
     scrub_inherited_environment()
     init_db()
+    from hagent.terminal_web import recover_terminal_sessions
+    recover_terminal_sessions()
     start_scheduler()
     resume_pending_runs()
+    from hagent import cli_sessions
+    cli_sessions.start()
     try:
         yield
     finally:
+        cli_sessions.stop()
         stop_scheduler(wait=False)
 
 app = FastAPI(title="Hagent", lifespan=lifespan)
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 templates.env.globals["skill_badge_svg"] = skill_badge_svg
 templates.env.globals["agent_avatar_url"] = agent_avatar_url
+templates.env.globals["usage_limit_notice"] = usage_limit_notice
 
 _NAV_SNIPPET = re.compile(r"<!--NAV_START-->(.*?)<!--NAV_END-->", re.DOTALL)
 _MAIN_SNIPPET = re.compile(r"<!--MAIN_START-->(.*?)<!--MAIN_END-->", re.DOTALL)
@@ -199,6 +207,85 @@ def runtime_models(provider: str):
     return catalog_for(provider, installed)
 
 
+def _discovery_context(request, provider, connection, api_key, base_url, runtime_id=""):
+    from hagent.runtime_discovery import API_PROVIDERS, provider_family
+    from hagent.terminal_web import _owner
+    owner = _owner(request)
+    family = provider_family(provider)
+    if family not in API_PROVIDERS or connection not in ("api", "cli", "local"):
+        raise HTTPException(400, "Choose a provider and connection.")
+    base = (base_url if family in ("ollama", "openai_compatible") else API_PROVIDERS[family][0]).rstrip("/")
+    if not base: base = API_PROVIDERS[family][0]
+    key = api_key.strip() if connection == "api" else ""
+    with get_session() as session:
+        scope = (get_active_workspace(session).id, owner)
+        if runtime_id:
+            runtime = require(session, Runtime, runtime_id)
+            saved = json.loads(runtime.config_json or "{}")
+            same = provider_family(saved.get("provider_id", runtime.type.value)) == family
+            saved_base = (saved.get("base_url") or API_PROVIDERS[family][0]).rstrip("/")
+            if connection == "api" and not key and same and saved_base == base:
+                key = saved.get("api_key", "")
+    return scope, family, key, base
+
+
+@app.get("/api/runtime-connections")
+def runtime_connection_options(provider: str = ""):
+    from hagent.runtime_discovery import connection_options, installed_clis
+    if provider:
+        return connection_options(provider)
+    from hagent.runtime_discovery import CLI_PROVIDERS
+    from hagent.runtime_connections import existing_connection
+    installed = installed_clis()
+    with get_session() as session:
+        workspace = get_active_workspace(session)
+        for cli in installed:
+            row = existing_connection(session, workspace.id, CLI_PROVIDERS[cli['provider']][0], {})
+            cli['connected'] = row is not None
+    return {"installed":installed}
+
+
+@app.post("/api/runtime-models")
+def discover_runtime_models(request: Request, payload: dict):
+    from hagent.runtime_discovery import api_models, cli_models, credential_fingerprint, remember_catalog
+    scope, provider, key, base = _discovery_context(request, str(payload.get("provider", "")),
+        str(payload.get("connection", "api")), str(payload.get("api_key", "")),
+        str(payload.get("base_url", "")), str(payload.get("runtime_id", "")))
+    connection = str(payload.get("connection", "api"))
+    try:
+        rows = cli_models(provider) if connection == "cli" else api_models(provider, key, base)
+        if not rows: raise ValueError("This connection returned no models.")
+        token = remember_catalog(scope, credential_fingerprint(provider, connection, key, base), provider, connection, rows)
+        return JSONResponse({"models":rows, "catalog_token":token}, headers={"Cache-Control":"no-store"})
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        detail = "API key rejected." if status in (401,403) else "Provider rate limit reached. Try again later." if status == 429 else f"Could not load models (provider returned {status})."
+        raise HTTPException(400, detail) from None
+    except httpx.HTTPError:
+        raise HTTPException(400, "Could not reach this provider. Check the connection and server URL.") from None
+    except (ValueError, OSError, subprocess.SubprocessError) as exc:
+        # Never include provider response bodies or credentials in errors.
+        detail = str(exc) if isinstance(exc, ValueError) else "CLI discovery failed. Check its installation and sign-in."
+        if key: detail = detail.replace(key, "[redacted]")
+        raise HTTPException(400, detail) from None
+
+
+def _discovered_runtime_settings(request, provider, connection, key, base, runtime_id, token, model, effort):
+    from hagent.runtime_discovery import credential_fingerprint, selected_settings
+    scope, family, resolved_key, resolved_base = _discovery_context(request, provider, connection, key, base, runtime_id)
+    if connection == "cli" and model == "default":
+        from hagent.runtime_discovery import CLI_PROVIDERS, cli_command
+        from hagent.cli_defaults import default_settings
+        if family not in CLI_PROVIDERS or not cli_command(family):
+            raise HTTPException(400, "Choose an installed CLI.")
+        return CLI_PROVIDERS[family][0], default_settings()
+    try:
+        actual, settings = selected_settings(token, scope, credential_fingerprint(family, connection, resolved_key, resolved_base), model, effort)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return actual, settings
+
+
 def quickcreate_data(session=None):
     """Lightweight lists (projects, agents) that the quick-create modals in base.html
     need regardless of which page they're rendered on. Kept intentionally small --
@@ -207,7 +294,7 @@ def quickcreate_data(session=None):
         with get_session() as active_session:
             return quickcreate_data(active_session)
     projects = session.scalars(select(Project)).all()
-    agents = session.scalars(select(Agent)).all()
+    agents = session.scalars(select(Agent).where(Agent.archived.is_(False))).all()
     runtimes = session.scalars(select(Runtime)).all()
     skills = session.scalars(select(Skill).order_by(Skill.name)).all()
     return {
@@ -334,6 +421,8 @@ app.add_middleware(AuthMiddleware)
 app.include_router(auth_router)
 app.include_router(remote_api_router)
 app.include_router(worker_api_router)
+from hagent.terminal_web import router as terminal_router
+app.include_router(terminal_router)
 from hagent.connections_web import install as install_connections
 install_connections(app, templates, require)
 
@@ -591,13 +680,28 @@ async def update_settings(
         data = await app_icon.read(2 * 1024 * 1024 + 1)
         if len(data) > 2 * 1024 * 1024:
             raise HTTPException(413, "App icon exceeds 2 MiB")
-        target = Path(__file__).parent / "static" / f"user_app_icon{extension}"
+        # Installed MSIX files are read-only. Keep customization with user data.
+        from hagent.db import DB_PATH
+        folder = Path(DB_PATH).resolve().parent / "branding"
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / f"user_app_icon{extension}"
         target.write_bytes(data)
-        values["app_icon_url"] = f"/static/{target.name}?v={int(datetime.now(timezone.utc).timestamp())}"
+        values["app_icon_url"] = f"/branding/{target.name}?v={int(datetime.now(timezone.utc).timestamp())}"
 
     _save_app_settings(values)
     app.title = app_name
     return RedirectResponse("/settings?saved=1", status_code=303)
+
+
+@app.get("/branding/{filename}")
+def branding_icon(filename: str):
+    from hagent.db import DB_PATH
+    if filename not in {"user_app_icon" + ext for ext in (".png", ".jpg", ".webp", ".ico")}:
+        raise HTTPException(404, "Icon not found")
+    path = Path(DB_PATH).resolve().parent / "branding" / filename
+    if not path.is_file():
+        raise HTTPException(404, "Icon not found")
+    return FileResponse(path)
 
 
 HISTORY_CHAR_BUDGET = 16000
@@ -904,7 +1008,7 @@ def _still_shown_on_board(issue: Issue, now: datetime) -> bool:
 def project_board(request: Request, project_id: str):
     with get_session() as s:
         project = require(s, Project, project_id)
-        agents = s.scalars(select(Agent)).all()
+        agents = s.scalars(select(Agent).where(Agent.archived.is_(False))).all()
         now = datetime.now(timezone.utc)
         issues_by_status = {status: [] for status in ISSUE_STATUS_ORDER}
         for i in sorted(project.issues, key=lambda i: (i.position, i.created_at)):
@@ -952,7 +1056,7 @@ def create_issue(project_id: str = Form(...), title: str = Form(...), descriptio
 def issue_detail(request: Request, issue_id: str):
     with get_session() as s:
         issue = require(s, Issue, issue_id)
-        agents = s.scalars(select(Agent)).all()
+        agents = s.scalars(select(Agent).where(Agent.archived.is_(False))).all()
         all_labels = s.scalars(select(Label)).all()
         return templates.TemplateResponse(
             request,
@@ -1029,11 +1133,15 @@ def issue_diff_page(request: Request, issue_id: str):
 
 @app.post("/issues/{issue_id}/status")
 def issue_set_status(issue_id: str, status: str = Form(...)):
-    from hagent.orchestration import apply_status_change
+    from hagent.orchestration import apply_status_change, completion_blocker
     with get_session() as s:
         i = require(s, Issue, issue_id)
         previous = i.status
         new_status = IssueStatus(status)
+        if new_status == IssueStatus.DONE:
+            blocker = completion_blocker(s, i)
+            if blocker:
+                raise HTTPException(409, blocker)
         # In Review is a decision point, not a free move: the automatic verifier already tries to
         # approve or bounce it, and when that doesn't resolve it, a human decides via the dedicated
         # approve/send-back buttons below - not by picking an arbitrary status off this dropdown.
@@ -1049,12 +1157,15 @@ def issue_set_status(issue_id: str, status: str = Form(...)):
 
 @app.post("/issues/{issue_id}/review/approve")
 def issue_review_approve(issue_id: str):
-    from hagent.orchestration import after_issue_finished
+    from hagent.orchestration import after_issue_finished, completion_blocker
 
     with get_session() as s:
         i = require(s, Issue, issue_id)
         if i.status != IssueStatus.IN_REVIEW:
             raise HTTPException(400, "Only an issue in review can be approved")
+        blocker = completion_blocker(s, i)
+        if blocker:
+            raise HTTPException(409, blocker)
         i.status = IssueStatus.DONE
         s.add(TimelineEvent(issue_id=i.id, event_type="status_changed", detail="done (approved on review)"))
         s.commit()
@@ -1329,7 +1440,8 @@ def _run_chat_turn(
             reply_image = result.images[0] if result.images else None
             return reply, result.session_id, result.runtime_id, reply_image
         except Exception as exc:
-            return f"Something went wrong reaching {agent.name}: {exc}", None, None, None
+            message = usage_limit_notice(exc) or f"Something went wrong reaching {agent.name}: {exc}"
+            return message, None, None, None
 
 
 def _complete_chat_turn(
@@ -1720,7 +1832,23 @@ def _runtime_connection_status(runtime):
         status.update(label="Usage limit reached - backups promoted", ready=False)
     elif runtime.health_status == "error":
         status.update(label="Provider check failed", ready=False)
+    from hagent.cli_sessions import ready
+    if ready(runtime.id):
+        status.update(label="CLI ready", ready=True)
     return status
+
+
+@app.get("/api/runtime-status")
+def saved_runtime_status():
+    """Read saved evidence only; refreshing this snapshot never launches a CLI."""
+    from hagent.cli_sessions import ready
+    with get_session() as s:
+        rows = s.scalars(select(Runtime).where(Runtime.archived.is_(False))).all()
+        return {"runtimes": [{
+            "id": r.id, "ok": r.health_status == "healthy",
+            "status": r.health_status, "cli_ready": ready(r.id),
+            "checked_at": _as_utc(r.last_health_check_at).isoformat() if r.last_health_check_at else None,
+        } for r in rows]}
 
 
 @app.get("/runtimes")
@@ -1759,27 +1887,40 @@ def runtime_detail(request: Request, runtime_id: str):
 
 @app.post("/runtimes/{runtime_id}")
 def update_runtime(
+    request: Request,
     runtime_id: str,
-    name: str = Form(...),
+    name: str = Form(""),
     type: str = Form(...),
-    model: str = Form(...),
+    model: str = Form(""),
     api_key: str = Form(""),
     base_url: str = Form(""),
     custom_model: str = Form(""),
     command: str = Form(""),
     working_directory: str = Form(""),
+    connection: str = Form(""),
+    catalog_token: str = Form(""),
+    effort: str = Form(""),
 ):
+    if connection == "cli":
+        model, custom_model, effort = "default", "", ""
+    discovered = {}
+    if connection:
+        type, discovered = _discovered_runtime_settings(request, type, connection, api_key, base_url,
+            runtime_id, catalog_token, model, effort)
     if type not in PROVIDERS:
         raise HTTPException(400, "Unknown runtime provider")
     selected_model = custom_model.strip() or ("" if model == "__custom__" else model.strip())
-    if not name.strip() or not selected_model:
+    if not selected_model:
         raise ValueError("Runtime name and model are required")
     profile = provider_config(type)
     with get_session() as s:
+        from hagent.runtime_connections import lock_connections, existing_connection
+        lock_connections(s)
         runtime = require(s, Runtime, runtime_id)
         old_config = json.loads(runtime.config_json or "{}")
         same_provider = old_config.get("provider_id", runtime.type.value) == type
-        config = {"provider_id": type}
+        config = dict(old_config) if same_provider else {}
+        config["provider_id"] = type
         if api_key.strip():
             config["api_key"] = api_key.strip()
         elif same_provider and old_config.get("api_key"):
@@ -1796,7 +1937,10 @@ def update_runtime(
             config["working_directory"] = working_directory.strip()
         if profile.get("allow_no_key"):
             config["allow_no_key"] = True
-        runtime.name = name.strip()
+        config.update(discovered)
+        if existing_connection(s, runtime.workspace_id, profile['runtime_type'], config, exclude_id=runtime.id):
+            raise HTTPException(409, "This connection already exists. Use the existing runtime.")
+        runtime.name = name.strip() or f"{profile['name']} - {selected_model}"
         runtime.type = profile["runtime_type"]
         runtime.model = selected_model
         runtime.config_json = json.dumps(config)
@@ -1808,24 +1952,71 @@ def update_runtime(
 def archive_runtime(runtime_id: str):
     with get_session() as s:
         runtime = require(s, Runtime, runtime_id)
-        backup_agent = s.scalar(select(Agent).where(Agent.backup_runtime_id == runtime.id))
-        if runtime.agents or backup_agent:
-            raise ValueError("Reassign this runtime's primary and backup agents before archiving it")
-        runtime.archived = True
+        from hagent.removal import remove
+        remove(s, runtime)
         s.commit()
     return RedirectResponse(url="/runtimes", status_code=303)
 
+
+@app.post("/runtimes/{runtime_id}/remove")
+def remove_runtime(runtime_id: str):
+    archive_runtime(runtime_id)
+    return {"ok": True}
+
+
+@app.post("/runtimes/{runtime_id}/test")
+def test_runtime_connection(runtime_id: str):
+    import time
+    from hagent.provider_health import _probe, connection_error, is_capacity_error, manual_probe_lock_for
+    probe_lock = manual_probe_lock_for(runtime_id)
+    if not probe_lock.acquire(blocking=False):
+        raise HTTPException(409, "A connection test is already running. Please wait for it to finish.")
+    try:
+        with get_session() as s:
+            runtime = require(s, Runtime, runtime_id)
+            if runtime.archived:
+                raise HTTPException(409, "This runtime has been removed.")
+            started = time.monotonic()
+            try:
+                _probe(runtime)
+            except Exception as exc:
+                runtime.health_status = "limited" if is_capacity_error(exc) else "error"
+                runtime.health_detail = connection_error(runtime, exc)
+                message = usage_limit_notice(exc) or runtime.health_detail
+                ok = False
+            else:
+                runtime.health_status = "healthy"
+                runtime.health_detail = ""
+                message = "Connected. The selected model returned a response."
+                ok = True
+            runtime.last_health_check_at = datetime.now(timezone.utc)
+            s.commit()
+            return {"ok": ok, "message": message, "elapsed_seconds": round(time.monotonic() - started, 1),
+                    "checked_at": runtime.last_health_check_at.isoformat()}
+    finally:
+        probe_lock.release()
+
 @app.post("/runtimes")
 def create_runtime(
-    name: str = Form(...),
+    request: Request,
+    name: str = Form(""),
     type: str = Form(...),
-    model: str = Form(...),
+    model: str = Form(""),
     api_key: str = Form(""),
     base_url: str = Form(""),
     custom_model: str = Form(""),
     command: str = Form(""),
     working_directory: str = Form(""),
+    connection: str = Form(""),
+    catalog_token: str = Form(""),
+    effort: str = Form(""),
 ):
+    if connection == "cli":
+        model, custom_model, effort = "default", "", ""
+    discovered = {}
+    if connection:
+        type, discovered = _discovered_runtime_settings(request, type, connection, api_key, base_url,
+            "", catalog_token, model, effort)
     if type not in PROVIDERS:
         raise HTTPException(400, "Unknown runtime provider")
     profile = provider_config(type)
@@ -1847,19 +2038,15 @@ def create_runtime(
     selected_model = custom_model.strip() or ("" if model == "__custom__" else model.strip())
     if not selected_model:
         raise ValueError("Choose or enter a model")
+    config.update(discovered)
     with get_session() as s:
         ws = get_or_create_default_workspace(s)
-        s.add(
-            Runtime(
-                workspace_id=ws.id,
-                name=name.strip(),
-                type=profile["runtime_type"],
-                model=selected_model,
-                config_json=json.dumps(config),
-            )
-        )
+        from hagent.runtime_connections import create_or_reuse
+        runtime, created = create_or_reuse(s, ws.id,
+            name.strip() or f"{profile['name']} - {selected_model}",
+            profile["runtime_type"], selected_model, config)
         s.commit()
-    return RedirectResponse(url="/runtimes", status_code=303)
+    return RedirectResponse(url="/runtimes" if created else "/runtimes?already_connected=1", status_code=303)
 
 
 
@@ -1960,8 +2147,8 @@ def create_agent(
 @app.get("/squads")
 def squads_page(request: Request):
     with get_session() as s:
-        squads = s.scalars(select(Squad)).all()
-        agents = s.scalars(select(Agent)).all()
+        squads = s.scalars(select(Squad).where(Squad.archived.is_(False))).all()
+        agents = s.scalars(select(Agent).where(Agent.archived.is_(False))).all()
         return templates.TemplateResponse(request, "squads.html", {"squads": squads, "agents": agents, "active": "squads"})
 
 
@@ -2062,7 +2249,7 @@ def autopilots_page(request: Request):
         request.state.recent_autopilot_runs = [
             (run, names.get(run.autopilot_id, 'Unknown autopilot')) for run in autopilot_runs
         ]
-        agents = s.scalars(select(Agent)).all()
+        agents = s.scalars(select(Agent).where(Agent.archived.is_(False))).all()
         projects = s.scalars(select(Project)).all()
         return templates.TemplateResponse(
             request,
@@ -2133,3 +2320,110 @@ def create_repo(name: str = Form(...), url: str = Form(...)):
         s.add(Repo(workspace_id=ws.id, name=name, url=url))
         s.commit()
     return RedirectResponse(url="/repos", status_code=303)
+
+
+# Shared removal controls for all user-created workspace objects.
+@app.get("/manage/remove")
+def removal_page(request: Request, kind: str = "projects", q: str = "", offset: int = 0):
+    if kind == 'agents':
+        return RedirectResponse('/agents', 303)
+    from hagent import removal
+    model = removal.model(kind)
+    with get_session() as session:
+        query = select(model)
+        if kind == 'terminal-sessions':
+            from hagent.terminal_web import _owner
+            query = query.where(model.owner_id == _owner(request))
+        if model in removal.ARCHIVE:
+            query = query.where(model.archived.is_(False))
+        if q.strip():
+            from sqlalchemy import or_, cast, String
+            fields = [getattr(model, key) for key in ('id', 'name', 'title', 'filename', 'key', 'content') if hasattr(model, key)]
+            query = query.where(or_(*(cast(field, String).contains(q.strip(), autoescape=True) for field in fields)))
+        items = session.scalars(query.order_by(model.id).offset(max(0, offset)).limit(101)).all()
+        rows = []
+        for item in items[:100]:
+            context = ''
+            for attr, parent in (('issue_id', Issue), ('project_id', Project), ('agent_id', Agent), ('skill_id', Skill), ('squad_id', Squad), ('autopilot_id', Autopilot)):
+                ref = getattr(item, attr, None)
+                owner = session.get(parent, ref) if ref else None
+                if owner:
+                    context = removal.title(owner)
+                    break
+            rows.append({'id': item.id, 'title': removal.title(item), 'context': context})
+        return templates.TemplateResponse(request, 'removal.html', {
+            'active': 'removal', 'kind': kind, 'kinds': [kind for kind in removal.KINDS if kind != 'agents'], 'q': q,
+            'rows': rows, 'archive': model in removal.ARCHIVE, 'more': len(items) > 100,
+            'offset': max(0, offset), 'notice': request.query_params.get('notice', '')})
+
+
+def _removal_confirmation(request, kind, ident, error='', status_code=200):
+    from hagent import removal
+    with get_session() as session:
+        item = removal.get_item(session, kind, ident)
+        _check_removal_owner(request, kind, item)
+        return templates.TemplateResponse(request, 'removal.html', {
+            'active': 'removal', 'kind': kind, 'item': item, 'item_title': removal.title(item),
+            'removal_summary': removal.summary(session, item),
+            'archive': isinstance(item, removal.ARCHIVE), 'error': error}, status_code=status_code)
+
+
+@app.get('/manage/remove/{kind}/{ident}')
+def removal_confirmation(request: Request, kind: str, ident: str):
+    if kind == 'agents':
+        return RedirectResponse(f'/agents/{ident}', 303)
+    return _removal_confirmation(request, kind, ident)
+
+
+@app.post('/manage/remove/{kind}/{ident}')
+def remove_item(request: Request, kind: str, ident: str, confirmation: str = Form(...)):
+    from hagent import removal
+    if confirmation != ident:
+        raise HTTPException(400, 'Review and confirm the selected item first.')
+    try:
+        with get_session() as session:
+            item = removal.get_item(session, kind, ident)
+            _check_removal_owner(request, kind, item)
+            removal.remove(session, item)
+            session.commit()
+    except HTTPException as exc:
+        if exc.status_code != 409:
+            raise
+        return _removal_confirmation(request, kind, ident, exc.detail, 409)
+    if kind in {'autopilots', 'triggers'}:
+        sync_scheduler_jobs(start_scheduler())
+    return RedirectResponse('/manage/remove?kind=' + kind + '&notice=Item+removed', 303)
+
+
+def _check_removal_owner(request, kind, item):
+    if kind in {'terminal-sessions', 'workspaces'}:
+        from hagent.terminal_web import _owner
+        owner = _owner(request)
+        if kind == 'terminal-sessions' and item.owner_id != owner:
+            raise HTTPException(404, 'Terminal session not found')
+
+
+@app.post('/issues/{issue_id}/labels/{label_id}/remove')
+def issue_remove_label(issue_id: str, label_id: str):
+    with get_session() as session:
+        issue = require(session, Issue, issue_id)
+        label = require(session, Label, label_id)
+        if label in issue.labels:
+            issue.labels.remove(label)
+        session.commit()
+    return RedirectResponse(f'/issues/{issue_id}', 303)
+
+
+@app.post('/agents/{agent_id}/archive')
+def archive_agent_from_profile(agent_id: str):
+    from hagent.removal import remove
+    try:
+        with get_session() as session:
+            agent = require(session, Agent, agent_id)
+            remove(session, agent)
+            session.commit()
+    except HTTPException as exc:
+        if exc.status_code != 409:
+            raise
+        return RedirectResponse(f'/agents/{agent_id}?removal_error={quote(exc.detail)}', 303)
+    return RedirectResponse('/agents', 303)

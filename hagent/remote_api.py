@@ -8,6 +8,7 @@ agent threads in the web process.
 
 import threading
 import subprocess
+from hagent.runtime_env import BACKGROUND_PROCESS_FLAGS
 import sys
 
 from fastapi import APIRouter, HTTPException, Request
@@ -59,6 +60,7 @@ def run_command(payload: CliRequest, request: Request):
                 errors="replace",
                 timeout=180,
                 check=False,
+                creationflags=BACKGROUND_PROCESS_FLAGS,
             )
         except subprocess.TimeoutExpired as exc:
             return {

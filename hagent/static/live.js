@@ -58,6 +58,7 @@
 
   function busy() {
     if (document.hidden || paused) return true;
+    if (document.querySelector('[data-runtime-actions][data-busy], [data-runtime-actions][data-refreshing]')) return true;
     if (typingNow() || hasEdits()) return true;
     var sel = window.getSelection && window.getSelection();
     if (sel && !sel.isCollapsed && String(sel).length > 0) return true;

@@ -9,5 +9,5 @@ if errorlevel 1 (
   exit /b 1
 )
 echo.
-echo Hagent is ready. Open http://127.0.0.1:8003/connections
+echo Hagent is ready. Use the URL printed above.
 pause

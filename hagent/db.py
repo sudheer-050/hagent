@@ -156,6 +156,7 @@ def _ensure_schema() -> None:
         },
     }
     additions['runs'].update({'input_tokens': 'INTEGER', 'output_tokens': 'INTEGER', 'owner_pid': 'INTEGER', 'owner_started': 'FLOAT', 'resumed_from': 'VARCHAR'})
+    additions['runs'].update({'review_of_run_id': 'VARCHAR', 'review_applied_at': 'DATETIME', 'working_directory': 'VARCHAR'})
     inspector = inspect(engine)
     with engine.begin() as connection:
         for table, columns in additions.items():

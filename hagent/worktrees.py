@@ -10,6 +10,7 @@ non-git-backed agent behavior is unaffected.
 from __future__ import annotations
 
 import subprocess
+from hagent.runtime_env import BACKGROUND_PROCESS_FLAGS
 from pathlib import Path
 
 
@@ -23,6 +24,7 @@ def _run_git(args: list[str], cwd: str) -> subprocess.CompletedProcess:
         errors="replace",
         timeout=60,
         check=False,
+        creationflags=BACKGROUND_PROCESS_FLAGS,
     )
 
 

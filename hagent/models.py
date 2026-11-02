@@ -502,9 +502,25 @@ class Run(Base):
     owner_pid: Mapped[int | None] = mapped_column(Integer, nullable=True)  # process running it, for crash recovery
     owner_started: Mapped[float | None] = mapped_column(Float, nullable=True)  # that process's start time (pid-reuse guard)
     resumed_from: Mapped[str | None] = mapped_column(String, nullable=True)  # the interrupted run this one continues
+    review_of_run_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    review_applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    working_directory: Mapped[str | None] = mapped_column(String, nullable=True)
 
     issue: Mapped["Issue"] = relationship(back_populates="runs")
     agent: Mapped["Agent"] = relationship(back_populates="runs")
+
+
+class TerminalSession(Base):
+    __tablename__ = "terminal_sessions"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
+    owner_id: Mapped[str] = mapped_column(String, nullable=False)
+    cwd: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String, default="running")
+    transcript: Mapped[str] = mapped_column(Text, default="")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Squad(Base):

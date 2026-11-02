@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+from hagent.runtime_env import BACKGROUND_PROCESS_FLAGS
+from hagent.managed_process import run as run_managed_process
 
 from hagent.adapters.base import BaseRuntime, RuntimeResult
 
@@ -82,7 +84,7 @@ class OpencodeCliRuntime(BaseRuntime):
         if not self.config.get("terminal_enabled"):
             env["OPENCODE_CONFIG_CONTENT"] = json.dumps(_READ_ONLY_PERMISSIONS)
         try:
-            completed = subprocess.run(
+            completed = run_managed_process(
                 args,
                 cwd=self.config.get("working_directory") or None,
                 env=env,
@@ -93,6 +95,8 @@ class OpencodeCliRuntime(BaseRuntime):
                 errors="replace",
                 timeout=self.config.get("timeout", 600),
                 check=False,
+                creationflags=BACKGROUND_PROCESS_FLAGS,
+                monitor=self.config.get("_terminal_monitor"),
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise RuntimeError(f"opencode failed to start: {exc}") from exc

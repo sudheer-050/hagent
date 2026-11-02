@@ -3,6 +3,8 @@
 import json
 import shutil
 import subprocess
+from hagent.runtime_env import BACKGROUND_PROCESS_FLAGS
+from hagent.managed_process import run as run_managed_process
 
 from hagent.adapters.base import BaseRuntime, RuntimeResult
 
@@ -18,19 +20,19 @@ class GeminiCliRuntime(BaseRuntime):
             )
 
         full_prompt = f"{context}\n\n{prompt}" if context else prompt
-        args = [
-            executable,
-            "--model",
-            self.model,
+        args = [executable]
+        if self.model and self.model != "default":
+            args.extend(["--model", self.model])
+        args.extend([
             "--output-format",
             "json",
             "--prompt",
             full_prompt,
-        ]
+        ])
         if self.config.get("terminal_enabled"):
             args.append("--yolo")
         try:
-            completed = subprocess.run(
+            completed = run_managed_process(
                 args,
                 cwd=self.config.get("working_directory") or None,
                 capture_output=True,
@@ -39,6 +41,8 @@ class GeminiCliRuntime(BaseRuntime):
                 errors="replace",
                 timeout=self.config.get("timeout", 300),
                 check=False,
+                creationflags=BACKGROUND_PROCESS_FLAGS,
+                monitor=self.config.get("_terminal_monitor"),
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise RuntimeError(f"Gemini CLI failed to start: {exc}") from exc

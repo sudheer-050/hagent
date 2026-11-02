@@ -8,6 +8,7 @@ import time
 import secrets
 import shutil
 import subprocess
+from hagent.runtime_env import BACKGROUND_PROCESS_FLAGS
 import tempfile
 from pathlib import Path
 from datetime import datetime, timezone
@@ -91,10 +92,10 @@ def runtime_list():
 def runtime_create(name, runtime_type, model, config):
     with get_session() as s:
         ws = get_or_create_default_workspace(s)
-        r = Runtime(workspace_id=ws.id, name=name, type=RuntimeType(runtime_type), model=model, config_json=config)
-        s.add(r)
+        from hagent.runtime_connections import create_or_reuse
+        r, created = create_or_reuse(s, ws.id, name, runtime_type, model, json.loads(config))
         s.commit()
-        click.echo(f"Created runtime {r.id}")
+        click.echo(f"{'Created runtime' if created else 'Already connected'} {r.id}")
 
 
 # --- agent ---
@@ -429,7 +430,7 @@ def issue_status(issue_id, status, no_start):
         if not i:
             raise click.ClickException(f"Issue {issue_id} not found")
         previous = i.status
-        i.status = IssueStatus(status)
+        _apply_issue_status(s, i, status)
         s.add(TimelineEvent(issue_id=i.id, event_type="status_changed", detail=status))
         s.commit()
         click.echo(f"Issue {i.id} -> {status}")
@@ -848,7 +849,7 @@ def repo_add(name, url, local_path):
             raise click.ClickException(f"{target} is not a git repository (no .git found)")
         resolved_local_path = str(target)
         if not url:
-            origin = subprocess.run(["git", "-C", resolved_local_path, "remote", "get-url", "origin"], capture_output=True, text=True)
+            origin = subprocess.run(["git", "-C", resolved_local_path, "remote", "get-url", "origin"], capture_output=True, text=True, creationflags=BACKGROUND_PROCESS_FLAGS)
             url = origin.stdout.strip() if origin.returncode == 0 and origin.stdout.strip() else resolved_local_path
     with get_session() as s:
         ws = get_or_create_default_workspace(s)
@@ -1182,6 +1183,7 @@ def issue_diff(issue_id):
         result = subprocess.run(
             ["git", "diff", f"{base}...{branch}"],
             cwd=worktree_path, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            creationflags=BACKGROUND_PROCESS_FLAGS,
         )
         if result.returncode != 0:
             raise click.ClickException(result.stderr.strip() or "git diff failed")
@@ -1210,14 +1212,14 @@ def issue_pr(issue_id, title):
         if not Path(worktree_path).is_dir():
             raise click.ClickException("No worktree exists yet for this issue")
 
-        remote = subprocess.run(["git", "-C", worktree_path, "remote", "get-url", "origin"], capture_output=True, text=True)
+        remote = subprocess.run(["git", "-C", worktree_path, "remote", "get-url", "origin"], capture_output=True, text=True, creationflags=BACKGROUND_PROCESS_FLAGS)
         if remote.returncode != 0 or not remote.stdout.strip():
             raise click.ClickException("This repo has no 'origin' remote configured - nothing to push to. Use 'issue diff' to review locally instead.")
         origin_url = remote.stdout.strip()
         if "github.com" not in origin_url:
             raise click.ClickException(f"Origin ({origin_url}) isn't a GitHub remote - 'gh pr create' won't work here. Use 'issue diff' instead.")
 
-        push = subprocess.run(["git", "-C", worktree_path, "push", "-u", "origin", branch], capture_output=True, text=True)
+        push = subprocess.run(["git", "-C", worktree_path, "push", "-u", "origin", branch], capture_output=True, text=True, creationflags=BACKGROUND_PROCESS_FLAGS)
         if push.returncode != 0:
             raise click.ClickException(f"Push failed: {push.stderr.strip()}")
 
@@ -1231,6 +1233,7 @@ def issue_pr(issue_id, title):
             [gh, "pr", "create", "--repo", origin_url, "--head", branch, "--base", base or "main",
              "--title", pr_title, "--body", f"Automated PR for Hagent issue {issue_id}.\n\n{item.description or ''}"],
             capture_output=True, text=True,
+            creationflags=BACKGROUND_PROCESS_FLAGS,
         )
         if pr.returncode != 0:
             raise click.ClickException(f"Branch pushed, but 'gh pr create' failed: {pr.stderr.strip()}")
@@ -1467,14 +1470,14 @@ def repo_checkout(repo_id, path):
         if not r: raise click.ClickException("Repo not found")
         target = Path(path).resolve()
         if target.exists() and any(target.iterdir()):
-            origin = subprocess.run(["git", "-C", str(target), "remote", "get-url", "origin"], capture_output=True, text=True)
+            origin = subprocess.run(["git", "-C", str(target), "remote", "get-url", "origin"], capture_output=True, text=True, creationflags=BACKGROUND_PROCESS_FLAGS)
             if origin.returncode or origin.stdout.strip() != r.url:
                 raise click.ClickException("Target is not a checkout of this repository")
             command = ["git", "-C", str(target), "pull", "--ff-only"]
         else:
             target.parent.mkdir(parents=True, exist_ok=True)
             command = ["git", "clone", "--", r.url, str(target)]
-        completed = subprocess.run(command, capture_output=True, text=True)
+        completed = subprocess.run(command, capture_output=True, text=True, creationflags=BACKGROUND_PROCESS_FLAGS)
         if completed.returncode: raise click.ClickException(completed.stderr.strip())
         r.local_path = str(target); s.commit(); click.echo(str(target))
 
@@ -1768,6 +1771,8 @@ def runtime_rename(runtime_id, name):
 @click.option("--config", default=None)
 def runtime_update(runtime_id, model, config):
     with get_session() as s:
+        from hagent.runtime_connections import lock_connections, existing_connection
+        lock_connections(s)
         item = s.get(Runtime, runtime_id)
         if not item:
             raise click.ClickException("Runtime not found")
@@ -1776,6 +1781,8 @@ def runtime_update(runtime_id, model, config):
         if config is not None:
             json.loads(config)
             item.config_json = config
+        if existing_connection(s, item.workspace_id, item.type, json.loads(item.config_json or '{}'), exclude_id=item.id):
+            raise click.ClickException("This connection already exists. Use the existing runtime.")
         s.commit()
         click.echo(item.id)
 
@@ -2066,6 +2073,11 @@ def issue_update(issue_id, title, description, status, assignee_agent_id, parent
 def _apply_issue_status(session, item, status):
     if status is None:
         return
+    if IssueStatus(status) == IssueStatus.DONE:
+        from hagent.orchestration import completion_blocker
+        blocker = completion_blocker(session, item)
+        if blocker:
+            raise click.ClickException(blocker)
     item.status = IssueStatus(status)
     session.add(TimelineEvent(issue_id=item.id, event_type="status_changed", detail=status))
 
@@ -2671,6 +2683,7 @@ def _discover_pull_requests(s, item):
     listing = subprocess.run(
         [gh, "pr", "list", "--head", branch_name_for_issue(item.id), "--state", "all", "--json", "number,url,title,state"],
         cwd=cwd, capture_output=True, text=True,
+        creationflags=BACKGROUND_PROCESS_FLAGS,
     )
     if listing.returncode != 0:
         raise click.ClickException(f"gh pr list failed: {listing.stderr.strip()}")

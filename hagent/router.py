@@ -173,7 +173,7 @@ class ModelRouter:
             capabilities = routing_capabilities(runtime)
             candidate_model = model if (mode in {"manual", "model_fixed"} and model) else runtime.model
             supported_models = capabilities.get("models") or [runtime.model]
-            if candidate_model not in supported_models:
+            if candidate_model not in supported_models and not capabilities.get("allow_model_override"):
                 rejected.append((runtime.id, "model not declared by runtime capabilities")); continue
             effort, provider_effort = self.mapped_effort(capabilities, requested_effort, max_effort)
             if inferred.context_tokens > int(capabilities.get("context_window", 32768)):

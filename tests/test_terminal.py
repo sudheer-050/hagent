@@ -36,3 +36,17 @@ def test_agent_terminal_command_is_opt_in(tmp_path):
         assert "disabled" in str(exc)
     else:
         raise AssertionError("disabled agent terminal unexpectedly ran")
+
+
+def test_agent_command_does_not_allocate_windows_console(tmp_path, monkeypatch):
+    import os
+    import subprocess
+    from hagent import terminal
+    calls = []
+    def run(*args, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(returncode=0, stdout='ok', stderr='')
+    monkeypatch.setattr(terminal, 'run_managed_process', run)
+    agent = SimpleNamespace(terminal_enabled=True, terminal_working_directory=str(tmp_path), env_json='{}')
+    assert run_agent_command(agent, 'Write-Output ok')['stdout'] == 'ok'
+    assert calls[0]['creationflags'] == (subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)

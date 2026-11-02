@@ -42,7 +42,7 @@ def test_gemini_cli_uses_headless_json_mode(mocker):
         stdout=json.dumps({"response": "hello from cli", "stats": {}}),
         stderr="",
     )
-    run = mocker.patch("hagent.adapters.gemini_cli.subprocess.run", return_value=completed)
+    run = mocker.patch("hagent.adapters.gemini_cli.run_managed_process", return_value=completed)
 
     result = GeminiCliRuntime("gemini-3.8-flash", {}).run("Hello")
 
@@ -55,7 +55,7 @@ def test_gemini_cli_uses_headless_json_mode(mocker):
 def test_codex_cli_is_resumable_json_and_read_only(mocker):
     mocker.patch("hagent.adapters.codex_cli._find_codex", return_value="codex")
     completed = SimpleNamespace(returncode=0, stdout="review complete", stderr="")
-    run = mocker.patch("hagent.adapters.codex_cli.subprocess.run", return_value=completed)
+    run = mocker.patch("hagent.adapters.codex_cli.run_managed_process", return_value=completed)
 
     result = CodexCliRuntime("default", {}).run("Review this")
 
@@ -74,7 +74,7 @@ def test_claude_code_uses_print_json_mode(mocker):
         stdout=json.dumps({"result": "done", "session_id": "abc"}),
         stderr="",
     )
-    run = mocker.patch("hagent.adapters.claude_code.subprocess.run", return_value=completed)
+    run = mocker.patch("hagent.adapters.claude_code.run_managed_process", return_value=completed)
 
     result = ClaudeCodeRuntime("sonnet", {}).run("Review this")
 
@@ -102,7 +102,7 @@ def test_claude_code_passes_agent_context_via_stdin(mocker):
             stderr="",
         )
 
-    mocker.patch("hagent.adapters.claude_code.subprocess.run", side_effect=fake_run)
+    mocker.patch("hagent.adapters.claude_code.run_managed_process", side_effect=fake_run)
 
     ClaudeCodeRuntime("default", {}).run(
         "Open the HAI project",
@@ -139,7 +139,7 @@ def test_hardware_fit_discourages_oversized_local_models():
 def test_cli_runtimes_only_bypass_permissions_when_agent_terminal_is_enabled(mocker, tmp_path):
     mocker.patch("hagent.adapters.codex_cli._find_codex", return_value="codex")
     codex_run = mocker.patch(
-        "hagent.adapters.codex_cli.subprocess.run",
+        "hagent.adapters.codex_cli.run_managed_process",
         return_value=SimpleNamespace(returncode=0, stdout="done", stderr=""),
     )
     CodexCliRuntime("default", {"terminal_enabled": True, "working_directory": str(tmp_path)}).run("work")
@@ -148,7 +148,7 @@ def test_cli_runtimes_only_bypass_permissions_when_agent_terminal_is_enabled(moc
 
     mocker.patch("hagent.adapters.gemini_cli.shutil.which", return_value="gemini")
     gemini_run = mocker.patch(
-        "hagent.adapters.gemini_cli.subprocess.run",
+        "hagent.adapters.gemini_cli.run_managed_process",
         return_value=SimpleNamespace(returncode=0, stdout=json.dumps({"response": "done"}), stderr=""),
     )
     GeminiCliRuntime("gemini", {"terminal_enabled": True, "working_directory": str(tmp_path)}).run("work")
@@ -157,7 +157,7 @@ def test_cli_runtimes_only_bypass_permissions_when_agent_terminal_is_enabled(moc
 
     mocker.patch("hagent.adapters.claude_code.shutil.which", return_value="claude")
     claude_run = mocker.patch(
-        "hagent.adapters.claude_code.subprocess.run",
+        "hagent.adapters.claude_code.run_managed_process",
         return_value=SimpleNamespace(returncode=0, stdout=json.dumps({"result": "done"}), stderr=""),
     )
     ClaudeCodeRuntime("default", {"terminal_enabled": True, "working_directory": str(tmp_path)}).run("work")
@@ -178,7 +178,7 @@ def test_cli_runtimes_never_bypass_permissions_for_non_terminal_agents(mocker, t
     mocker.patch("hagent.adapters.codex_cli._find_codex", return_value="codex")
     mocker.patch("hagent.adapters.codex_cli.serve_tools").return_value.__enter__.return_value = "http://127.0.0.1:0"
     codex_run = mocker.patch(
-        "hagent.adapters.codex_cli.subprocess.run",
+        "hagent.adapters.codex_cli.run_managed_process",
         return_value=SimpleNamespace(returncode=0, stdout="done", stderr=""),
     )
     CodexCliRuntime("default", {"terminal_enabled": False}).run("work", tools=tools, tool_executor=lambda *a: None)
@@ -187,7 +187,7 @@ def test_cli_runtimes_never_bypass_permissions_for_non_terminal_agents(mocker, t
     mocker.patch("hagent.adapters.claude_code.shutil.which", return_value="claude")
     mocker.patch("hagent.adapters.claude_code.serve_tools").return_value.__enter__.return_value = "http://127.0.0.1:0"
     claude_run = mocker.patch(
-        "hagent.adapters.claude_code.subprocess.run",
+        "hagent.adapters.claude_code.run_managed_process",
         return_value=SimpleNamespace(returncode=0, stdout=json.dumps({"result": "done"}), stderr=""),
     )
     ClaudeCodeRuntime("default", {"terminal_enabled": False}).run("work", tools=tools, tool_executor=lambda *a: None)

@@ -56,6 +56,36 @@ def has_unfinished_children(session, issue: Issue) -> bool:
     ).limit(1)) is not None
 
 
+def completion_blocker(session, issue: Issue) -> str | None:
+    """One completion rule shared by the dashboard, CLI and agent tools."""
+    if _has_active_run(session, issue):
+        return "This issue still has an active or approval-pending run."
+    if has_unfinished_children(session, issue):
+        return "Child issues must finish before this issue can be completed."
+    latest = session.scalar(select(Run).where(Run.issue_id == issue.id)
+                            .order_by(Run.created_at.desc()).limit(1))
+    agent = latest.agent if latest else issue.assignee
+    if agent and agent.verifier_agent_id:
+        if not latest or latest.status != RunStatus.COMPLETED:
+            return "A successful implementation and independent verification are required."
+        evidence = session.scalar(select(TimelineEvent.id).where(
+            TimelineEvent.issue_id == issue.id,
+            TimelineEvent.event_type == "verification_passed",
+            TimelineEvent.created_at >= (latest.finished_at or latest.created_at),
+        ).limit(1))
+        if not evidence:
+            return "Independent verification has not passed for the latest run. Send the work back for correction."
+    return None
+
+
+def stage_child_finished(child: Issue) -> bool:
+    # A configured verifier must decide before a stage can release its parent.
+    return child.status in CLOSED_STATUSES or (
+        child.status == IssueStatus.IN_REVIEW
+        and not (child.assignee and child.assignee.verifier_agent_id)
+    )
+
+
 def _stage_summary(session, parent: Issue, stage: int, children: list[Issue]) -> str:
     from hagent.keys import issue_key
 
@@ -81,7 +111,7 @@ def fire_ready_stages(session, parent: Issue) -> Run | None:
         stages.setdefault(child.stage, []).append(child)
     for stage in sorted(stages):
         group = stages[stage]
-        if any(child.status not in FINISHED_STATUSES for child in group):
+        if any(not stage_child_finished(child) for child in group):
             continue
         # The signature changes if a new sub-issue joins the stage, so it can fire again.
         signature = f"stage {stage}: " + ",".join(sorted(child.id for child in group))

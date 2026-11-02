@@ -19,6 +19,7 @@
 {% for sk in skills %}
 <div class="modal modal-wide skill-detail-modal" id="skill-modal-{{ sk.id }}" hidden role="dialog" aria-modal="true" aria-labelledby="skill-edit-title-{{ sk.id }}">
   <div class="modal-head"><div><div class="eyebrow">Reusable capability</div><h3 id="skill-edit-title-{{ sk.id }}">Skill details</h3></div><button type="button" class="icon-btn modal-close" data-close aria-label="Close">&times;</button></div>
+  <a class="text-link" href="/manage/remove/skills/{{ sk.id }}">Delete skill</a>
   <form method="post" action="/skills/{{ sk.id }}" class="stack skill-edit-form">
     <div><label class="field-label" for="skill-edit-name-{{ sk.id }}">Name</label><input id="skill-edit-name-{{ sk.id }}" name="name" value="{{ sk.name }}" required></div>
     <div><label class="field-label" for="skill-edit-description-{{ sk.id }}">Description</label><textarea id="skill-edit-description-{{ sk.id }}" name="description" rows="2">{{ sk.description or '' }}</textarea></div>

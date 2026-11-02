@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Remove items · Hagent{% endblock %}
+{% block content %}
+<div class="page-header"><div><h2>Remove items</h2><p class="page-sub">Choose an item, review what will be removed, then confirm. Active work is protected.</p></div></div>
+{% if notice %}<p role="status">{{ notice }}</p>{% endif %}
+{% if item %}
+<section class="panel stack">
+  <h3>{{ item_title }}</h3><p>{{ removal_summary }}</p>
+  {% if error %}<p role="alert">{{ error }}</p>{% endif %}
+  <form method="post" action="/manage/remove/{{ kind }}/{{ item.id }}">
+    <input type="hidden" name="confirmation" value="{{ item.id }}">
+    <button type="submit" class="danger-button">{{ 'Archive' if archive else 'Delete permanently' }}</button>
+    <a href="/manage/remove?kind={{ kind }}">Cancel</a>
+  </form>
+</section>
+{% else %}
+<form method="get" action="/manage/remove" class="stack">
+  <label for="remove-kind">Item type</label>
+  <select id="remove-kind" name="kind">{% for value in kinds %}<option value="{{ value }}" {{ 'selected' if value == kind else '' }}>{{ value|replace('-', ' ')|title }}</option>{% endfor %}</select>
+  <label for="remove-search">Search name or ID</label><input id="remove-search" name="q" value="{{ q }}">
+  <button type="submit">Show items</button>
+</form>
+<p class="page-sub">Connections have a <a href="/connections">Disconnect</a> action. Stop active terminals on the <a href="/terminal">Terminal</a> page before deleting their saved sessions. Installed application catalog entries are built in.</p>
+<div class="collection-list">
+{% for row in rows %}<div class="collection-row"><span class="collection-row-main"><strong>{{ row.title }}</strong><small>{{ row.context }} · {{ row.id }}</small></span><a class="text-link" href="/manage/remove/{{ kind }}/{{ row.id }}">{{ 'Archive' if archive else 'Delete' }}</a></div>
+{% else %}<p>No matching items.</p>{% endfor %}
+</div>
+{% if more %}<a href="/manage/remove?kind={{ kind }}&q={{ q|urlencode }}&offset={{ offset + 100 }}">Next 100 items</a>{% endif %}
+{% endif %}
+{% endblock %}

@@ -13,6 +13,7 @@ class ScopeError(click.ClickException):
 # Every owned table has one canonical ownership path. Other foreign keys are
 # checked against that owner on writes, including association-table relationships.
 PARENTS = {
+    m.ChatMessage: ("thread_id", m.ChatThread),
     m.Issue: ("project_id", m.Project),
     m.PropertyValue: ("issue_id", m.Issue),
     m.Comment: ("issue_id", m.Issue),

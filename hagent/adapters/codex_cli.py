@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+from hagent.runtime_env import BACKGROUND_PROCESS_FLAGS
+from hagent.managed_process import run as run_managed_process
 import sys
 
 from hagent.adapters.base import BaseRuntime, ResumableError, RuntimeResult
@@ -52,6 +54,9 @@ def _parse_jsonl_events(stdout: str, fallback_thread_id: str | None = None) -> t
                 messages.append(item["text"])
         elif event.get("type") == "turn.completed":
             usage = event.get("usage")
+        elif event.get("type") in {"turn.failed", "error"}:
+            detail = event.get("error") or event.get("message") or "Codex reported a failed turn"
+            raise ResumableError(str(detail), thread_id)
     return messages, usage, thread_id
 
 
@@ -76,6 +81,9 @@ def _find_codex(command: str) -> str | None:
 
 class CodexCliRuntime(BaseRuntime):
     def run(self, prompt: str, context: str = "", tools=None, tool_executor=None, images=None) -> RuntimeResult:
+        from hagent import cli_sessions
+        if cli_sessions.enabled(self.config):
+            return cli_sessions.run("codex_cli", self.model, self.config, prompt, context, tools, tool_executor)
         executable = _find_codex(self.config.get("command", "codex"))
         if not executable:
             raise RuntimeError("Codex CLI is not installed or is not on PATH")
@@ -126,7 +134,7 @@ class CodexCliRuntime(BaseRuntime):
             args.extend(mcp_args)
             args.append("-")
             try:
-                completed = subprocess.run(
+                completed = run_managed_process(
                     args,
                     input=full_prompt,
                     cwd=self.config.get("working_directory") or None,
@@ -136,6 +144,8 @@ class CodexCliRuntime(BaseRuntime):
                     errors="replace",
                     timeout=timeout,
                     check=False,
+                    creationflags=BACKGROUND_PROCESS_FLAGS,
+                    monitor=self.config.get("_terminal_monitor"),
                 )
             except subprocess.TimeoutExpired as exc:
                 # The process is dead, but whatever it had already streamed to stdout

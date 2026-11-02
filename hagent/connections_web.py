@@ -145,11 +145,14 @@ def install(app, templates, require):
                 service.validate_url(url)
                 if auth not in {"none", "bearer", "header"} or (auth != "none" and not token):
                     raise ValueError("Choose an authentication type and enter its API key or token")
-                if not re.fullmatch(r"[A-Za-z0-9-]{1,80}", key_name):
+                if auth == "header" and not re.fullmatch(r"[A-Za-z0-9-]{1,80}", key_name):
                     raise ValueError("Use a valid API key header name")
                 cfg.update(auth=auth, key_name=key_name)
                 private["token"] = token
             else:
+                arguments = arguments.strip() or "[]"
+                environment = environment.strip() or "{}"
+                headers = headers.strip() or "{}"
                 args = json.loads(arguments)
                 env = json.loads(environment)
                 extra_headers = json.loads(headers)

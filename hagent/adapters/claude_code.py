@@ -6,10 +6,12 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+from hagent.runtime_env import BACKGROUND_PROCESS_FLAGS
+from hagent.managed_process import run as run_managed_process
 import sys
 import tempfile
 
-from hagent.adapters.base import BaseRuntime, RuntimeResult
+from hagent.adapters.base import BaseRuntime, RuntimeResult, ResumableError
 from hagent.mcp_bridge import serve_tools
 
 _STUB_PATH = str(Path(__file__).resolve().parent.parent / "mcp_bridge_stub.py")
@@ -37,6 +39,9 @@ def _mcp_config_file(tools, tool_executor):
 
 class ClaudeCodeRuntime(BaseRuntime):
     def run(self, prompt: str, context: str = "", tools=None, tool_executor=None, images=None) -> RuntimeResult:
+        from hagent import cli_sessions
+        if cli_sessions.enabled(self.config):
+            return cli_sessions.run("claude_code", self.model, self.config, prompt, context, tools, tool_executor)
         command = self.config.get("command", "claude")
         candidate = Path(command).expanduser()
         executable = str(candidate) if candidate.is_file() else shutil.which(command)
@@ -84,7 +89,7 @@ class ClaudeCodeRuntime(BaseRuntime):
             if self.config.get("terminal_enabled"):
                 args.append("--dangerously-skip-permissions")
             try:
-                completed = subprocess.run(
+                completed = run_managed_process(
                     args,
                     input=full_prompt,
                     cwd=self.config.get("working_directory") or None,
@@ -94,6 +99,8 @@ class ClaudeCodeRuntime(BaseRuntime):
                     errors="replace",
                     timeout=self.config.get("timeout", 600),
                     check=False,
+                    creationflags=BACKGROUND_PROCESS_FLAGS,
+                    monitor=self.config.get("_terminal_monitor"),
                 )
             except (OSError, subprocess.SubprocessError) as exc:
                 raise RuntimeError(f"Claude Code failed to start: {exc}") from exc
@@ -104,4 +111,6 @@ class ClaudeCodeRuntime(BaseRuntime):
             data = json.loads(completed.stdout)
         except json.JSONDecodeError as exc:
             raise RuntimeError("Claude Code returned invalid JSON") from exc
+        if data.get("is_error") or str(data.get("subtype", "")).startswith("error"):
+            raise ResumableError(str(data.get("result") or data.get("errors") or "Claude Code reported failure"), data.get("session_id"))
         return RuntimeResult(output=data.get("result", ""), raw=data, session_id=data.get("session_id"))

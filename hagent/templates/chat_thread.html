@@ -162,10 +162,14 @@
     }
 
     var POLL_MS = 4000;
-    function poll() {
-      refresh().then(function () { setTimeout(poll, POLL_MS); });
+    function pollDelay() {
+      if (document.hidden) return 15000;
+      return document.getElementById("chat-message-pending") ? 500 : POLL_MS;
     }
-    setTimeout(poll, POLL_MS);
+    function poll() {
+      refresh().then(function () { setTimeout(poll, pollDelay()); });
+    }
+    setTimeout(poll, pollDelay());
   })();
 </script>
 {% endblock %}

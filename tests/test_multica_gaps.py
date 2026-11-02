@@ -231,7 +231,7 @@ def fake_opencode(mocker, tmp_path):
     exe = tmp_path / "opencode.exe"
     exe.write_text("")
     return mocker.patch(
-        "hagent.adapters.opencode_cli.subprocess.run",
+        "hagent.adapters.opencode_cli.run_managed_process",
         return_value=subprocess.CompletedProcess([], 0, stdout=REAL_EVENTS, stderr=""),
     ), str(exe)
 
@@ -263,7 +263,7 @@ def test_terminal_enabled_does_not_deny_tools_and_default_model_is_omitted(fake_
 def test_run_reports_failures(mocker, tmp_path):
     exe = tmp_path / "opencode.exe"
     exe.write_text("")
-    mocker.patch("hagent.adapters.opencode_cli.subprocess.run", return_value=subprocess.CompletedProcess([], 3, stdout="", stderr="boom"))
+    mocker.patch("hagent.adapters.opencode_cli.run_managed_process", return_value=subprocess.CompletedProcess([], 3, stdout="", stderr="boom"))
 
     with pytest.raises(RuntimeError, match=r"exit 3\): boom"):
         OpencodeCliRuntime("default", {"command": str(exe)}).run("go")

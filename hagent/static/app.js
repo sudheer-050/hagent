@@ -405,172 +405,116 @@ function initAgentFilter() {
 (window.hagentPageInits = window.hagentPageInits || []).push(initAgentFilter);
 initAgentFilter();
 
-// Provider model catalog, task guidance, and local hardware fit.
+// API or installed CLI -> provider -> live models -> supported effort.
 function initRuntimeModelCatalog() {
   "use strict";
-  var provider = document.getElementById("runtime-type");
-  var model = document.getElementById("runtime-model");
-  if (!provider || !model) return;
-
-  var requestedProvider = new URLSearchParams(window.location.search).get("provider");
-  if (requestedProvider && provider.querySelector('[value="' + requestedProvider + '"]')) provider.value = requestedProvider;
-  var form = provider.closest("form");
-  var initialProvider = form ? form.dataset.currentProvider : "";
-  var initialModel = form ? form.dataset.currentModel : "";
-  var customGroup = document.getElementById("runtime-custom-model-group");
-  var customModel = document.getElementById("runtime-custom-model");
-  var keyGroup = document.getElementById("runtime-key-group");
-  var keyInput = document.getElementById("runtime-api-key");
-  var keyEnv = document.getElementById("runtime-key-env");
-  var baseUrlGroup = document.getElementById("runtime-base-url-group");
-  var baseUrl = document.getElementById("runtime-base-url");
-  var baseRequirement = document.getElementById("runtime-base-url-requirement");
-  var commandGroup = document.getElementById("runtime-command-group");
-  var command = document.getElementById("runtime-command");
-  var source = document.getElementById("runtime-model-source");
-  var providerName = document.getElementById("runtime-provider-name");
-  var providerKind = document.getElementById("runtime-provider-kind");
-  var providerBest = document.getElementById("runtime-provider-best");
-  var providerNote = document.getElementById("runtime-provider-note");
-  var providerLink = document.getElementById("runtime-provider-link");
-  var modelInfo = document.getElementById("runtime-model-info");
-  var modelName = document.getElementById("runtime-model-name");
-  var modelBest = document.getElementById("runtime-model-best");
-  var modelNote = document.getElementById("runtime-model-note");
-  var modelFit = document.getElementById("runtime-model-fit");
-  var hardwareBox = document.getElementById("runtime-hardware");
-  var hardwareSummary = document.getElementById("runtime-hardware-summary");
-  var modelDetails = {};
-  var requestNumber = 0;
-
-  function updateModelInfo() {
-    var isCustom = model.value === "__custom__";
-    if (customGroup) customGroup.hidden = !isCustom;
-    if (customModel) {
-      customModel.disabled = !isCustom;
-      customModel.required = isCustom;
-    }
-    var detail = modelDetails[model.value];
-    if (modelInfo) modelInfo.hidden = !detail;
-    if (!detail) return;
-    modelName.textContent = detail.label || detail.id;
-    modelBest.textContent = detail.best_for || "General use";
-    modelNote.textContent = detail.note || "";
-    if (detail.fit) {
-      modelFit.hidden = false;
-      modelFit.className = "fit-badge fit-" + detail.fit.level;
-      modelFit.textContent = detail.fit.label;
-      if (detail.fit.note) modelNote.textContent += " " + detail.fit.note;
-    } else {
-      modelFit.hidden = true;
+  const $ = id => document.getElementById(id);
+  const provider = $("runtime-type"), model = $("runtime-model");
+  if(!provider || !model) return;
+  const mode=$("runtime-mode"), apiOptions=[...provider.options].map(o=>({value:o.value,label:o.textContent}));
+  const form=provider.closest('form'), connection=$("runtime-connection"), key=$("runtime-api-key"), base=$("runtime-base-url"), effort=$("runtime-effort"), status=$("runtime-model-source");
+  const initial = {provider:form.dataset.currentProvider, connection:form.dataset.currentConnection, model:form.dataset.currentModel, effort:form.dataset.currentEffort};
+  let models=[], generation=0, installedConnections=[];
+  const originalSaveLabel=$("runtime-save").textContent;
+  const requested=new URLSearchParams(location.search).get('provider');
+  const requestedFamily={codex_cli:'openai',claude_code:'claude',gemini_cli:'gemini'}[requested] || requested;
+  if(requestedFamily && [...provider.options].some(o=>o.value===requestedFamily)) provider.value=requestedFamily;
+  if(requested && requested!==requestedFamily) mode.value='cli';
+  function invalidate() {
+    generation++; models=[];
+    $("runtime-catalog-token").value=''; $("runtime-save").disabled=true; $("runtime-save").textContent=originalSaveLabel;
+    $("runtime-model-group").hidden=true; model.disabled=true;
+    $("runtime-effort-group").hidden=true; effort.replaceChildren(new Option('Provider default',''));
+    status.hidden=true; $("runtime-load-models").disabled=false;
+  }
+  function chooseEffort() {
+    const row=models.find(r=>r.id===model.value);
+    effort.replaceChildren(new Option('Provider default',''));
+    (row?.efforts || []).forEach(value=>effort.append(new Option(value==='xhigh'?'Extra high':value.charAt(0).toUpperCase()+value.slice(1),value)));
+    $("runtime-effort-group").hidden=false;
+    effort.disabled=!(row?.efforts || []).length;
+    if(model.value===initial.model && [...effort.options].some(o=>o.value===initial.effort)) effort.value=initial.effort;
+    $("runtime-save").disabled=!row;
+  }
+  function connectionChanged() {
+    invalidate();
+    const local=provider.value==='ollama', cli=connection.value==='cli';
+    $("runtime-key-group").hidden=local||cli; key.disabled=local||cli;
+    const server=!cli && (local||provider.value==='openai_compatible');
+    $("runtime-base-url-group").hidden=!server; base.disabled=!server; base.required=server;
+    if(local && !base.value) base.value='http://127.0.0.1:11434';
+    form.querySelector('[name="command"]').disabled=!(provider.value===initial.provider && connection.value===initial.connection);
+    form.querySelector('[name="working_directory"]').disabled=provider.value!==initial.provider;
+  }
+  function providerChanged() {
+    base.value=provider.value===initial.provider ? base.dataset.savedValue : '';
+    connection.value=mode.value==='cli'?'cli':provider.value==='ollama'?'local':'api';
+    connectionChanged();
+    $("runtime-load-models").disabled=!provider.value;
+    $("runtime-load-models").hidden=mode.value==='cli';
+    if(mode.value==='cli') {
+      model.replaceChildren(new Option('CLI default','default'));
+      model.disabled=!provider.value;
+      const connected=installedConnections.find(cli=>cli.provider===provider.value)?.connected && !form.dataset.runtimeId;
+      $("runtime-save").disabled=!provider.value || connected;
+      if(connected) $("runtime-save").textContent='Already connected';
     }
   }
-
-  function renderProvider(info, hardware) {
-    var kindLabels = {
-      api: "Cloud API",
-      local: "Local",
-      local_openai: "Local server",
-      cli: "Installed CLI",
-      custom: "Custom endpoint"
-    };
-    providerName.textContent = info.name;
-    providerKind.textContent = kindLabels[info.kind] || info.kind;
-    providerBest.textContent = "Good for: " + info.best_for;
-    providerNote.textContent = info.note;
-    providerLink.hidden = !info.access_url;
-    if (info.access_url) {
-      providerLink.href = info.access_url;
-      providerLink.textContent = info.access_label || "Provider setup";
+  async function modeChanged() {
+    const previous=provider.value;
+    invalidate();
+    $('runtime-load-models').hidden=mode.value==='cli';
+    $("runtime-provider-label").textContent=mode.value==='cli'?'Installed CLI':'Provider';
+    if(mode.value==='api') {
+      provider.replaceChildren(...apiOptions.map(o=>new Option(o.label,o.value)));
+      if(apiOptions.some(o=>o.value===previous)) provider.value=previous;
+      provider.disabled=false; providerChanged(); return;
     }
-
-    var needsKey = info.kind === "api" || info.kind === "custom";
-    keyGroup.hidden = !needsKey;
-    keyInput.disabled = !needsKey;
-    keyEnv.textContent = info.env ? "or use " + info.env : "if required by this endpoint";
-
-    var showBase = info.kind === "custom" || info.kind === "local_openai";
-    baseUrlGroup.hidden = !showBase;
-    baseUrl.disabled = !showBase;
-    baseUrl.required = info.kind === "custom";
-    baseRequirement.textContent = info.kind === "custom" ? "Required" : "Optional";
-    if (showBase) {
-      var savedBase = provider.value === initialProvider ? baseUrl.dataset.savedValue : "";
-      baseUrl.value = savedBase || info.base_url || "";
-    }
-
-    var isCli = info.kind === "cli";
-    commandGroup.hidden = !isCli;
-    command.disabled = !isCli;
-    if (isCli) {
-      var savedCommand = provider.value === initialProvider ? command.dataset.savedValue : "";
-      command.value = savedCommand || info.command || "";
-    }
-
-    hardwareBox.hidden = !hardware;
-    if (hardware) {
-      var gpu = hardware.gpu + (hardware.vram_gb ? " · " + hardware.vram_gb + " GB VRAM" : "");
-      hardwareSummary.textContent =
-        gpu + " · " + (hardware.ram_gb || "?") +
-        " GB RAM. Recommended: quantized 7B–9B models; 14B may be slow; 30B+ is not recommended.";
-    }
+    connection.value='cli'; connectionChanged();
+    provider.replaceChildren(new Option('Checking installed CLIs...','')); provider.disabled=true;
+    $("runtime-load-models").disabled=true;
+    const request=generation;
+    try {
+      const response=await fetch('/api/runtime-connections');
+      if(!response.ok) throw new Error('Could not check installed CLIs.');
+      const data=await response.json(); if(request!==generation) return;
+      installedConnections=data.installed;
+      provider.replaceChildren(...data.installed.map(cli=>new Option(cli.label+(cli.connected?' (connected)':''),cli.provider)));
+      if(!data.installed.length) {
+        provider.append(new Option('No supported CLIs installed',''));
+        status.textContent='No supported CLIs were found on this computer.'; status.hidden=false;
+        return;
+      }
+      if(data.installed.some(cli=>cli.provider===previous)) provider.value=previous;
+      provider.disabled=false; providerChanged();
+    } catch(error) { if(request===generation) {provider.replaceChildren(new Option('Detection unavailable',''));status.textContent=error.message;status.hidden=false;} }
   }
-
-  function loadModels() {
-    var selected = provider.value;
-    var currentRequest = ++requestNumber;
-    model.disabled = true;
-    model.innerHTML = '<option value="">Loading recommendations...</option>';
-    source.textContent = "Loading provider details...";
-    fetch("/api/runtime-models?provider=" + encodeURIComponent(selected))
-      .then(function (response) {
-        if (!response.ok) throw new Error("Provider catalog unavailable");
-        return response.json();
-      })
-      .then(function (data) {
-        if (currentRequest !== requestNumber) return;
-        renderProvider(data.provider_info, data.hardware);
-        model.innerHTML = "";
-        modelDetails = {};
-        (data.model_details || []).forEach(function (detail) {
-          modelDetails[detail.id] = detail;
-          var option = document.createElement("option");
-          option.value = detail.id;
-          option.textContent = (detail.label || detail.id) + " — " + (detail.best_for || "General use");
-          model.appendChild(option);
-        });
-        var custom = document.createElement("option");
-        custom.value = "__custom__";
-        custom.textContent = "Enter a custom model ID...";
-        model.appendChild(custom);
-        if (selected === initialProvider && initialModel) {
-          if (modelDetails[initialModel]) {
-            model.value = initialModel;
-          } else {
-            model.value = "__custom__";
-            customModel.value = initialModel;
-          }
-        } else if (!(data.model_details || []).length) {
-          model.value = "__custom__";
-        }
-        model.disabled = false;
-        source.textContent = data.source === "installed"
-          ? "Models currently installed on this computer."
-          : "Recommended current models. Custom and newly released IDs are supported.";
-        updateModelInfo();
-      })
-      .catch(function () {
-        modelDetails = {};
-        model.innerHTML = '<option value="__custom__">Enter a custom model ID...</option>';
-        model.disabled = false;
-        source.textContent = "Catalog unavailable; enter the provider's exact model ID.";
-        updateModelInfo();
-      });
+  async function loadModels() {
+    invalidate(); const request=generation;
+    $("runtime-load-models").disabled=true; status.hidden=false; status.textContent='Loading models...';
+    try {
+      const response=await fetch('/api/runtime-models',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:provider.value,connection:connection.value,api_key:key.disabled?'':key.value,base_url:base.disabled?'':base.value,runtime_id:form.dataset.runtimeId})});
+      const data=await response.json(); if(request!==generation) return;
+      if(!response.ok) throw new Error(data.detail || 'Could not load models.');
+      models=data.models; model.replaceChildren(new Option('Choose a model',''));
+      models.forEach(row=>model.append(new Option(row.label===row.id?row.id:row.label+' ('+row.id+')',row.id)));
+      $("runtime-catalog-token").value=data.catalog_token; model.disabled=false; $("runtime-model-group").hidden=false;
+      if(provider.value===initial.provider && connection.value===initial.connection) {
+        if(models.some(r=>r.id===initial.model)) model.value=initial.model;
+        else if(initial.model==='default') model.value=models.find(r=>r.is_default)?.id || '';
+      }
+      status.textContent=models.length+' models available'; chooseEffort();
+    } catch(error) { if(request===generation) {status.textContent=error.message;status.hidden=false;} }
+    finally { if(request===generation) $("runtime-load-models").disabled=false; }
   }
-
-  provider.addEventListener("change", loadModels);
-  model.addEventListener("change", updateModelInfo);
-  loadModels();
+  provider.addEventListener('change',providerChanged);
+  mode.addEventListener('change',modeChanged);
+  model.addEventListener('change',chooseEffort);
+  [key,base].forEach(input=>input.addEventListener('input',invalidate));
+  key.addEventListener('change',()=>{if(key.value.trim()) loadModels();});
+  $("runtime-load-models").onclick=loadModels;
+  form.addEventListener('submit',event=>{if(mode.value!=='cli' && (!$("runtime-catalog-token").value || !model.value)) {event.preventDefault();status.textContent='Load models and choose one first.';status.hidden=false;}});
+  modeChanged();
 }
 (window.hagentPageInits = window.hagentPageInits || []).push(initRuntimeModelCatalog);
 initRuntimeModelCatalog();
@@ -623,6 +567,132 @@ function initAgentDraftHelper() {
 }
 (window.hagentPageInits = window.hagentPageInits || []).push(initAgentDraftHelper);
 initAgentDraftHelper();
+
+let runtimeReloadBusy = false;
+const runtimeRefreshedAt = new Map();
+
+function runtimeCheckTime(value) {
+  // SQLite returns naive timestamps; Hagent stores these values in UTC.
+  const iso = value.replace(" ", "T");
+  const date = new Date(/[zZ]$|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : iso + "Z");
+  return Number.isNaN(date.getTime()) ? "Unknown time" : date.toLocaleString(undefined, {timeZoneName: "short"});
+}
+
+function initRuntimeTimes() {
+  document.querySelectorAll("time[data-runtime-time]").forEach(time => {
+    time.textContent = runtimeCheckTime(time.getAttribute("datetime"));
+  });
+  document.querySelectorAll("[data-runtime-refreshed]").forEach(label => {
+    const refreshed = runtimeRefreshedAt.get(label.dataset.runtimeRefreshed);
+    if (refreshed) {
+      label.textContent = "Status refreshed: " + runtimeCheckTime(refreshed);
+      label.hidden = false;
+    } else { label.hidden = true; }
+  });
+}
+(window.hagentPageInits = window.hagentPageInits || []).push(initRuntimeTimes);
+initRuntimeTimes();
+
+async function runRuntimeAction(button) {
+  const panel = button.closest("[data-runtime-actions]");
+  if (panel.dataset.busy) return;
+  const remove = button.hasAttribute("data-runtime-remove");
+  if (remove && !window.confirm("Remove this runtime from the list? Past work will be preserved. Agents using it must be reassigned first.")) return;
+  const status = panel.querySelector("[data-runtime-result]");
+  panel.dataset.busy = "true";
+  if (!remove) panel.dataset.refreshing = "true";
+  panel.querySelectorAll("button").forEach(b => b.disabled = true);
+  status.textContent = remove ? "Removing runtime…" : "Testing saved configuration… This can take up to 20 seconds.";
+  const row = panel.closest(".runtime-row");
+  const pill = row && row.querySelector(".health-pill");
+  if (!remove) {
+    runtimeRefreshedAt.delete(panel.dataset.runtimeId);
+    initRuntimeTimes();
+    if (pill) { pill.textContent = "Checking..."; pill.classList.add("needs-key"); }
+  }
+  let ok = false;
+  try {
+    const response = await fetch("/runtimes/" + encodeURIComponent(panel.dataset.runtimeId) + (remove ? "/remove" : "/test"), {
+      method: "POST", headers: {"Accept": "application/json"}, signal: AbortSignal.timeout(30000)
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || data.error || "Request failed");
+    ok = data.ok;
+    if (remove) {
+      const row = panel.closest(".runtime-row");
+      if (row) row.remove();
+      else window.location.assign("/runtimes");
+    } else {
+      status.textContent = (data.ok ? "✓ " : "Connection failed: ") + data.message + " (" + data.elapsed_seconds + "s)";
+      if (data.checked_at) runtimeRefreshedAt.set(panel.dataset.runtimeId, data.checked_at);
+      initRuntimeTimes();
+      if (pill) { pill.textContent = data.ok ? "Provider responding" : "Connection failed"; pill.classList.toggle("needs-key", !data.ok); }
+    }
+  } catch (error) {
+    if (!remove && pill) { pill.textContent = "Check failed"; pill.classList.add("needs-key"); }
+    status.textContent = error.name === "TimeoutError" ? "The check timed out. Try again after the runtime is reachable." : (error.message || "Could not contact Hagent. Try again.");
+  } finally {
+    delete panel.dataset.busy;
+    delete panel.dataset.refreshing;
+    panel.querySelectorAll("button").forEach(b => b.disabled = false);
+  }
+  return ok;
+}
+
+// Delegation survives PJAX page swaps without duplicating handlers.
+document.addEventListener("click", async function (event) {
+  const reload = event.target.closest("[data-runtime-reload]");
+  const button = event.target.closest("[data-runtime-test], [data-runtime-remove]");
+  if ((!reload && !button) || runtimeReloadBusy) return;
+  if (button) return runRuntimeAction(button);
+  const panels = Array.from(document.querySelectorAll("[data-runtime-actions]"));
+  const status = document.querySelector("[data-runtime-reload-result]");
+  status.hidden = false;
+  if (panels.some(panel => panel.dataset.busy)) {
+    status.textContent = "A connection test is already running. Please wait for it to finish.";
+    return;
+  }
+  runtimeReloadBusy = true;
+  reload.disabled = true;
+  reload.setAttribute("aria-busy", "true");
+  panels.forEach(panel => { panel.dataset.refreshing = "true"; });
+  try {
+    const server = await fetch("/api/runtime-status", {cache: "no-store", signal: AbortSignal.timeout(5000)});
+    if (server.status === 404) throw new Error("Hagent is still running its older server. Double-click scripts/restart_hagent.vbs to activate fresh checks through the ready CLIs.");
+    if (!server.ok) throw new Error("Could not start live checks. Please sign in again or check the Hagent server.");
+    status.textContent = "Sending a fresh request to every runtime...";
+    let completed = 0;
+    const results = await Promise.all(panels.map(async panel => {
+      const ok = await runRuntimeAction(panel.querySelector("[data-runtime-test]"));
+      completed++;
+      status.textContent = "Live checks finished: " + completed + " of " + panels.length + ".";
+      return ok;
+    }));
+    const passed = results.filter(Boolean).length;
+    status.textContent = "Fresh checks complete: " + passed + " connected, " + (panels.length - passed) + " failed.";
+  } catch (error) {
+    status.textContent = error.message || "Could not start live checks.";
+  } finally {
+    runtimeReloadBusy = false;
+    panels.forEach(panel => { delete panel.dataset.refreshing; });
+    reload.disabled = false;
+    reload.removeAttribute("aria-busy");
+  }
+});
+
+
+// Required connection fields follow the selected authentication and transport.
+document.addEventListener('change', function (event) {
+  if (event.target.id === 'api-auth') {
+    document.getElementById('api-token').required = event.target.value !== 'none';
+    document.getElementById('api-header').required = event.target.value === 'header';
+  }
+  if (event.target.id === 'mcp-kind') {
+    document.getElementById('mcp-command').required = event.target.value === 'stdio';
+    document.getElementById('mcp-url').required = event.target.value !== 'stdio';
+  }
+});
+
 
 // Live theme preview: choosing a theme on the Settings page shows it at once.
 // It is only saved when the form is submitted; leaving the page undoes it.

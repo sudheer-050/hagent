@@ -325,9 +325,23 @@ class AuthMiddleware:
             return await self.app(scope, receive, send)
         headers = dict(scope.get("headers") or [])
 
+        # Protect local no-account mode and WebSockets too: a hostile web page
+        # must never be able to submit commands to a loopback service.
+        unsafe = scope["type"] == "websocket" or scope.get("method") in _UNSAFE_METHODS
+        if unsafe and not _bearer(headers) and not path.startswith("/webhooks/"):
+            origin = headers.get(b"origin", b"").decode("latin-1")
+            host = headers.get(b"host", b"").decode("latin-1")
+            expected_scheme = "https" if scope.get("scheme") in {"https", "wss"} else "http"
+            if (origin and (urlsplit(origin).netloc != host or urlsplit(origin).scheme != expected_scheme)
+                    or headers.get(b"sec-fetch-site") == b"cross-site"):
+                return await self._deny(scope, receive, send, 403, "Cross-origin request refused")
+
         if not auth_enabled():
             client = scope.get("client")
             local = bool(client) and client[0] in _LOOPBACK_HOSTS
+            host = urlsplit("//" + headers.get(b"host", b"").decode("latin-1")).hostname
+            if local and client[0] != "testclient" and host not in {"localhost", "127.0.0.1", "::1"}:
+                return await self._deny(scope, receive, send, 403, "Local access requires a loopback hostname")
             proxied = any(name in headers for name in _FORWARDING_HEADERS)
             if local and not proxied:
                 return await self.app(scope, receive, send)

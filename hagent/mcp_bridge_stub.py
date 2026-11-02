@@ -8,6 +8,7 @@ Usage: python mcp_bridge_stub.py <base_url>
 
 import asyncio
 import json
+import inspect
 import sys
 import urllib.request
 
@@ -32,7 +33,7 @@ async def main() -> None:
             types.Tool(
                 name=t["name"],
                 description=t.get("description", ""),
-                input_schema=t.get("input_schema") or {"type": "object", "properties": {}},
+                **{schema_field: t.get("input_schema") or {"type": "object", "properties": {}}},
             )
             for t in data.get("tools", [])
         ]
@@ -42,12 +43,26 @@ async def main() -> None:
         try:
             data = _http_json(f"{base_url}/call", {"name": params.name, "arguments": params.arguments or {}})
             if "error" in data:
-                return types.CallToolResult(content=[types.TextContent(type="text", text=str(data["error"]))], is_error=True)
+                return types.CallToolResult(content=[types.TextContent(type="text", text=str(data["error"]))], **{error_field: True})
             return types.CallToolResult(content=[types.TextContent(type="text", text=str(data.get("result", "")))])
         except Exception as exc:
-            return types.CallToolResult(content=[types.TextContent(type="text", text=str(exc))], is_error=True)
+            return types.CallToolResult(content=[types.TextContent(type="text", text=str(exc))], **{error_field: True})
 
-    server = Server("hagent-bridge", on_list_tools=on_list_tools, on_call_tool=on_call_tool)
+    # SDK 1 uses decorators/camelCase; SDK 2 uses callbacks/snake_case.
+    schema_field = "inputSchema" if "inputSchema" in types.Tool.model_fields else "input_schema"
+    error_field = "isError" if "isError" in types.CallToolResult.model_fields else "is_error"
+    if "on_list_tools" in inspect.signature(Server).parameters:
+        server = Server("hagent-bridge", on_list_tools=on_list_tools, on_call_tool=on_call_tool)
+    else:
+        server = Server("hagent-bridge")
+
+        @server.list_tools()
+        async def list_tools():
+            return (await on_list_tools(None, None)).tools
+
+        @server.call_tool()
+        async def call_tool(name, arguments):
+            return await on_call_tool(None, types.CallToolRequestParams(name=name, arguments=arguments))
     async with stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())
 

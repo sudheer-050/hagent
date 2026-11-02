@@ -10,12 +10,13 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from contextvars import ContextVar
 
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, aliased, object_session
 
 from hagent.adapters import get_runtime_class
-from hagent.adapters.base import ResumableError
+from hagent.adapters.base import ResumableError, CLIHistoryMissing
 from hagent.models import Agent, ChatMessage, ChatThread, Comment, Issue, IssueStatus, Project, ProjectStatus, Repo, RoutingDecision, Run, RunStatus, Runtime, Skill, SkillLesson, UserProfile
 from hagent.models import TimelineEvent
 from hagent.mcp_client import call_tool_sync, list_tools_sync
@@ -27,6 +28,7 @@ from hagent.memory import MemoryScope, MemoryService, context_as_prompt, redact_
 from hagent.router import ModelRouter
 
 _queue_lock = threading.Lock()
+_current_run = ContextVar("hagent_current_run", default=None)
 log = logging.getLogger(__name__)
 
 JOB_PORTAL_PROJECT_NAME = "Job Portal"
@@ -117,6 +119,9 @@ def run_issue(
     *,
     _run: Run | None = None,
     resume_session_id: str | None = None,
+    _delegation_path=(),
+    _delegation_budget=None,
+    _parent_cancelled=None,
 ) -> Run:
     """Create and synchronously execute a run (used by the CLI and scheduler)."""
     if issue.project.workspace_id != agent.workspace_id or agent.runtime.workspace_id != agent.workspace_id:
@@ -151,7 +156,7 @@ def run_issue(
 
     def cancelled():
         session.refresh(run)
-        return run.status == RunStatus.CANCELLED
+        return run.status == RunStatus.CANCELLED or bool(_parent_cancelled and _parent_cancelled())
 
     def record_tool(name, arguments, result):
         session.add(TimelineEvent(issue_id=issue.id, event_type="tool_call", detail=f"{name}({json.dumps(arguments)}) -> {result}"))
@@ -171,7 +176,9 @@ def run_issue(
         mark_agent_skills_used(session, member)
 
     try:
-        working_directory_override = _resolve_worktree(session, issue, agent)
+        working_directory_override = run.working_directory or _resolve_worktree(session, issue, agent)
+        run.working_directory = working_directory_override or agent.terminal_working_directory
+        session.commit()
         result = execute_agent(
             agent,
             run.prompt,
@@ -187,6 +194,8 @@ def run_issue(
             memory_client="hagent-issue",
             memory_task_metadata={"issue_id": issue.id, "run_id": run.id},
             routing_run_id=run.id,
+            delegation_path=_delegation_path,
+            delegation_budget=_delegation_budget,
         )
     except Exception as exc:
         checkpoint_session_id = getattr(exc, "session_id", None)
@@ -245,6 +254,11 @@ def _finish(session, run, issue, result=None, error=None, checkpoint_session_id=
     session.commit()
     session.refresh(run)
     session.refresh(issue)
+    if changed and run.review_of_run_id:
+        original = session.get(Run, run.review_of_run_id)
+        if original:
+            _apply_verifier_result(session, original, original.issue, run, issue)
+        return
     if issue.status in (IssueStatus.DONE, IssueStatus.CANCELLED):
         return
     # A coordinator may have assigned this very issue to an implementer while running.
@@ -315,6 +329,8 @@ def _run_verifier_pass(session: Session, run: Run, issue: Issue, output: str) ->
     verifier = session.get(Agent, agent.verifier_agent_id)
     if not verifier or verifier.archived or verifier.id == agent.id:
         return
+    if session.scalar(select(Run.id).where(Run.review_of_run_id == run.id).limit(1)):
+        return
     review_project = _get_or_create_verification_project(session, agent.workspace_id)
     review_issue = Issue(
         project_id=review_project.id,
@@ -337,7 +353,37 @@ def _run_verifier_pass(session: Session, run: Run, issue: Issue, output: str) ->
     session.add(review_issue)
     session.flush()
     session.commit()
-    verify_run = run_issue(session, review_issue, verifier)
+    verify_run = queue_issue_run(session, review_issue, verifier)
+    verify_run.review_of_run_id = run.id
+    verify_run.working_directory = run.working_directory
+    session.commit()
+    # Approval-gated reviews keep this durable link until their eventual finish.
+    if verify_run.status == RunStatus.WAITING_APPROVAL:
+        return
+    result = run_issue(session, review_issue, verifier, _run=verify_run)
+    _apply_verifier_result(session, run, issue, result, review_issue)
+
+
+def _apply_verifier_result(session, run, issue, verify_run, review_issue):
+    from hagent.orchestration import after_issue_finished, has_unfinished_children
+
+    if verify_run.status in (RunStatus.PENDING, RunStatus.WAITING_APPROVAL, RunStatus.RUNNING):
+        return
+    # Use the persisted review row as an idempotency guard for inline and queued completion.
+    persisted = session.scalar(select(Run).where(Run.issue_id == review_issue.id,
+                                               Run.review_of_run_id == run.id).limit(1))
+    if persisted:
+        claimed = session.execute(update(Run).where(Run.id == persisted.id, Run.review_applied_at.is_(None))
+                                  .values(review_applied_at=datetime.now(timezone.utc)),
+                                  execution_options={"synchronize_session": False}).rowcount
+        if not claimed:
+            session.rollback()
+            return
+    agent = session.get(Agent, run.agent_id)
+    verifier = session.get(Agent, review_issue.assignee_agent_id)
+    if not agent or not verifier:
+        session.rollback()
+        return
     verdict = (verify_run.output or "").strip()
     session.refresh(issue)
     newer_run = session.scalar(select(Run.id).where(
@@ -345,7 +391,7 @@ def _run_verifier_pass(session: Session, run: Run, issue: Issue, output: str) ->
         Run.status != RunStatus.CANCELLED,
     ).limit(1))
     if (issue.status in (IssueStatus.DONE, IssueStatus.CANCELLED)
-            or newer_run or _has_followup_run(session, run, issue)):
+            or newer_run or _has_followup_run(session, run, issue) or has_unfinished_children(session, issue)):
         review_issue.status = IssueStatus.CANCELLED
         session.add(TimelineEvent(issue_id=issue.id, event_type="verification_superseded",
                                   detail="Work changed or was closed while verification ran; verdict not applied."))
@@ -600,6 +646,8 @@ def execute_agent(
     session = object_session(agent)
     route_started = time.monotonic()
     primary, routing = _route_primary_runtime(session, agent, original_prompt, routing_override, routing_run_id, delegation_path, memory_project_id)
+    if routing and routing.get("model_switch_runtime"):
+        resume_session_id = None
     memory_service, memory_session_id, memory_strict, prompt = (None, None, False, original_prompt)
     if session is not None:
         memory_service, memory_session_id, memory_strict, prompt = _start_memory_session(
@@ -639,10 +687,14 @@ def execute_agent(
                 log.warning("Memory session finalization failed: %s", type(exc).__name__)
                 if memory_strict: raise
 
-    return _run_with_failover(agent, primary, backup_runtime, failback_runtime, prompt, cancelled, record_tool,
-        delegation_path, resolve_backup_runtime, delegation_budget, record_skill_use,
-        working_directory_override, resume_session_id, route_config, routing, history, images,
-        record_failover, finish_observers)
+    token = _current_run.set(routing_run_id)
+    try:
+        return _run_with_failover(agent, primary, backup_runtime, failback_runtime, prompt, cancelled, record_tool,
+            delegation_path, resolve_backup_runtime, delegation_budget, record_skill_use,
+            working_directory_override, resume_session_id, route_config, routing, history, images,
+            record_failover, finish_observers)
+    finally:
+        _current_run.reset(token)
 
 
 def _route_primary_runtime(session, agent, original_prompt, routing_override, routing_run_id, delegation_path, memory_project_id):
@@ -651,6 +703,18 @@ def _route_primary_runtime(session, agent, original_prompt, routing_override, ro
     """
     if session is None:
         return agent.runtime, None
+    from hagent.cli_defaults import CLI_TYPES, explicit_model_request
+    previous_runtime_id = (routing_override or {}).get("runtime_id") or agent.runtime_id
+    requested = explicit_model_request(original_prompt) if agent.runtime.type.value in CLI_TYPES else None
+    if requested:
+        runtime_type, model = requested
+        choices = session.scalars(select(Runtime).where(Runtime.workspace_id == agent.workspace_id,
+            Runtime.archived.is_(False), Runtime.type == runtime_type)).all()
+        preferred = next((r for r in choices if r.id == (routing_override or {}).get("runtime_id")), None)
+        preferred = preferred or next((r for r in choices if r.id == agent.runtime_id), None) or next(iter(choices), None)
+        if preferred is None:
+            raise ValueError("No configured CLI can run the requested model: " + model)
+        routing_override = dict(routing_override or {}, mode="manual", runtime_id=preferred.id, model=model)
     try:
         router = ModelRouter(session, agent.workspace_id, memory_project_id)
         routing = router.route(original_prompt, default_runtime=agent.runtime,
@@ -659,10 +723,13 @@ def _route_primary_runtime(session, agent, original_prompt, routing_override, ro
         primary = session.get(Runtime, routing["runtime_id"])
         if primary is None:
             raise RuntimeError("Selected routing runtime is unavailable")
+        if requested or (routing_override or {}).get("model"):
+            routing["explicit_model"] = True
+            routing["model_switch_runtime"] = primary.id != previous_runtime_id
         return primary, routing
     except Exception as exc:
         policy = ModelRouter(session, agent.workspace_id, memory_project_id).policy()
-        if policy is not None:
+        if policy is not None or requested:
             raise
         log.warning("Model routing unavailable; using the agent runtime: %s", type(exc).__name__)
         return agent.runtime, None
@@ -710,6 +777,8 @@ def _resolve_backup_and_failback(session, agent, backup_runtime, routing, memory
     """
     if backup_runtime is None and getattr(agent, "backup_runtime_id", None) and session is not None:
         backup_runtime = session.get(Runtime, agent.backup_runtime_id)
+    if routing and routing.get("explicit_model"):
+        return None, None
     failback_runtime = None
     if getattr(agent, "failback_runtime_id", None) and session is not None:
         failback_runtime = session.get(Runtime, agent.failback_runtime_id)
@@ -738,6 +807,8 @@ def _run_with_failover(agent, primary, backup_runtime, failback_runtime, prompt,
     minutes ago) is skipped in favor of a usable backup, instead of spending minutes per run
     rediscovering the same failure.
     """
+    if backup_runtime is not None and backup_runtime.id == primary.id:
+        backup_runtime = None
     if (
         backup_runtime is not None
         and is_cooling_down(primary)
@@ -984,6 +1055,25 @@ def _tool_delegate(agent, teammate, arguments, *, cancelled, delegation_budget, 
         record_tool(f"delegation_started:{teammate.name}", {"task": task}, "")
     start_delegation(agent.id, teammate.id)
     try:
+        session = object_session(agent)
+        parent_run = session.get(Run, _current_run.get()) if session and _current_run.get() else None
+        if parent_run:
+            child = Issue(project_id=parent_run.issue.project_id, parent_issue_id=parent_run.issue_id,
+                          title=f"{teammate.name}: {task[:150]}", description=delegated_prompt,
+                          assignee_agent_id=teammate.id)
+            session.add(child)
+            session.flush()
+            child_run = queue_issue_run(session, child, teammate)
+            child_run.working_directory = effective_working_directory
+            session.commit()
+            result = run_issue(session, child, teammate, _run=child_run,
+                               _delegation_path=(*delegation_path, teammate.id),
+                               _delegation_budget=delegation_budget, _parent_cancelled=cancelled)
+            output = (f"Issue {child.id}; run {result.id}: {result.status.value}; "
+                      f"issue status: {child.status.value}.\n{result.output or result.error or ''}")
+            if record_tool:
+                record_tool(f"delegation:{teammate.name}", {"task": task}, output)
+            return output
         result = execute_agent(
             teammate,
             delegated_prompt,
@@ -1050,6 +1140,9 @@ CLI_RUNTIME_TYPES = {"claude_code", "codex_cli", "opencode_cli", "gemini_cli", "
 
 def _build_adapter_config(agent, runtime, effective_working_directory, resume_session_id, route_config):
     config = json.loads(runtime.config_json or "{}")
+    config["_persistent_key"] = f"{agent.id}:{runtime.id}"
+    config["terminal_enabled"] = bool(getattr(agent, "terminal_enabled", False))
+    config["_terminal_monitor"] = {"workspace_id": agent.workspace_id, "label": agent.name, "run_id": _current_run.get()}
     if getattr(agent, "terminal_enabled", False):
         config["terminal_enabled"] = True
         if effective_working_directory:
@@ -1064,9 +1157,13 @@ def _build_adapter_config(agent, runtime, effective_working_directory, resume_se
         # adapter change re-widens tool permissions, there is nothing of value
         # in this directory to read or overwrite.
         config["working_directory"] = tempfile.mkdtemp(prefix="hagent-sandbox-")
+    from hagent.cli_defaults import CLI_TYPES
+    if runtime.type.value in CLI_TYPES and runtime.model == "default":
+        config.pop("reasoning_effort", None)
+        config["effort_selection"] = ""
     if resume_session_id:
         config["resume_session_id"] = resume_session_id
-    if route_config.get("effort"):
+    if route_config.get("effort") and "effort_selection" not in config:
         config["reasoning_effort"] = route_config["effort"]
     if route_config.get("output_limit"):
         config["max_tokens"] = route_config["output_limit"]
@@ -1285,10 +1382,14 @@ def _execute_with_runtime(agent, runtime, prompt, cancelled, record_tool, delega
         "After routing, confirm the intended agent has a distinct pending/running run. "
         "Read the current issue description and recent comments for corrections and recorded "
         "approvals; do not ask again for authorization already present within the same scope. "
+        "Run project commands in Hagent using the provided terminal tools. Do not launch external terminal windows, Windows Terminal, or detached console sessions. "
         "If you promise monitoring, create and verify a real scheduled monitor; otherwise say "
         "that no background monitoring has been scheduled."
     )
-    if history:
+    resumes_history = config.get("resume_session_id") and runtime.type.value in {
+        "claude_code", "codex_cli", "opencode_cli",
+    }
+    if history and not resumes_history:
         # API-key runtimes (claude.py/openai.py/ollama.py) send only the current prompt as the
         # user message - resume_session_id only reconstructs history for CLI-backed runtimes.
         # Without this, every turn of an ongoing chat is stateless to those providers and the
@@ -1310,13 +1411,23 @@ def _execute_with_runtime(agent, runtime, prompt, cancelled, record_tool, delega
         for file in skill.files:
             context += f"\n--- {file.filename} ---\n{file.content}"
     try:
-        return adapter.run(
-            prompt=prompt,
-            context=context,
-            tools=tools or None,
-            tool_executor=execute_tool if tools else None,
-            images=images,
-        )
+        def run_with_context(current_adapter, current_context):
+            return current_adapter.run(prompt=prompt, context=current_context,
+                tools=tools or None, tool_executor=execute_tool if tools else None, images=images)
+        try:
+            return run_with_context(adapter, context)
+        except CLIHistoryMissing:
+            if not resume_session_id:
+                raise
+            # thread/resume failed before turn/start: it is safe to create one
+            # new conversation and restore Hagent's retained chat history.
+            config.pop('resume_session_id', None)
+            if history and resumes_history:
+                transcript = '\n'.join(
+                    f"{'User' if turn.get('role') == 'user' else agent.name}: {turn.get('content', '')}"
+                    for turn in history)
+                context = f'Recent conversation so far (most recent last):\n{transcript}\n\n{context}'
+            return run_with_context(_build_adapter(runtime, config, route_config), context)
     finally:
         _remove_sandbox(config)
 

@@ -6,6 +6,7 @@ import os
 import platform
 import re
 import subprocess
+from hagent.runtime_env import BACKGROUND_PROCESS_FLAGS
 
 
 def model(model_id, label, best_for, note, parameters_b=None):
@@ -103,6 +104,19 @@ PROVIDERS = {
     },
 }
 
+# API presets share the existing adapters; models are discovered with the user's key.
+from hagent.runtime_discovery import API_PROVIDERS
+_API_NAMES = {'openai':'OpenAI', 'claude':'Anthropic', 'gemini':'Google Gemini',
+    'xai':'xAI', 'deepseek':'DeepSeek', 'mistral':'Mistral', 'groq':'Groq',
+    'together':'Together AI', 'fireworks':'Fireworks AI', 'cerebras':'Cerebras', 'cohere':'Cohere'}
+for _id, _name in _API_NAMES.items():
+    _base, _env = API_PROVIDERS[_id]
+    PROVIDERS[_id] = {'name':_name, 'group':'Cloud APIs', 'kind':'api',
+        'runtime_type':_id if _id in ('openai','claude','gemini') else 'openai_compatible',
+        'base_url':_base, 'env':_env, 'models':[]}
+
+PROVIDERS['gemini_cli'] = {'name':'Gemini CLI', 'group':'Installed assistants', 'kind':'cli', 'runtime_type':'gemini_cli', 'command':'gemini', 'models':[]}
+
 # Provider-neutral routing defaults. A runtime's config_json.capabilities object
 # can override these values with provider metadata discovered by an operator.
 # Model IDs deliberately do not appear here.
@@ -135,13 +149,16 @@ def routing_capabilities(runtime):
         configured = {}
     if isinstance(configured, dict):
         result.update(configured)
+    from hagent.cli_defaults import CLI_TYPES
+    if runtime_type in CLI_TYPES and runtime.model == "default":
+        result.update(efforts=["medium"], effort_map={"medium":""}, allow_model_override=True)
     result["provider"] = runtime_type
     result["model"] = runtime.model
     return result
 
 
 def provider_options():
-    return [{"id": provider_id, **provider} for provider_id, provider in PROVIDERS.items()]
+    return [{"id": provider_id, **provider} for provider_id in API_PROVIDERS for provider in [PROVIDERS[provider_id]]]
 
 
 def provider_config(provider_id):
@@ -174,6 +191,7 @@ def local_hardware_profile():
         result = subprocess.run(
             ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=2, check=False,
+            creationflags=BACKGROUND_PROCESS_FLAGS,
         )
         if result.returncode == 0 and result.stdout.strip():
             line = result.stdout.strip().splitlines()[0]

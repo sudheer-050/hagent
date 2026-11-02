@@ -87,6 +87,10 @@ def extract_token_usage(
     return count(input_field), count(output_field)
 
 
+class CLIHistoryMissing(RuntimeError):
+    """The CLI rejected a saved conversation before any model turn was sent."""
+
+
 class ResumableError(RuntimeError):
     """A run failed (usually a timeout) but a session id was recovered from whatever
     partial output the CLI produced before failing - the work isn't necessarily lost,

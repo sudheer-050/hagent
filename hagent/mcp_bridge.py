@@ -16,7 +16,9 @@ tiny stdio-MCP-to-HTTP proxy the CLI spawns itself per its `--mcp-config`.
 import contextlib
 import json
 import socket
+import secrets
 import threading
+from contextvars import copy_context
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
@@ -26,7 +28,9 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-def _make_handler(tools, tool_executor):
+def _make_handler(tools, tool_executor, token):
+    call_lock = threading.Lock()
+    context = copy_context()
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):  # silence stdlib access logging
             pass
@@ -40,19 +44,23 @@ def _make_handler(tools, tool_executor):
             self.wfile.write(body)
 
         def do_GET(self):
-            if self.path == "/tools":
+            if self.path == f"/{token}/tools" and not self.headers.get("Origin"):
                 self._send_json(200, {"tools": tools})
             else:
                 self._send_json(404, {"error": "not found"})
 
         def do_POST(self):
-            if self.path != "/call":
+            if self.path != f"/{token}/call" or self.headers.get("Origin"):
                 self._send_json(404, {"error": "not found"})
                 return
-            length = int(self.headers.get("Content-Length", "0"))
             try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 1_000_000:
+                    self._send_json(413, {"error": "invalid request size"})
+                    return
                 payload = json.loads(self.rfile.read(length) or b"{}")
-                result = tool_executor(payload.get("name", ""), payload.get("arguments") or {})
+                with call_lock:
+                    result = context.run(tool_executor, payload.get("name", ""), payload.get("arguments") or {})
                 self._send_json(200, {"result": result})
             except Exception as exc:
                 self._send_json(200, {"error": str(exc)})
@@ -63,12 +71,13 @@ def _make_handler(tools, tool_executor):
 @contextlib.contextmanager
 def serve_tools(tools, tool_executor):
     """Yields a loopback base URL serving `tools` for the duration of the block."""
-    port = _free_port()
-    server = ThreadingHTTPServer(("127.0.0.1", port), _make_handler(tools, tool_executor))
+    token = secrets.token_urlsafe(32)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _make_handler(tools, tool_executor, token))
+    port = server.server_port
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        yield f"http://127.0.0.1:{port}"
+        yield f"http://127.0.0.1:{port}/{token}"
     finally:
         server.shutdown()
         server.server_close()

@@ -1,0 +1,10 @@
+<div class="runtime-actions" data-runtime-actions data-runtime-id="{{ runtime.id }}" data-health-status="{{ runtime.health_status }}" data-checked-at="{{ runtime.last_health_check_at.isoformat() if runtime.last_health_check_at else '' }}">
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <span class="runtime-refreshing" role="status" aria-label="Refreshing connection"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 7a7 7 0 0 1 11.5-1L20 9M4 15l2.4 3A7 7 0 0 0 17.9 17"/></svg></span>
+    <button type="button" data-runtime-test>Test connection</button>
+    <button type="button" class="danger-button" data-runtime-remove>Remove runtime</button>
+  </div>
+  <p class="page-sub" data-runtime-result role="status" aria-live="polite" style="white-space:pre-wrap;overflow-wrap:anywhere;max-width:520px">{% if runtime.last_health_check_at %}Last check: {{ runtime.health_status }} · <time data-runtime-time datetime="{{ runtime.last_health_check_at.isoformat() }}">{{ runtime.last_health_check_at.strftime('%Y-%m-%d %H:%M') }} UTC</time>{% if runtime.health_detail %}
+{% if usage_limit_notice is defined %}{{ usage_limit_notice(runtime.health_detail) or runtime.health_detail }}{% else %}{{ runtime.health_detail }}{% endif %}{% endif %}{% else %}Not tested yet.{% endif %}</p>
+  <small class="page-sub" data-runtime-refreshed="{{ runtime.id }}" hidden></small>
+</div>

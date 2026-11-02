@@ -5,11 +5,11 @@
 {% for ap in autopilots %}
   <div class="collection-row autopilot-row">
     <div class="collection-row-main">
-      <strong>{{ ap.name }} {% if not ap.enabled %}<span class="chip disabled">disabled</span>{% endif %}</strong>
+      <a class="text-link" href="/manage/remove/autopilots/{{ ap.id }}">Delete autopilot</a><strong>{{ ap.name }} {% if not ap.enabled %}<span class="chip disabled">disabled</span>{% endif %}</strong>
       <small>{{ ap.agent.name }}{% if ap.project %} &middot; {{ ap.project.name }}{% endif %}{% if ap.filter_status %} &middot; {{ ap.filter_status.value.replace('_', ' ').title() }}{% endif %}</small>
     </div>
     <span class="collection-row-meta">
-      {% for trigger in ap.triggers %}<span class="chip"><code>{{ trigger.cron_expression }}</code></span>{% else %}<span class="faint">No schedule</span>{% endfor %}
+      {% for trigger in ap.triggers %}<span class="chip"><code>{{ trigger.cron_expression }}</code> <a href="/manage/remove/triggers/{{ trigger.id }}">Remove trigger</a></span>{% else %}<span class="faint">No schedule</span>{% endfor %}
     </span>
     <div class="autopilot-controls">
       <details><summary>Add schedule</summary><form class="inline field-row" method="post" action="/autopilots/{{ ap.id }}/triggers"><input name="cron" placeholder="*/5 * * * *" aria-label="Cron schedule" required><button type="submit">Add</button></form></details>

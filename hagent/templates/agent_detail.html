@@ -1,11 +1,12 @@
 {% extends "base.html" %}
 {% block title %}{{ agent.name }} &middot; {{ site.app_name }}{% endblock %}
 {% block content %}
+{% if request.query_params.get("removal_error") %}<p role="alert">{{ request.query_params.get("removal_error") }}</p>{% endif %}
 <a class="crumb" href="/agents">&larr; Agents</a>
 <div class="agent-profile-header">
   <div class="agent-avatar agent-avatar-large agent-custom-avatar agent-state-{{ agent_state }}" role="img" aria-label="{{ agent.name }} avatar, {{ agent_state }}"><img class="agent-avatar-img" src="{{ agent_avatar_url(agent.id, 96, agent_state, agent.avatar_path) }}" alt=""></div>
   <div><div class="eyebrow">Agent{% if agent.designation %} &middot; {{ agent.designation }}{% endif %}</div><h2>{{ agent.name }}</h2><div class="agent-runtime"><span class="ready-dot {{ 'is-working' if is_running }}{{ ' is-thinking' if agent_state == 'thinking' }}"></span>{{ 'Working' if is_running else ('Thinking' if agent_state == 'thinking' else 'Ready') }} &middot; {{ agent.runtime.name }} / {{ agent.runtime.model }}</div></div>
-  <div class="agent-profile-actions"><button class="primary" type="submit" form="agent-config-form">Save changes</button></div>
+  <div class="agent-profile-actions">{% if not agent.archived %}<form method="post" action="/agents/{{ agent.id }}/archive"><button type="submit" class="danger-button" title="Remove this agent from the active list and retain its history">Archive agent</button></form>{% endif %}<button class="primary" type="submit" form="agent-config-form">Save changes</button></div>
 </div>
 <div class="agent-detail-layout">
   <main class="agent-detail-main">

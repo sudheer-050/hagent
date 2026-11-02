@@ -1,5 +1,5 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="page-header"><div><h2>Workspaces</h2><p class="page-sub">Choose which workspace's agents, projects, and settings you are using.</p></div></div>
-{% if workspaces %}<div class="collection-list">{% for workspace in workspaces %}<div class="collection-row workspace-row"><div class="collection-row-main"><strong>{{ workspace.name }}</strong><small><code>{{ workspace.id }}</code></small></div><form method="post" action="/workspaces/{{ workspace.id }}/switch"><button type="submit">Switch workspace</button></form></div>{% endfor %}</div>{% else %}<div class="empty-state"><h4>No workspaces available</h4></div>{% endif %}
+{% if workspaces %}<div class="collection-list">{% for workspace in workspaces %}<div class="collection-row workspace-row"><div class="collection-row-main"><strong>{{ workspace.name }}</strong><small><code>{{ workspace.id }}</code></small></div><a href="/manage/remove/workspaces/{{ workspace.id }}">Delete workspace</a><form method="post" action="/workspaces/{{ workspace.id }}/switch"><button type="submit">Switch workspace</button></form></div>{% endfor %}</div>{% else %}<div class="empty-state"><h4>No workspaces available</h4></div>{% endif %}
 {% endblock %}

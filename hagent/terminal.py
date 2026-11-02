@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+from hagent.runtime_env import BACKGROUND_PROCESS_FLAGS
+from hagent.managed_process import run as run_managed_process
 from typing import Any
 
 
@@ -18,7 +20,7 @@ def resolve_working_directory(value: str | None) -> str:
     return str(path)
 
 
-def _run_in_docker_sandbox(image: str, cwd: str, command: str, timeout: int) -> subprocess.CompletedProcess:
+def _run_in_docker_sandbox(image: str, cwd: str, command: str, timeout: int, monitor=None) -> subprocess.CompletedProcess:
     """Run the command inside a disposable Docker container with ONLY cwd mounted,
     instead of directly on the host. The container can't see anything on this
     machine outside that one directory - verified in practice, not assumed."""
@@ -27,8 +29,10 @@ def _run_in_docker_sandbox(image: str, cwd: str, command: str, timeout: int) -> 
         raise RuntimeError(f"sandbox_image is set to '{image}' but Docker is not installed or not on PATH")
     mount = f"{Path(cwd).resolve()}:/workspace"
     args = [docker, "run", "--rm", "-v", mount, "-w", "/workspace", image, "pwsh", "-NoLogo", "-NonInteractive", "-Command", command]
-    return subprocess.run(
-        args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, check=False
+    return run_managed_process(
+        args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, check=False,
+        creationflags=BACKGROUND_PROCESS_FLAGS,
+        monitor=monitor,
     )
 
 
@@ -53,10 +57,12 @@ def run_agent_command(agent: Any, command: str, timeout: int = 120, working_dire
         raise ValueError("command is required")
     cwd = resolve_working_directory(working_directory_override or getattr(agent, "terminal_working_directory", None))
     limit = max(1, min(int(timeout), 600))
+    workspace_id = getattr(agent, "workspace_id", None)
+    monitor = {"workspace_id": workspace_id, "label": getattr(agent, "name", "Agent") + " - command"} if workspace_id else None
 
     sandbox_image = getattr(agent, "sandbox_image", None)
     if sandbox_image and working_directory_override:
-        completed = _run_in_docker_sandbox(sandbox_image, cwd, command, limit)
+        completed = _run_in_docker_sandbox(sandbox_image, cwd, command, limit, monitor=monitor)
         output_limit = 100_000
         return {
             "command": command,
@@ -75,7 +81,7 @@ def run_agent_command(agent: Any, command: str, timeout: int = 120, working_dire
         raise RuntimeError("Agent environment JSON is invalid") from exc
     env = os.environ.copy()
     env.update({str(key): str(value) for key, value in agent_environment.items()})
-    completed = subprocess.run(
+    completed = run_managed_process(
         ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
         cwd=cwd,
         env=env,
@@ -84,6 +90,8 @@ def run_agent_command(agent: Any, command: str, timeout: int = 120, working_dire
         errors="replace",
         timeout=limit,
         check=False,
+        creationflags=BACKGROUND_PROCESS_FLAGS,
+        monitor=monitor,
     )
     output_limit = 100_000
     return {

@@ -1,0 +1,18 @@
+Hagent portable test build
+
+1. Extract the entire ZIP into a folder you can write to.
+2. Double-click Hagent.exe. Keep the runtime folder beside it.
+3. Hagent opens in your browser. Use its tray icon to reopen it or exit.
+
+This is a separate test workspace. Data is stored in:
+%LOCALAPPDATA%\HagentTest
+Your existing Hagent checkout and database are not imported or replaced.
+Configure your own providers in Connections before assigning agent work.
+
+The portable build does not install software or trust a certificate.
+To remove it, exit Hagent and remove the extracted folder. Your test data
+remains in the location above until you choose to remove it.
+
+This is not a public release or a Microsoft Store-certified application.
+The bundled Python 3.10 runtime must be upgraded before public distribution.
+The separate MSIX is unsigned and cannot yet be used as a normal installer.

@@ -12,6 +12,12 @@ import psutil
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--check", action="store_true", help="Inspect readiness without restarting")
 args = parser.parse_args()
+if os.name == "nt" and os.environ.get("CODEX_SANDBOX_NETWORK_DISABLED") == "1" and not args.check:
+    raise SystemExit(
+        "Hagent cannot be restarted from this restricted Codex session. "
+        "Double-click scripts\\restart_hagent.vbs in Windows Explorer to restart it "
+        "with your normal Windows permissions and no terminal window."
+    )
 root = Path(__file__).resolve().parent.parent
 port_file = root / "output/hagent-local-port.txt"
 port = int(port_file.read_text().strip()) if port_file.exists() else 8000
@@ -20,6 +26,8 @@ if not 1024 <= port <= 65535:
 database = Path(os.environ.get("HAGENT_DB_PATH", str(root / "hagent.db"))).resolve()
 with sqlite3.connect("file:" + database.as_posix() + "?mode=ro", uri=True) as connection:
     active = connection.execute("SELECT count(*) FROM runs WHERE status = 'RUNNING'").fetchone()[0]
+    has_terminals = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='terminal_sessions'").fetchone()
+    terminals = connection.execute("SELECT count(*) FROM terminal_sessions WHERE status = 'running'").fetchone()[0] if has_terminals else 0
 if active:
     raise SystemExit(f"{active} task(s) are running. Wait until they finish before restarting.")
 servers = []
@@ -29,6 +37,8 @@ for process in psutil.process_iter(["cmdline", "cwd"]):
     if (command[1:4] == ["-m", "hagent", "serve"] and directory
             and Path(directory).resolve() == root and command[-2:] == ["--port", str(port)]):
         servers.append(process)
+if terminals and servers:
+    raise SystemExit(f"{terminals} terminal session(s) are open. Stop them in Hagent before restarting.")
 print("Hagent checkout:", root)
 print("Port:", port, "Server process IDs:", [process.pid for process in servers])
 if args.check:

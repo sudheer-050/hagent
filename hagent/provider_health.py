@@ -2,6 +2,9 @@
 
 import json
 import re
+import os
+import tempfile
+import threading
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -13,8 +16,17 @@ from hagent.models import Agent, Issue, IssueStatus, Runtime, RuntimeType, Timel
 
 PROVIDER_MONITOR_NAME = "Provider Monitor"
 PROBE_PROMPT = "Provider availability check. Reply with exactly OK."
+# Independent providers can be checked together; repeated checks of one cannot.
+manual_probe_lock = threading.Lock()
+_manual_probe_locks = {}
+
+
+def manual_probe_lock_for(runtime_id):
+    with manual_probe_lock:
+        return _manual_probe_locks.setdefault(runtime_id, threading.Lock())
+
 _CAPACITY_ERROR = re.compile(
-    r"(session|usage|spending|token|context|rate)[ -]?(?:limit|quota)"
+    r"(session|usage|spending|token|context|rate)[ _-]?(?:limit|quota)"
     r"|(?:limit|quota).*(?:reached|exceeded|exhausted)"
     r"|credits?.*(?:exhausted|insufficient|depleted)|insufficient.*credits?"
     r"|too many requests|resource[_ -]?exhausted|\b429\b",
@@ -25,6 +37,42 @@ _CAPACITY_ERROR = re.compile(
 def is_capacity_error(error) -> bool:
     """Return whether a provider failure means its current allowance is exhausted."""
     return bool(_CAPACITY_ERROR.search(str(error)))
+
+
+def usage_limit_notice(error, now=None):
+    """Plain user-facing quota errors; never invent a provider reset time."""
+    if not is_capacity_error(error):
+        return None
+    text = str(error)
+    if re.search(r'context.{0,30}(?:length|window|limit)', text, re.I):
+        return 'This conversation is too long. Start a new conversation to continue.'
+    prefix = 'Your tokens are used up.'
+    if re.search(r'credits?.*(?:exhausted|insufficient|depleted)|insufficient.*credits?', text, re.I):
+        return 'Your provider credits are used up. Add credits to continue.'
+    if re.search(r'too many requests|rate[ _-]?limit|\b429\b', text, re.I) and not re.search(r'usage|tokens?|quota', text, re.I):
+        prefix = 'The provider has reached its request limit.'
+    match = _RETRY_AT.search(text)
+    if match:
+        hour, minute = int(match[1]), int(match[2] or 0)
+        if 1 <= hour <= 12 and 0 <= minute < 60:
+            period = match[3].replace('.', '').upper()
+            zone = f' ({match[4]})' if match[4] else ''
+            return f'{prefix} Please wait until {hour}:{minute:02d} {period}{zone}.'
+    epoch = re.search(r"resets?_at['\"\\]*\s*:\s*['\"]?(\d{9,13})\b", text, re.I)
+    relative = re.search(r"resets_in_seconds['\"\\]*\s*:\s*(\d+)\b", text, re.I)
+    try:
+        reset = None
+        if epoch:
+            stamp = int(epoch[1])
+            reset = datetime.fromtimestamp(stamp / 1000 if stamp > 10**11 else stamp, timezone.utc)
+        elif relative:
+            reset = (now or datetime.now(timezone.utc)) + timedelta(seconds=int(relative[1]))
+        if reset:
+            when = reset.astimezone().strftime('%I:%M %p %Z on %b %d').lstrip('0')
+            return f'{prefix} Please wait until {when}.'
+    except (ValueError, OverflowError, OSError):
+        pass
+    return f'{prefix} Please try again later. No reset time was provided.'
 
 
 # Failures that mean the provider itself is unreachable or broken, not that this task went
@@ -132,7 +180,7 @@ def record_infrastructure_failure(runtime: Runtime, error) -> bool:
 def record_runtime_success(runtime: Runtime) -> None:
     """A real run succeeded, so the runtime is healthy whatever the last check said."""
     session = object_session(runtime)
-    if session is None or runtime.health_status == "healthy":
+    if session is None:
         return
     runtime.health_status = "healthy"
     runtime.health_detail = ""
@@ -301,12 +349,39 @@ def handle_capacity_failure(agent: Agent, failed_runtime: Runtime, error) -> lis
 
 def _probe(runtime: Runtime) -> None:
     config = json.loads(runtime.config_json or "{}")
-    config["timeout"] = min(45, int(config.get("timeout", 45)))
-    adapter = get_runtime_class(runtime.type)(model=runtime.model, config=config)
-    adapter.run(
-        PROBE_PROMPT,
-        context="This is an automated availability probe. Do not use tools. Reply only OK.",
-    )
+    config["timeout"] = min(20, int(config.get("timeout", 20)))
+    config.update(terminal_enabled=False, max_tokens=16, max_tool_rounds=1, max_retries=0)
+    config.pop("resume_session_id", None)
+    if config.get("worker"):
+        raise RuntimeError("This runtime uses a remote worker. Test its worker connection on the Workers page.")
+    from hagent import cli_sessions
+    if runtime.type.value in cli_sessions.SUPPORTED and cli_sessions.enabled({'_persistent_key': runtime.id}):
+        result = cli_sessions.probe(runtime.type.value, runtime.model, runtime.id, config, PROBE_PROMPT)
+        if not (result.output or '').strip():
+            raise RuntimeError('The provider returned an empty response.')
+        return
+    with tempfile.TemporaryDirectory(prefix="hagent-connection-test-") as directory:
+        config["working_directory"] = directory
+        adapter = get_runtime_class(runtime.type)(model=runtime.model, config=config)
+        result = adapter.run(
+            PROBE_PROMPT,
+            context="This is an automated availability probe. Do not use tools. Reply only OK.",
+        )
+        if not (result.output or "").strip():
+            raise RuntimeError("The provider returned an empty response. Check the selected model and account.")
+
+
+def connection_error(runtime, error):
+    """Keep saved credentials out of user-visible and persisted diagnostics."""
+    from hagent.memory import redact_sensitive
+    config = json.loads(runtime.config_json or "{}")
+    detail = str(error)
+    secrets = [config.get(key) for key in ("api_key", "token", "password")]
+    secrets += [os.environ.get(name) for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", config.get("api_key_env", ""))]
+    for secret in secrets:
+        if secret:
+            detail = detail.replace(str(secret), "[redacted]")
+    return redact_sensitive(detail)[0][:800]
 
 
 def run_provider_health_checks() -> dict:
@@ -334,28 +409,34 @@ def run_provider_health_checks() -> dict:
             )
         ).all()
         for runtime in runtimes:
-            checked += 1
-            awaiting_failback = runtime.id in recovering_ids
+            probe_lock = manual_probe_lock_for(runtime.id)
+            if not probe_lock.acquire(blocking=False):
+                continue
             try:
-                _probe(runtime)
-            except Exception as exc:
-                if is_capacity_error(exc):
-                    limited += 1
-                    switched += len(promote_backups_for_limited_runtime(session, runtime, exc))
+                checked += 1
+                awaiting_failback = runtime.id in recovering_ids
+                try:
+                    _probe(runtime)
+                except Exception as exc:
+                    if is_capacity_error(exc):
+                        limited += 1
+                        switched += len(promote_backups_for_limited_runtime(session, runtime, exc))
+                    else:
+                        errors += 1
+                        runtime.health_status = "error"
+                        runtime.health_detail = str(exc).strip()[:1000]
+                        runtime.last_health_check_at = datetime.now(timezone.utc)
+                        session.commit()
                 else:
-                    errors += 1
-                    runtime.health_status = "error"
-                    runtime.health_detail = str(exc).strip()[:1000]
+                    healthy += 1
+                    runtime.health_status = "healthy"
+                    runtime.health_detail = ""
                     runtime.last_health_check_at = datetime.now(timezone.utc)
                     session.commit()
-            else:
-                healthy += 1
-                runtime.health_status = "healthy"
-                runtime.health_detail = ""
-                runtime.last_health_check_at = datetime.now(timezone.utc)
-                session.commit()
-                if awaiting_failback:
-                    restored += len(restore_recovered_runtime(session, runtime))
+                    if awaiting_failback:
+                        restored += len(restore_recovered_runtime(session, runtime))
+            finally:
+                probe_lock.release()
     return {
         "checked": checked,
         "healthy": healthy,

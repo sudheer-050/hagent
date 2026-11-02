@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Terminal & activity · Hagent{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="/static/vendor/xterm/xterm.css">
+<style>
+.terminal-layout{display:grid;gap:20px}.terminal-panel{min-width:0;border:1px solid var(--border);border-radius:14px;padding:18px;background:var(--card,#11121b)}.terminal-toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.terminal-toolbar input{flex:1;min-width:180px}.terminal-workspace{display:grid;grid-template-columns:210px minmax(0,1fr);gap:14px;margin-top:16px}.terminal-session-sidebar{height:480px;min-height:0;display:flex;flex-direction:column;overflow:hidden;border-right:1px solid var(--border);padding-right:12px;min-width:0}.terminal-session-tabs{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;overscroll-behavior:contain}.terminal-session-tabs::-webkit-scrollbar{display:block;width:6px}.terminal-session-sidebar h3{font-size:13px;margin:0 0 12px}.terminal-session-item{position:relative;margin-bottom:6px}.terminal-session-close{margin:0;position:absolute;right:4px;top:2px;transform:none;transition:none;display:flex;align-items:center;justify-content:center;width:28px;height:28px;min-height:28px;padding:0;border:0;background:transparent;font-size:20px;line-height:1}.terminal-session-close::before,.terminal-session-close::after{content:"";position:absolute;left:50%;top:50%;width:12px;height:1.5px;border-radius:1px;background:currentColor;transform:translate(-50%,-50%) rotate(45deg)}.terminal-session-close::after{transform:translate(-50%,-50%) rotate(-45deg)}.terminal-session-close:active{transform:none}.terminal-session-close:hover{background:transparent}.terminal-session-tab{display:flex;align-items:center;width:100%;text-align:left;margin:0;padding:0 36px 0 10px;height:32px;min-height:32px;font-size:12px;line-height:18px;overflow:hidden}.terminal-session-tab[aria-selected="true"]{border-color:var(--accent);background:var(--accent-tint)}.terminal-session-tab>span{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.terminal-session-tab small{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}.terminal-surface{height:480px;background:#0b0d14;padding:10px;border-radius:8px;overflow:hidden;min-width:0}.terminal-session-view{height:100%}.terminal-session-view[hidden]{display:none}.terminal-status{margin:10px 0;font-size:13px}.terminal-activity-grid{display:grid;grid-template-columns:1fr 1fr;gap:24px}.activity-list{max-height:360px;overflow:auto}.activity-row{padding:10px 0;border-bottom:1px solid var(--border);overflow-wrap:anywhere}.activity-row small{display:block;opacity:.7}.activity-row pre{white-space:pre-wrap;max-height:180px;overflow:auto;font-size:12px}.terminal-history{margin-top:20px}.terminal-history button{display:block;text-align:left;margin:6px 0;max-width:100%;overflow-wrap:anywhere}.terminal-help{opacity:.7;font-size:13px}#terminal-transcript{white-space:pre-wrap;max-height:300px;overflow:auto}@media(max-width:700px){.terminal-workspace{grid-template-columns:1fr}.terminal-session-sidebar{height:180px;border-right:0;border-bottom:1px solid var(--border);padding:0 0 8px}.terminal-session-tabs{display:block}.terminal-session-item{min-width:170px;flex-shrink:0}.terminal-session-tab{width:100%}.terminal-surface{height:360px}.terminal-activity-grid{grid-template-columns:1fr}}
+</style>
+{% endblock %}
+{% block content %}
+<div class="page-header"><div><h2>Terminal & activity</h2><p>Work here and follow your agents from handoff to verification.</p></div></div>
+<div class="terminal-layout">
+<section class="terminal-panel" aria-label="Interactive terminal">
+ <label class="field-label" for="terminal-cwd">Starting folder</label>
+ <div class="terminal-toolbar"><input id="terminal-cwd" value="{{ default_directory }}"><button id="terminal-start" type="button" class="primary">New terminal</button></div>
+ <p id="terminal-status" class="terminal-status" role="status">Ready to start a PowerShell session.</p>
+ <p id="agent-terminal-status" class="terminal-help" role="status">Agent terminals appear here automatically while tasks run.</p>
+ <div class="terminal-workspace">
+  <nav class="terminal-session-sidebar" aria-label="Terminal sessions"><h3>Terminals</h3><div id="terminal-tabs" class="terminal-session-tabs" role="tablist" aria-label="Terminal sessions" aria-orientation="vertical"></div><p id="terminal-empty" class="terminal-help">Start a terminal for each project folder.</p></nav>
+  <div id="terminal-screen" class="terminal-surface" aria-label="PowerShell terminal"></div>
+ </div>
+ <p class="terminal-help">Agent tabs show live output and disappear when tasks finish; task results remain in issue history. Your interactive shells stay open when switching tabs and close when leaving this page. Agent tasks continue when you leave.</p>
+ <details class="terminal-history"><summary>Session history</summary><div id="terminal-history"></div><pre id="terminal-transcript"></pre></details>
+</section>
+<section class="terminal-panel" aria-label="Agent activity"><div class="terminal-activity-grid"><div><h3>Agent activity</h3><p class="terminal-help">Open an issue to see its hierarchy, approvals, tool calls, and verification.</p><div id="terminal-runs" class="activity-list"></div></div><div><h3>Commands & handoffs</h3><div id="terminal-events" class="activity-list"></div></div></div><p id="activity-status" role="status"></p></section>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/vendor/xterm/xterm.js"></script><script src="/static/vendor/xterm/addon-fit.js"></script><script src="/static/terminal.js?v=20261031-close-hover11"></script>
+{% endblock %}
