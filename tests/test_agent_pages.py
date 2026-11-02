@@ -686,10 +686,11 @@ def test_runtime_page_has_scrollable_guided_dialog(local_db):
 
     assert response.status_code == 200
     assert "OpenRouter" in response.text
-    assert "Codex CLI" in response.text
-    assert "Claude Code" in response.text
-    assert 'id="runtime-model-info"' in response.text
-    assert 'id="runtime-hardware"' in response.text
+    # The guided dialog picks API or CLI first, then a provider and a model.
+    assert 'id="runtime-mode"' in response.text
+    assert '<option value="cli"' in response.text
+    assert 'id="runtime-type"' in response.text
+    assert 'id="runtime-model"' in response.text
 
 def test_runtime_can_be_edited_without_revealing_or_erasing_saved_key(local_db):
     client = TestClient(app)

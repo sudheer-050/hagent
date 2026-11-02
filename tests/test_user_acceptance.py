@@ -207,7 +207,7 @@ def test_workspace_profile_and_catalog_crud(acceptance_db, monkeypatch):
 
     created_runtime = client.post(
         "/runtimes",
-        data={"name": "Temporary runtime", "type": "ollama", "model": "qwen3:8b"},
+        data={"name": "Temporary runtime", "type": "ollama", "model": "qwen3:8b", "base_url": "http://127.0.0.1:11500"},
         follow_redirects=False,
     )
     assert created_runtime.status_code == 303
@@ -215,7 +215,7 @@ def test_workspace_profile_and_catalog_crud(acceptance_db, monkeypatch):
         runtime_id = session.scalar(select(Runtime).where(Runtime.name == "Temporary runtime")).id
     assert client.post(
         f"/runtimes/{runtime_id}",
-        data={"name": "Edited runtime", "type": "ollama", "model": "qwen3:14b"},
+        data={"name": "Edited runtime", "type": "ollama", "model": "qwen3:14b", "base_url": "http://127.0.0.1:11500"},
         follow_redirects=False,
     ).status_code == 303
     assert client.post(f"/runtimes/{runtime_id}/archive", follow_redirects=False).status_code == 303
